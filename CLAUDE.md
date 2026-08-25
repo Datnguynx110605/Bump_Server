@@ -1,21 +1,26 @@
-# Claude Operating Rules
+# Claude Code Operating Rules
 
 ## Session Initialization
 
 - ALWAYS read this `CLAUDE.md` before performing any work in every session.
 - ALWAYS inspect the available Superpowers plugin or skills before starting.
+- ALWAYS inspect the available Ponytail plugin (skills, commands, and active mode) before starting.
 - ALWAYS begin every session in this order:
   1. Read CLAUDE.md.
   2. Inspect available Superpowers skills.
-  3. Inspect the codebase and repository state.
-  4. Read project documentation.
-  5. Activate the applicable Superpowers workflow.
-  6. Understand the project before proposing or implementing changes.
+  3. Inspect available Ponytail skills, commands, and active mode.
+  4. Inspect the codebase and repository state.
+  5. Read project documentation.
+  6. Activate the applicable Superpowers workflow.
+  7. Understand the project before proposing or implementing changes.
 - Superpowers is the mandatory execution standard, not an optional recommendation.
+- Ponytail is the mandatory code standard, not an optional recommendation, for coding tasks.
 - When a Superpowers workflow requires a separate specification file but the user or task scope prohibits additional files, MUST preserve the design and review gates in the conversation without creating that file.
 - MUST follow all applicable Superpowers skills and workflow gates.
 - Superpowers is the mandatory working methodology. Repository-specific rules in this file override only conflicting execution details, such as Git operations, documentation locations, and commands requiring user approval.
 - MUST keep all non-conflicting Superpowers workflow gates mandatory.
+- MUST keep all non-conflicting Ponytail rules mandatory.
+- Ponytail findings that call for deleting, simplifying, or restructuring EXISTING code (not code newly written in the current session) are treated as a refactor proposal and MUST go through the "Refactoring" approval gate below.
 - NEVER commit or push, even when a Superpowers skill normally instructs the agent to commit.
 
 ## Repository Understanding and Documentation
@@ -39,6 +44,7 @@
 ## Refactoring
 
 - NEVER refactor the codebase without explicit user approval.
+- This includes refactors proposed by the Ponytail plugin (`ponytail-review`, `ponytail-audit`) that target existing code rather than code newly written in the current session.
 - Before requesting refactor approval, MUST explain:
   - why the refactor is needed;
   - the proposed solution;
