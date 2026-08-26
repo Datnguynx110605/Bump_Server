@@ -28,6 +28,7 @@ public abstract class BaseEntity
         if(IsDeleted)
             return DomainResult.Failure("Operation is invalid");
         
+        IsDeleted = true;
         DeletedAt = DateTime.UtcNow;
 
         return DomainResult.Success();
@@ -38,6 +39,7 @@ public abstract class BaseEntity
         if(!IsDeleted)
             return DomainResult.Failure("Operation is invalid");
         
+        IsDeleted = false;
         RecoveredAt = DateTime.UtcNow;
 
         return DomainResult.Success();

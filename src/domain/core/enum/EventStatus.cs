@@ -2,7 +2,8 @@
 
 public enum EventStatus
 {
-    Processing = 0,
-    Success = 1,
-    Failed = 2,
+    Pending,
+    Processing,
+    Success,
+    Failed,
 }
