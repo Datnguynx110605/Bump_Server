@@ -6,8 +6,13 @@
   </ItemGroup>
 
   <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup>
+
+  <ItemGroup>
     <PackageReference Include="AWSSDK.S3" Version="4.0.102.4" />
     <PackageReference Include="BCrypt.Net-Next" Version="4.2.0" />
+    <PackageReference Include="MailKit" Version="4.17.0" />
     <PackageReference Include="MongoDB.Driver" Version="3.11.0" />
     <PackageReference Include="StackExchange.Redis" Version="3.1.31" />
     <PackageReference Include="System.IdentityModel.Tokens.Jwt" Version="8.22.0" />
