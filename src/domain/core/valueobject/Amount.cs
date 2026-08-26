@@ -11,8 +11,8 @@ public sealed class Amount
 
     public static DomainResult<Amount> Create(int value)
     {
-        if(value <= 0)
-            return DomainResult<Amount>.Failure("Amount must be positive interger");
+        if(value < 0)
+            return DomainResult<Amount>.Failure("Amount must be a non-negative integer");
 
         Amount amount = new Amount(value);
 

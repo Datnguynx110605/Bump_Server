@@ -2,7 +2,9 @@
 
 public sealed class Comment : BaseEntity
 {
+    private const int ContentMaxLength = 2000;
     public Guid AccountId { get; private set; }
+    public Guid PostId { get; private set; }
     public string? Content { get; private set; }
     private List<Image> _images = new();
     public IReadOnlyCollection<Image> Images => _images.AsReadOnly();
@@ -12,77 +14,55 @@ public sealed class Comment : BaseEntity
     private Comment() {}
     private Comment(
         Guid accountId,
+        Guid postId,
         string? content)
     {
         AccountId = accountId;
         Content = content;
+        PostId = postId;
     }
 
     public static DomainResult<Comment> Create(
         Guid accountId,
+        Guid postId,
         string? content,
         List<string>? urls = null)
     {
         if(accountId == Guid.Empty)
             return DomainResult<Comment>.Failure("AccountId is required");
 
-        Comment comment = new Comment(accountId, content);
+        if(content?.Length > ContentMaxLength)
+            return DomainResult<Comment>.Failure("Content maximum length is 2000 characters");
+
+        Comment comment = new Comment(
+            accountId, 
+            postId, 
+            content);
 
         if(urls is not null)
             comment._images.AddRange(urls.Select(url => new Image(url)));
 
+        comment.RaiseEvent(new CommentedPostEvent(
+            comment.AccountId,
+            comment.Id,
+            comment.PostId,
+            comment.CreatedAt));
+
         return DomainResult<Comment>.Success(comment);
-    }
-
-    public DomainResult ReactComment(
-        Guid accountId,
-        Name name,
-        Avatar avatar)
-    {
-        if(AccountId == accountId)
-            return DomainResult.Failure("Can not react your own comment");
-
-        if(_reactions.Any(x => x.AccountId == accountId))
-            return DomainResult.Failure("Already reacted");
-
-        _reactions.Add(new Reaction(
-            accountId,
-            name,
-            avatar));
-
-        RaiseEvent(new ReactedCommentEvent(
-            accountId,
-            Id));
-
-        return DomainResult.Success();
-    }
-
-    public DomainResult UnreactComment(Guid accountId)
-    {
-        if(AccountId == accountId)
-            return DomainResult.Failure("Can not unreact your own comment");
-
-        var reaction = _reactions.FirstOrDefault(x => x.AccountId == accountId);
-        if(reaction is null)
-            return DomainResult.Failure("Not reacted yet");
-
-        _reactions.Remove(reaction);
-
-        return DomainResult.Success();
     }
 
     public DomainResult ChangeContent(string content)
     {
-        Content = content;
-        Update();
+        if(content.Length > ContentMaxLength)
+            return DomainResult.Failure("Content maximum length is 2000 characters");
 
-        return DomainResult.Success();
+        Content = content;
+
+        return Update();
     }
 
     public DomainResult DeleteComment()
     {
-        Delete();
-
-        return DomainResult.Success();
+        return Delete();
     }
 }

@@ -29,7 +29,7 @@ public sealed  class RefreshToken : BaseEntity
     public DomainResult Validate()
     {
         if(IsRevoked)
-            return DomainResult.Failure("Fucking hacker asshole");
+            return DomainResult.Failure("Refresh token has been revoked");
 
         if(ExpiryDate < DateTime.UtcNow)
             return DomainResult.Failure("Expired");

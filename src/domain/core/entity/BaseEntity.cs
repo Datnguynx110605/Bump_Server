@@ -11,7 +11,7 @@ public abstract class BaseEntity
     private List<Event> _events = new();
     public IReadOnlyCollection<Event> Events => _events.AsReadOnly();
     protected void RaiseEvent(Event @event) => _events.Add(@event);
-    protected void ClearEvent() => _events.Clear();
+    public void ClearEvent() => _events.Clear();
 
     public DomainResult Update()
     {
@@ -38,8 +38,9 @@ public abstract class BaseEntity
     {
         if(!IsDeleted)
             return DomainResult.Failure("Operation is invalid");
-        
+
         IsDeleted = false;
+        DeletedAt = null;
         RecoveredAt = DateTime.UtcNow;
 
         return DomainResult.Success();

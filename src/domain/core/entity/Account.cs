@@ -2,6 +2,8 @@
 
 public sealed class Account : BaseEntity
 {
+    private const int PasswordHashLength = 60;
+    private const int BioMaxLength = 2000;
     public Email Email { get; private set; }
     public Name Name { get; private set; }
     public string Password { get; private set; }
@@ -16,8 +18,9 @@ public sealed class Account : BaseEntity
     public Amount FollowingAmount { get; private set; } =  Amount.Create(0).Value;
     private List<Post> _savePosts = new();
     public IReadOnlyCollection<Post> SavePosts => _savePosts.AsReadOnly();
-    private List<Post> _saveShops = new();
-    public IReadOnlyCollection<Post> SaveShops => _saveShops.AsReadOnly();
+    private List<Shop> _saveShops = new();
+    public IReadOnlyCollection<Shop> SaveShops => _saveShops.AsReadOnly();
+    public Role Role { get; private set; } = Role.User;
     private Account() {}
     private Account(
         Email email, 
@@ -38,10 +41,10 @@ public sealed class Account : BaseEntity
         string? bio,
         string? url = null)
     {
-        if(password.Length != 60)
+        if(password.Length != PasswordHashLength)
             return DomainResult<Account>.Failure("Hashing incorrect");
 
-        if(bio?.Length > 2000)
+        if(bio?.Length > BioMaxLength)
             return DomainResult<Account>.Failure("Bio maximum length is 2000 characters");
 
         Account account = new Account(
@@ -50,7 +53,7 @@ public sealed class Account : BaseEntity
             password,
             bio);
 
-        if(url is not null)
+        if(!string.IsNullOrWhiteSpace(url))
             account._avatars.Add(new Avatar(url));
 
         account.RaiseEvent(new AccountCreatedEvent(
@@ -61,96 +64,9 @@ public sealed class Account : BaseEntity
         return DomainResult<Account>.Success(account);
     }
 
-    public DomainResult Follow(
-        Guid accountId, 
-        Name name, 
-        Avatar avatar)
+    public DomainResult SavePost(Post post)
     {
-        if(accountId == Guid.Empty)
-            return DomainResult.Failure("AccountId is required");
-
-        if(Id == accountId)
-            return DomainResult.Failure("Account can't follow itself");
-
-        if(_followings.Any(x => x.AccountId == accountId))
-            return DomainResult.Failure("Already followed");
-
-        _followings.Add(new Following(
-            accountId, 
-            name, 
-            avatar));
-
-        RaiseEvent(new FollowedAccountEvent(
-            Id,
-            accountId));
-
-        return DomainResult.Success();
-    }
-
-    public DomainResult Unfollow(Guid accountId)
-    {
-        if(accountId == Guid.Empty)
-            return DomainResult.Failure("AccountId is required");
-
-        if(Id == accountId)
-            return DomainResult.Failure("Account can't unfollow itself");
-
-        var following = _followings.FirstOrDefault(x => x.AccountId == accountId);
-        if(following is null)
-            return DomainResult.Failure("Following account not found");
-
-        _followings.Remove(following);
-
-        return DomainResult.Success();
-    }
-
-    public DomainResult GetFollowed(
-        Guid accountId, 
-        Name name, 
-        Avatar avatar)
-    {
-        if(accountId == Guid.Empty)
-            return DomainResult.Failure("AccountId is required");
-
-        if(Id == accountId)
-            return DomainResult.Failure("Account can't follow itself");
-
-        if(_followers.Any(x => x.AccountId == accountId))
-            return DomainResult.Failure("Already followed");
-
-        _followers.Add(new Follower(
-            accountId,
-            name,
-            avatar));
-
-        RaiseEvent(new GetFollowedEvent(
-            accountId,
-            Id));
-
-        return DomainResult.Success();
-    }
-
-    public DomainResult GetUnfollowed(Guid accountId)
-    {
-        if(accountId == Guid.Empty)
-            return DomainResult.Failure("AccountId is required");
-
-        if(Id == accountId)
-            return DomainResult.Failure("Account can't unfollow itself");
-
-        var follower = _followers.FirstOrDefault(x => x.AccountId == accountId);
-        if(follower is null)
-            return DomainResult.Failure("Already unfollowed");
-
-        _followers.Remove(follower);
-
-        return DomainResult.Success();
-    }
-
-    public DomainResult SavePost(Guid postId)
-    {
-        var post = _savePosts.FirstOrDefault(x => x.Id == postId);
-        if(post is not null)
+        if(_savePosts.Any(x => x.Id == post.Id))
             return DomainResult.Failure("Post already saved");
 
         _savePosts.Add(post);
@@ -169,10 +85,9 @@ public sealed class Account : BaseEntity
         return DomainResult.Success();
     }
 
-    public DomainResult SaveShop(Guid shopId)
+    public DomainResult SaveShop(Shop shop)
     {
-        var shop = _saveShops.FirstOrDefault(x => x.Id == shopId);
-        if(shop is not null)
+        if(_saveShops.Any(x => x.Id == shop.Id))
             return DomainResult.Failure("Shop already saved");
 
         _saveShops.Add(shop);
@@ -184,7 +99,7 @@ public sealed class Account : BaseEntity
     {
         var shop = _saveShops.FirstOrDefault(x => x.Id == shopId);
         if(shop is null)
-            return DomainResult.Failure("Shop already saved");
+            return DomainResult.Failure("Shop not found");
 
         _saveShops.Remove(shop);
 
@@ -193,24 +108,22 @@ public sealed class Account : BaseEntity
 
     public DomainResult ChangeEmail(Email email)
     {
-        if(Email == email)
+        if(Email.Value == email.Value)
             return DomainResult.Failure("New email must be different");
 
         Email = email;
-        Update();
 
-        return DomainResult.Success();
+        return Update();
     }
 
     public DomainResult ChangeName(Name name)
     {
-        if(Name == name)
+        if(Name.Value == name.Value)
             return DomainResult.Failure("New name must be different");
 
         Name = name;
-        Update();
 
-        return DomainResult.Success();
+        return Update();
     }
 
     public DomainResult ChangePassword(string password)
@@ -218,24 +131,22 @@ public sealed class Account : BaseEntity
         if(Password == password)
             return DomainResult.Failure("New password must be different");
 
-        if(password.Length != 60)
-            return DomainResult<Account>.Failure("Hashing incorrect");
+        if(password.Length != PasswordHashLength)
+            return DomainResult.Failure("Hashing incorrect");
 
         Password = password;
-        Update();
 
-        return DomainResult.Success();
+        return Update();
     }
 
     public DomainResult ChangeBio(string? bio)
     {
-        if(bio?.Length > 2000)
-            return DomainResult<Account>.Failure("Bio maximum length is 2000 characters");
+        if(bio?.Length > BioMaxLength)
+            return DomainResult.Failure("Bio maximum length is 2000 characters");
 
         Bio = bio;
-        Update();
 
-        return DomainResult.Success();
+        return Update();
     }
 
     public DomainResult ChangeAvatar(string url)
@@ -247,9 +158,8 @@ public sealed class Account : BaseEntity
             return DomainResult.Failure("New avatar must be different");
 
         _avatars.Add(new Avatar(url));
-        Update();
 
-        return DomainResult.Success();
+        return Update();
     }
 
     public DomainResult RemoveAvatar(string url)
@@ -259,22 +169,17 @@ public sealed class Account : BaseEntity
             return DomainResult.Failure("Avatar not found");
 
         _avatars.Remove(avatar);
-        Update();
 
-        return DomainResult.Success();
+        return Update();
     }
 
     public DomainResult DeleteAccount()
     {
-        Delete();
-
-        return DomainResult.Success();
+        return Delete();
     }
 
     public DomainResult RecoverAccount()
     {
-        Recover();
-
-        return DomainResult.Success();
+        return Recover();
     }
 }
