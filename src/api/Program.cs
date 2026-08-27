@@ -2,6 +2,7 @@ using Amazon.S3;
 using app;
 using infra;
 using MongoDB.Driver;
+using RabbitMQ.Client;
 using StackExchange.Redis;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -32,6 +33,16 @@ builder.Services.AddSingleton<IAmazonS3>(_ =>
         s3Config);
 });
 
+builder.Services.AddSingleton<IConnection>(_ =>
+{
+    var factory = new ConnectionFactory
+    {
+        Uri = new Uri(builder.Configuration["RabbitMQ:ConnectionString"]!)
+    };
+
+    return factory.CreateConnectionAsync().GetAwaiter().GetResult();
+});
+
 builder.Services.AddScoped<IBcryptService, BCryptService>();
 builder.Services.AddScoped<ICurrentIdentityService, CurrentIdentityService>();
 builder.Services.AddScoped<IEmailService, EmailService>();
@@ -39,6 +50,7 @@ builder.Services.AddScoped<IJwtService, JwtService>();
 builder.Services.AddScoped<IMongoDbContext, DbContext>();
 builder.Services.AddScoped<IOtpService, OtpService>();
 builder.Services.AddScoped<IR2Service, R2Service>();
+builder.Services.AddScoped<IRabbitMQService, RabbitMQService>();
 builder.Services.AddScoped<IRedisService, RedisService>();
 builder.Services.AddScoped<IRegistrationService, RegistrationService>();
 

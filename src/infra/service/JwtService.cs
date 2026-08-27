@@ -2,14 +2,16 @@
 using System.Security.Claims;
 using System.Text;
 using app;
+using domain;
 using Microsoft.Extensions.Configuration;
 using Microsoft.IdentityModel.Tokens;
 
 namespace infra;
 
-public class JwtService : IJwtService
+internal sealed class JwtService : IJwtService
 {
     public const string AccountIdClaimType = "accountId";
+    public const string RoleClaimType = "role";
 
     private readonly IConfiguration _configuration;
 
@@ -18,11 +20,12 @@ public class JwtService : IJwtService
         _configuration = configuration;
     }
 
-    public string GenerateAccessToken(Guid accountId)
+    public string GenerateAccessToken(Guid accountId, Role role)
     {
         var claims = new[]
         {
-            new Claim(AccountIdClaimType, accountId.ToString())
+            new Claim(AccountIdClaimType, accountId.ToString()),
+            new Claim(RoleClaimType, role.ToString()),
         };
 
         var key = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(_configuration["Jwt:SecretKey"]!));

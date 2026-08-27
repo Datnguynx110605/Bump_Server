@@ -27,6 +27,7 @@
 
 - MUST inspect the current working tree and existing uncommitted changes before modifying files.
 - MUST discover and read all Markdown files under the repository's `doc/` directory before starting project work.
+- MUST follow `doc/project-rules.md` as the authoritative source for folder responsibilities, naming, OOP/DDD, and persistence/cross-cutting conventions; new or changed code MUST conform to it.
 - MUST identify and follow documented project rules, architecture, system design, conventions, and constraints.
 - If documentation is missing, incomplete, inconsistent, or outdated, MUST inspect the repository thoroughly to infer the actual design and behavior.
 - After understanding the repository, MUST update the relevant documentation before or alongside implementation.

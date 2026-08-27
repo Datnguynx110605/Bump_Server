@@ -10,7 +10,6 @@ internal sealed class CreateAccountHandler
 {
     private readonly IRegistrationService _registrationService;
     private readonly IBcryptService _bcryptService;
-    private readonly IR2Service _r2Service;
     private readonly IRedisService _redisService;
     private readonly IMongoDbContext _dbContext;
     private readonly IMapper _mapper;
@@ -19,7 +18,6 @@ internal sealed class CreateAccountHandler
         IBcryptService bcryptService,
         IRedisService redisService,
         IMongoDbContext dbContext,
-        IR2Service r2Service,
         IMapper mapper)
     {
         _registrationService = registrationService;
@@ -27,10 +25,11 @@ internal sealed class CreateAccountHandler
         _redisService = redisService;
         _dbContext = dbContext;
         _mapper = mapper;
-        _r2Service = r2Service;
     }
 
-    public async Task<Result<AccountDto>> Handle(CreateAccountCommand request, CancellationToken cancellationToken)
+    public async Task<Result<AccountDto>> Handle(
+        CreateAccountCommand request,
+        CancellationToken cancellationToken)
     {
         var rawEmail = await _registrationService.ExtractEmailAsync(
             request.registrationToken,
@@ -47,22 +46,13 @@ internal sealed class CreateAccountHandler
 
         string hashPassword = _bcryptService.HashPassword(request.password);
 
-        string url = await _r2Service.UploadAsync(
-            request.image,
-            request.imageFileName,
-            cancellationToken);
-
         var accountResult = Account.Create(
             email,
             request.name,
             hashPassword,
-            request.bio,
-            url);
+            request.bio);
         if(!accountResult.IsSuccess)
-        {
-            await _r2Service.DeleteAsync(url, cancellationToken);
             return Result.Fail(accountResult.Error);
-        }
 
         Account account = accountResult.Value;
 
@@ -73,14 +63,19 @@ internal sealed class CreateAccountHandler
             cancellationToken : cancellationToken
         );
 
+        await _registrationService.InvalidateTokenAsync(
+            request.registrationToken,
+            cancellationToken);
+
         var dto = _mapper.Map<AccountDto>(account);
+        var summaryDto = _mapper.Map<AccountSummaryDto>(account);
 
         string cacheKey = CacheKey.Account(account.Id);
 
         await _redisService.SetAsync(
-            cacheKey, 
-            dto, 
-            CacheKey.DefaultAccountTTL, 
+            cacheKey,
+            summaryDto,
+            CacheKey.DefaultAccountTTL,
             cancellationToken);
 
         await _dbContext.DispatchEventAsync(

@@ -13,6 +13,7 @@ public static class CursorPaginator
     public static async Task<CursorPageResult<T>> PaginateAsync<T>(
         IMongoCollection<T> collection,
         FilterDefinition<T> filter,
+        ProjectionDefinition<T>? projection,
         CursorPageRequest request,
         CancellationToken cancellationToken)
         where T : BaseEntity
@@ -30,12 +31,19 @@ public static class CursorPaginator
                         Builders<T>.Filter.Eq(x => x.CreatedAt, cursor.Value.CreatedAt),
                         Builders<T>.Filter.Lt(x => x.Id, cursor.Value.Id))));
 
-        var items = await collection
+        var find = collection
             .Find(pageFilter)
             .SortByDescending(x => x.CreatedAt)
             .ThenByDescending(x => x.Id)
-            .Limit(pageSize + 1)
-            .ToListAsync(cancellationToken);
+            .Limit(pageSize + 1);
+
+        // CreatedAt is always merged into the projection: the cursor needs it to encode the
+        // next page's starting point, even when a caller's projection doesn't ask for it.
+        var items = projection is null
+            ? await find.ToListAsync(cancellationToken)
+            : await find
+                .Project<T>(Builders<T>.Projection.Combine(projection, Builders<T>.Projection.Include(x => x.CreatedAt)))
+                .ToListAsync(cancellationToken);
 
         var hasMore = items.Count > pageSize;
         var page = hasMore ? items.GetRange(0, pageSize) : items;

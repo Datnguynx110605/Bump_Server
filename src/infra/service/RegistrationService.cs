@@ -5,7 +5,7 @@ using Microsoft.AspNetCore.WebUtilities;
 
 namespace infra;
 
-public class RegistrationService : IRegistrationService
+internal sealed class RegistrationService : IRegistrationService
 {
     private const string Purpose = "RegistrationToken";
     private static readonly TimeSpan Ttl = TimeSpan.FromMinutes(10);
@@ -47,9 +47,12 @@ public class RegistrationService : IRegistrationService
             return null;
         }
 
-        await _redisService.RemoveAsync(key, cancellationToken);
-
         return email;
+    }
+
+    public async Task InvalidateTokenAsync(string registrationToken, CancellationToken cancellationToken)
+    {
+        await _redisService.RemoveAsync(BuildKey(registrationToken), cancellationToken);
     }
 
     private static string BuildKey(string token) => $"registration:{token}";

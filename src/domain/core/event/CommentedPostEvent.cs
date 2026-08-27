@@ -1,6 +1,6 @@
 ﻿namespace domain;
 
-public sealed record class CommentedPostEvent : Event
+public sealed record CommentedPostEvent : Event
 {
     public Guid AccountId { get; }
     public Guid CommentId { get; }

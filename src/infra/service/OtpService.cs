@@ -3,7 +3,7 @@ using app;
 
 namespace infra;
 
-public class OtpService : IOtpService
+internal sealed class OtpService : IOtpService
 {
     private const int MaxAttempts = 3;
     private static readonly TimeSpan Ttl = TimeSpan.FromMinutes(10);
