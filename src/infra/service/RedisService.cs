@@ -18,7 +18,7 @@ internal sealed class RedisService : IRedisService
         var db = _connectionMultiplexer.GetDatabase();
         var expiration = ttl.HasValue ? (Expiration)ttl.Value : Expiration.Default;
 
-        await db.StringSetAsync(key, JsonSerializer.Serialize(value), expiration);
+        await db.StringSetAsync(key, JsonSerializer.Serialize(value, DomainJsonOptions.Options), expiration);
     }
 
     public async Task<T?> GetAsync<T>(string key, CancellationToken cancellationToken)
@@ -26,7 +26,7 @@ internal sealed class RedisService : IRedisService
         var db = _connectionMultiplexer.GetDatabase();
         var value = await db.StringGetAsync(key);
 
-        return value.HasValue ? JsonSerializer.Deserialize<T>(value!) : default;
+        return value.HasValue ? JsonSerializer.Deserialize<T>(value!, DomainJsonOptions.Options) : default;
     }
 
     public async Task RemoveAsync(string key, CancellationToken cancellationToken)

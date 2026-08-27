@@ -35,11 +35,10 @@ public sealed class Account : BaseEntity
     }
 
     public static DomainResult<Account> Create(
-        Email email, 
+        Email email,
         Name name,
-        string password, 
-        string? bio,
-        string? url = null)
+        string password,
+        string? bio)
     {
         if(password.Length != PasswordHashLength)
             return DomainResult<Account>.Failure("Hashing incorrect");
@@ -52,9 +51,6 @@ public sealed class Account : BaseEntity
             name,
             password,
             bio);
-
-        if(!string.IsNullOrWhiteSpace(url))
-            account._avatars.Add(new Avatar(url));
 
         account.RaiseEvent(new AccountCreatedEvent(
             account.Id,

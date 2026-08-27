@@ -47,9 +47,12 @@ internal sealed class RegistrationService : IRegistrationService
             return null;
         }
 
-        await _redisService.RemoveAsync(key, cancellationToken);
-
         return email;
+    }
+
+    public async Task InvalidateTokenAsync(string registrationToken, CancellationToken cancellationToken)
+    {
+        await _redisService.RemoveAsync(BuildKey(registrationToken), cancellationToken);
     }
 
     private static string BuildKey(string token) => $"registration:{token}";

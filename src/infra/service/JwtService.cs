@@ -11,6 +11,7 @@ namespace infra;
 internal sealed class JwtService : IJwtService
 {
     public const string AccountIdClaimType = "accountId";
+    public const string RoleClaimType = "role";
 
     private readonly IConfiguration _configuration;
 
@@ -24,6 +25,7 @@ internal sealed class JwtService : IJwtService
         var claims = new[]
         {
             new Claim(AccountIdClaimType, accountId.ToString()),
+            new Claim(RoleClaimType, role.ToString()),
         };
 
         var key = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(_configuration["Jwt:SecretKey"]!));
