@@ -8,7 +8,7 @@ using MimeKit;
 
 namespace infra;
 
-public class EmailService : IEmailService
+internal sealed class EmailService : IEmailService
 {
     private const string Host = "smtp.gmail.com";
     private const int Port = 587;

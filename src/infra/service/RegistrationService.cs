@@ -5,7 +5,7 @@ using Microsoft.AspNetCore.WebUtilities;
 
 namespace infra;
 
-public class RegistrationService : IRegistrationService
+internal sealed class RegistrationService : IRegistrationService
 {
     private const string Purpose = "RegistrationToken";
     private static readonly TimeSpan Ttl = TimeSpan.FromMinutes(10);

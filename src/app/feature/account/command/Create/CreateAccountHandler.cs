@@ -30,7 +30,9 @@ internal sealed class CreateAccountHandler
         _r2Service = r2Service;
     }
 
-    public async Task<Result<AccountDto>> Handle(CreateAccountCommand request, CancellationToken cancellationToken)
+    public async Task<Result<AccountDto>> Handle(
+        CreateAccountCommand request, 
+        CancellationToken cancellationToken)
     {
         var rawEmail = await _registrationService.ExtractEmailAsync(
             request.registrationToken,
