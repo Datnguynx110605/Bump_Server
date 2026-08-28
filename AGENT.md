@@ -2,12 +2,13 @@
 
 ## Session Initialization
 
-- ALWAYS read `CLAUDE.md` and `AGENT.md` before performing any work in every session.
+- ALWAYS read `CLAUDE.md` first then read `AGENT.md` before performing any work in every session.
 - ALWAYS begin every session in this order:
-  1. Read `CLAUDE.md` and `AGENT.md`
-  2. Inspect the codebase and repository state.
-  3. Read project documentation.
-  4. Understand the project before proposing or implementing changes.
+  1. Read `CLAUDE.md`
+  2. Read `AGENT.md`
+  3. Inspect the codebase and repository state.
+  4. Read project documentation.
+  5. Understand the project before proposing or implementing changes.
 - NEVER commit or push without explicit user approval.
 
 ## Repository Understanding and Documentation
