@@ -2,10 +2,10 @@
 
 ## Session Initialization
 
-- ALWAYS read `CLAUDE.md` first then read `AGENT.md` before performing any work in every session.
+- ALWAYS read `CLAUDE.md` first then read `AGENTS.md` before performing any work in every session.
 - ALWAYS begin every session in this order:
-  1. Read `CLAUDE.md` in ~/.claude
-  2. Read `AGENT.md`
+  1. Read `CLAUDE.md` in /Users/datnguynx/.claude/
+  2. Read `AGENTS.md`
   3. Inspect the codebase and repository state.
   4. Read project documentation.
   5. Understand the project before proposing or implementing changes.
