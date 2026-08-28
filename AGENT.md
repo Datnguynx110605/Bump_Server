@@ -4,7 +4,7 @@
 
 - ALWAYS read `CLAUDE.md` first then read `AGENT.md` before performing any work in every session.
 - ALWAYS begin every session in this order:
-  1. Read `CLAUDE.md`
+  1. Read `CLAUDE.md` in ~/.claude
   2. Read `AGENT.md`
   3. Inspect the codebase and repository state.
   4. Read project documentation.
