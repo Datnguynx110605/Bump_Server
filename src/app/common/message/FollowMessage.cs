@@ -1,3 +1,6 @@
 namespace app;
 
-public sealed record FollowMessage(Guid MessageId, Guid FollowerId, Guid FollowingId);
+public sealed record FollowMessage(
+    Guid MessageId, 
+    Guid FollowerId, 
+    Guid FollowingId);

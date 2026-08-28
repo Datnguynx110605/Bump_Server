@@ -28,9 +28,15 @@ internal sealed class FollowHandler
         if(identity.Value == request.followingId)
             return Result.Fail("Cannot follow yourself");
 
-        var message = new FollowMessage(Guid.NewGuid(), identity.Value, request.followingId);
+        var message = new FollowMessage(
+            Guid.NewGuid(), 
+            identity.Value, 
+            request.followingId);
 
-        await _rabbitMQService.PublishAsync(QueueName.Follow, message, cancellationToken);
+        await _rabbitMQService.PublishAsync(
+            QueueName.Follow, 
+            message, 
+            cancellationToken);
 
         return Result.Ok();
     }

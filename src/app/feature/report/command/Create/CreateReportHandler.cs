@@ -47,8 +47,7 @@ internal sealed class CreateReportHandler
 
         await reportCollection.InsertOneAsync(
             report,
-            cancellationToken : cancellationToken
-        );
+            cancellationToken : cancellationToken);
 
         var dto = _mapper.Map<ReportDto>(report);
 

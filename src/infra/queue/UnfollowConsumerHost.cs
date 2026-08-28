@@ -10,7 +10,9 @@ internal sealed class UnfollowConsumerHost : BackgroundService
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly ILogger<UnfollowConsumerHost> _logger;
 
-    public UnfollowConsumerHost(IServiceScopeFactory scopeFactory, ILogger<UnfollowConsumerHost> logger)
+    public UnfollowConsumerHost(
+        IServiceScopeFactory scopeFactory, 
+        ILogger<UnfollowConsumerHost> logger)
     {
         _scopeFactory = scopeFactory;
         _logger = logger;
@@ -28,7 +30,10 @@ internal sealed class UnfollowConsumerHost : BackgroundService
             {
                 using var messageScope = _scopeFactory.CreateScope();
                 var followService = messageScope.ServiceProvider.GetRequiredService<IFollowService>();
-                var result = await followService.ProcessUnfollowAsync(message.FollowerId, message.FollowingId, cancellationToken);
+                var result = await followService.ProcessUnfollowAsync(
+                    message.FollowerId, 
+                    message.FollowingId, 
+                    cancellationToken);
 
                 if(result.IsFailed)
                     _logger.LogWarning(

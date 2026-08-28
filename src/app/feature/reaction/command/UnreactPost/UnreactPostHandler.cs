@@ -25,9 +25,15 @@ internal sealed class UnreactPostHandler
         if(identity is null)
             return Result.Fail("Unauthorized");
 
-        var message = new ReactionMessage(Guid.NewGuid(), identity.Value, request.postId);
+        var message = new ReactionMessage(
+            Guid.NewGuid(), 
+            identity.Value, 
+            request.postId);
 
-        await _rabbitMQService.PublishAsync(QueueName.UnreactPost, message, cancellationToken);
+        await _rabbitMQService.PublishAsync(
+            QueueName.UnreactPost, 
+            message, 
+            cancellationToken);
 
         return Result.Ok();
     }

@@ -30,8 +30,7 @@ internal sealed class GetSpecificReportHandler
 
         var cacheReport = await _redisService.GetAsync<ReportDto>(
             cacheKey,
-            cancellationToken
-        );
+            cancellationToken);
 
         if(cacheReport is not null)
             return Result.Ok(cacheReport);

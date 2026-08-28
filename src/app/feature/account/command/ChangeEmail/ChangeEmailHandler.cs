@@ -34,8 +34,7 @@ internal sealed class ChangeEmailHandler
 
         var rawEmail = await _registrationService.ExtractEmailAsync(
             request.registrationToken,
-            cancellationToken
-        );
+            cancellationToken);
         if(rawEmail is null)
             return Result.Fail("Unauthenticated");
 

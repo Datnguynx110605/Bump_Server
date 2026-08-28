@@ -6,10 +6,8 @@ builder.Services.AddApi(builder.Configuration);
 
 var app = builder.Build();
 
-if (app.Environment.IsDevelopment())
-{
+if(app.Environment.IsDevelopment())
     app.MapOpenApi();
-}
 
 app.UseHttpsRedirection();
 

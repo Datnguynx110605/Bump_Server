@@ -77,8 +77,7 @@ internal sealed class CreatePostHandler
 
             await shopCollection.InsertOneAsync(
                 shop,
-                cancellationToken : cancellationToken
-            );
+                cancellationToken : cancellationToken);
 
             var shopSummaryDto = _mapper.Map<ShopSummaryDto>(shop);
 
@@ -106,8 +105,7 @@ internal sealed class CreatePostHandler
 
         await postCollection.InsertOneAsync(
             post,
-            cancellationToken : cancellationToken
-        );
+            cancellationToken : cancellationToken);
 
         var dto = _mapper.Map<PostDto>(post);
         var summaryDto = _mapper.Map<PostSummaryDto>(post);

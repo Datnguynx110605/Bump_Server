@@ -10,7 +10,9 @@ internal sealed class ReactCommentConsumerHost : BackgroundService
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly ILogger<ReactCommentConsumerHost> _logger;
 
-    public ReactCommentConsumerHost(IServiceScopeFactory scopeFactory, ILogger<ReactCommentConsumerHost> logger)
+    public ReactCommentConsumerHost(
+        IServiceScopeFactory scopeFactory, 
+        ILogger<ReactCommentConsumerHost> logger)
     {
         _scopeFactory = scopeFactory;
         _logger = logger;
@@ -28,7 +30,10 @@ internal sealed class ReactCommentConsumerHost : BackgroundService
             {
                 using var messageScope = _scopeFactory.CreateScope();
                 var reactionService = messageScope.ServiceProvider.GetRequiredService<IReactionService>();
-                var result = await reactionService.ProcessReactCommentAsync(message.AccountId, message.TargetId, cancellationToken);
+                var result = await reactionService.ProcessReactCommentAsync(
+                    message.AccountId, 
+                    message.TargetId, 
+                    cancellationToken);
 
                 if(result.IsFailed)
                     _logger.LogWarning(

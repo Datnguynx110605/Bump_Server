@@ -75,8 +75,7 @@ internal sealed class RequestNewAccessTokenHandler
 
         await refreshTokenCollection.InsertOneAsync(
             newRefreshToken,
-            cancellationToken : cancellationToken
-        );
+            cancellationToken : cancellationToken);
 
         return Result.Ok(new AuthResult(accessToken, newRefreshToken.Token));
     }

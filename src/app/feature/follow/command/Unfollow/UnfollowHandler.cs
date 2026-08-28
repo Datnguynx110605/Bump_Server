@@ -28,9 +28,15 @@ internal sealed class UnfollowHandler
         if(identity.Value == request.followingId)
             return Result.Fail("Cannot unfollow yourself");
 
-        var message = new FollowMessage(Guid.NewGuid(), identity.Value, request.followingId);
+        var message = new FollowMessage(
+            Guid.NewGuid(), 
+            identity.Value, 
+            request.followingId);
 
-        await _rabbitMQService.PublishAsync(QueueName.Unfollow, message, cancellationToken);
+        await _rabbitMQService.PublishAsync(
+            QueueName.Unfollow, 
+            message, 
+            cancellationToken);
 
         return Result.Ok();
     }

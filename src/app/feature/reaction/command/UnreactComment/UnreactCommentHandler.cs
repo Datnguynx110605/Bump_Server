@@ -25,9 +25,15 @@ internal sealed class UnreactCommentHandler
         if(identity is null)
             return Result.Fail("Unauthorized");
 
-        var message = new ReactionMessage(Guid.NewGuid(), identity.Value, request.commentId);
+        var message = new ReactionMessage(
+            Guid.NewGuid(), 
+            identity.Value, 
+            request.commentId);
 
-        await _rabbitMQService.PublishAsync(QueueName.UnreactComment, message, cancellationToken);
+        await _rabbitMQService.PublishAsync(
+            QueueName.UnreactComment, 
+            message, 
+            cancellationToken);
 
         return Result.Ok();
     }

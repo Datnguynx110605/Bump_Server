@@ -10,7 +10,9 @@ internal sealed class UnreactCommentConsumerHost : BackgroundService
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly ILogger<UnreactCommentConsumerHost> _logger;
 
-    public UnreactCommentConsumerHost(IServiceScopeFactory scopeFactory, ILogger<UnreactCommentConsumerHost> logger)
+    public UnreactCommentConsumerHost(
+        IServiceScopeFactory scopeFactory, 
+        ILogger<UnreactCommentConsumerHost> logger)
     {
         _scopeFactory = scopeFactory;
         _logger = logger;
@@ -28,7 +30,10 @@ internal sealed class UnreactCommentConsumerHost : BackgroundService
             {
                 using var messageScope = _scopeFactory.CreateScope();
                 var reactionService = messageScope.ServiceProvider.GetRequiredService<IReactionService>();
-                var result = await reactionService.ProcessUnreactCommentAsync(message.AccountId, message.TargetId, cancellationToken);
+                var result = await reactionService.ProcessUnreactCommentAsync(
+                    message.AccountId, 
+                    message.TargetId, 
+                    cancellationToken);
 
                 if(result.IsFailed)
                     _logger.LogWarning(

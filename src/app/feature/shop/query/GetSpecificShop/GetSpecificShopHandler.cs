@@ -30,8 +30,7 @@ internal sealed class GetSpecificShopHandler
 
         var cacheShop = await _redisService.GetAsync<ShopDto>(
             cacheKey,
-            cancellationToken
-        );
+            cancellationToken);
 
         if(cacheShop is not null)
             return Result.Ok(cacheShop);

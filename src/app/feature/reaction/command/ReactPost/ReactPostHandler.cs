@@ -25,9 +25,15 @@ internal sealed class ReactPostHandler
         if(identity is null)
             return Result.Fail("Unauthorized");
 
-        var message = new ReactionMessage(Guid.NewGuid(), identity.Value, request.postId);
+        var message = new ReactionMessage(
+            Guid.NewGuid(), 
+            identity.Value, 
+            request.postId);
 
-        await _rabbitMQService.PublishAsync(QueueName.ReactPost, message, cancellationToken);
+        await _rabbitMQService.PublishAsync(
+            QueueName.ReactPost, 
+            message, 
+            cancellationToken);
 
         return Result.Ok();
     }

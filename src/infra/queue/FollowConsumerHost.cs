@@ -10,7 +10,9 @@ internal sealed class FollowConsumerHost : BackgroundService
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly ILogger<FollowConsumerHost> _logger;
 
-    public FollowConsumerHost(IServiceScopeFactory scopeFactory, ILogger<FollowConsumerHost> logger)
+    public FollowConsumerHost(
+        IServiceScopeFactory scopeFactory, 
+        ILogger<FollowConsumerHost> logger)
     {
         _scopeFactory = scopeFactory;
         _logger = logger;
@@ -28,7 +30,10 @@ internal sealed class FollowConsumerHost : BackgroundService
             {
                 using var messageScope = _scopeFactory.CreateScope();
                 var followService = messageScope.ServiceProvider.GetRequiredService<IFollowService>();
-                var result = await followService.ProcessFollowAsync(message.FollowerId, message.FollowingId, cancellationToken);
+                var result = await followService.ProcessFollowAsync(
+                    message.FollowerId, 
+                    message.FollowingId, 
+                    cancellationToken);
 
                 if(result.IsFailed)
                     _logger.LogWarning(

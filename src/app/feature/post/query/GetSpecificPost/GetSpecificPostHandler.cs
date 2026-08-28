@@ -30,8 +30,7 @@ internal sealed class GetSpecificPostHandler
 
         var cachePost = await _redisService.GetAsync<PostSummaryDto>(
             cacheKey,
-            cancellationToken
-        );
+            cancellationToken);
 
         if(cachePost is not null)
             return Result.Ok(cachePost);

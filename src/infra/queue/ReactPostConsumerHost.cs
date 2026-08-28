@@ -10,7 +10,9 @@ internal sealed class ReactPostConsumerHost : BackgroundService
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly ILogger<ReactPostConsumerHost> _logger;
 
-    public ReactPostConsumerHost(IServiceScopeFactory scopeFactory, ILogger<ReactPostConsumerHost> logger)
+    public ReactPostConsumerHost(
+        IServiceScopeFactory scopeFactory, 
+        ILogger<ReactPostConsumerHost> logger)
     {
         _scopeFactory = scopeFactory;
         _logger = logger;
@@ -28,7 +30,10 @@ internal sealed class ReactPostConsumerHost : BackgroundService
             {
                 using var messageScope = _scopeFactory.CreateScope();
                 var reactionService = messageScope.ServiceProvider.GetRequiredService<IReactionService>();
-                var result = await reactionService.ProcessReactPostAsync(message.AccountId, message.TargetId, cancellationToken);
+                var result = await reactionService.ProcessReactPostAsync(
+                    message.AccountId, 
+                    message.TargetId, 
+                    cancellationToken);
 
                 if(result.IsFailed)
                     _logger.LogWarning(
