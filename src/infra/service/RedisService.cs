@@ -4,7 +4,7 @@ using StackExchange.Redis;
 
 namespace infra;
 
-internal sealed class RedisService : IRedisService
+public sealed class RedisService : IRedisService
 {
     private readonly IConnectionMultiplexer _connectionMultiplexer;
 

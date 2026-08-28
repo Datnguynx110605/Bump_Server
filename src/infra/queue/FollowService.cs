@@ -5,7 +5,7 @@ using MongoDB.Driver;
 
 namespace infra;
 
-internal sealed class FollowService : IFollowService
+public sealed class FollowService : IFollowService
 {
     private readonly IMongoDbContext _dbContext;
     private readonly IRedisService _redisService;

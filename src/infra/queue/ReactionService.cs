@@ -5,7 +5,7 @@ using MongoDB.Driver;
 
 namespace infra;
 
-internal sealed class ReactionService : IReactionService
+public sealed class ReactionService : IReactionService
 {
     private readonly IMongoDbContext _dbContext;
     private readonly IRedisService _redisService;

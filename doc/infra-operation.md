@@ -1,6 +1,6 @@
 # Infra Operation
 
-This document explains how the `infra` layer actually operates end to end: how each `app`-defined port gets a concrete implementation, how each implementation talks to its external system, and what its real runtime behavior and failure modes are. It does not re-explain the dependency rule or the composition root (`Program.cs` wiring) — see `doc/architecture.md` for that. For naming/DI-registration conventions, see `doc/project-rules.md`.
+This document explains how the `infra` layer actually operates end to end: how each `app`-defined port gets a concrete implementation, how each implementation talks to its external system, and what its real runtime behavior and failure modes are. It does not re-explain the dependency rule or the composition root — see `doc/architecture.md` for that. For naming/DI-registration conventions, see `doc/project-rules.md`.
 
 `infra` implements every port `domain`-independent `app` declares, using MongoDB, Redis, Cloudflare R2, MailKit/SMTP, BCrypt, JWT, ASP.NET Core Data Protection, and RabbitMQ.
 
@@ -8,7 +8,7 @@ This document explains how the `infra` layer actually operates end to end: how e
 
 ### 1. Adapter Pattern (Ports & Adapters)
 
-Every file in `infra/service` is a thin adapter: `<Capability>Service : I<Capability>Service`, translating the technology-agnostic contract `app` declares into calls against one specific external client library. None of them contain business logic — validation and business rules stay in `domain`; `infra` only ever transforms data and calls out. All nine are `internal sealed class`, consistent with `project-rules.md`'s encapsulation rule (an implementation detail invoked only through the interface, never referenced by type from outside `infra`).
+Every file in `infra/service` is a thin adapter: `<Capability>Service : I<Capability>Service`, translating the technology-agnostic contract `app` declares into calls against one specific external client library. None of them contain business logic — validation and business rules stay in `domain`; `infra` only ever transforms data and calls out. All nine are `public sealed class`: `api` names `JwtService` directly to read its claim-type constants, and the nine share one visibility rather than singling that class out. Callers still only ever hold the interface — the visibility exists for composition, not for use by type.
 
 ### 2. Configuration via raw `IConfiguration` indexing
 
@@ -20,7 +20,7 @@ Every service that needs configuration takes `IConfiguration` in its constructor
 
 ### 4. Singleton external clients, scoped adapters
 
-Long-lived client objects — `IMongoClient`, `IConnectionMultiplexer`, `IAmazonS3`, `IConnection` (RabbitMQ) — are registered once as singletons in `Program.cs` and injected into `Scoped` `<Capability>Service` adapters that use them per-call. This matches each client library's own thread-safety contract: all four are documented by their respective libraries as safe to share across the app's lifetime, so only the lightweight adapter (and, for RabbitMQ, the per-call channel — see the `RabbitMQService` profile) is re-created per request.
+Long-lived client objects — `IMongoClient`, `IConnectionMultiplexer`, `IAmazonS3`, `IConnection` (RabbitMQ) — are registered once as singletons in `AddInfra` and injected into `Scoped` `<Capability>Service` adapters that use them per-call. This matches each client library's own thread-safety contract: all four are documented by their respective libraries as safe to share across the app's lifetime, so only the lightweight adapter (and, for RabbitMQ, the per-call channel — see the `RabbitMQService` profile) is re-created per request.
 
 ## Service Profiles
 
@@ -35,7 +35,7 @@ The simplest adapter in `infra`: two one-line methods wrapping the `BCrypt.Net-N
 ### `CurrentIdentityService` (`ICurrentIdentityService`)
 
 - Depends on `IHttpContextAccessor`.
-- `GetAccountId()` reads the claim named by `JwtService.AccountIdClaimType` (`"accountId"`) off `HttpContext.User`, parses it as a `Guid`, and returns `null` if the claim is missing or unparsable. This directly references `JwtService`'s public constant rather than a shared constant defined independently of either service — a small `infra`-internal coupling between two adapters.
+- `GetAccountId()` reads the claim named by `JwtService.AccountIdClaimType` (`"accountId"`) off `HttpContext.User`, parses it as a `Guid`, and returns `null` if the claim is missing or unparsable. This directly references `JwtService`'s public constant rather than a shared constant defined independently of either service.
 
 ### `DbContext` (`IMongoDbContext`) — persistence
 
@@ -55,8 +55,8 @@ The simplest adapter in `infra`: two one-line methods wrapping the `BCrypt.Net-N
 
 - Wraps `System.IdentityModel.Tokens.Jwt` to issue HMAC-SHA256-signed access tokens.
 - Reads `Jwt:SecretKey` / `Jwt:Issuer` / `Jwt:Audience` / `Jwt:ExpiryMinutes` from configuration.
-- `GenerateAccessToken(accountId, role)` embeds two claims: `AccountIdClaimType` (`"accountId"`) and `RoleClaimType` (`"role"`). Both claim-type constants are `public` so `CurrentIdentityService` (see above) can reference `AccountIdClaimType` directly.
-- This service only *issues* tokens — there is no method anywhere on `IJwtService` to validate a token back into a `ClaimsPrincipal`. That is ASP.NET Core's JWT bearer authentication middleware's job.
+- `GenerateAccessToken(accountId, role)` embeds two claims: `AccountIdClaimType` (`"accountId"`) and `RoleClaimType` (`"role"`). Both claim-type constants are `public` so `CurrentIdentityService` (see above) can reference `AccountIdClaimType`, and so `api` can bind `RoleClaimType` to the JWT bearer middleware's `TokenValidationParameters`.
+- This service only *issues* tokens — there is no method anywhere on `IJwtService` to validate a token back into a `ClaimsPrincipal`. That is ASP.NET Core's JWT bearer authentication middleware's job, configured in `api` against the same four `Jwt:*` keys this service signs with.
 
 ### `OtpService` (`IOtpService`)
 
@@ -67,7 +67,7 @@ The simplest adapter in `infra`: two one-line methods wrapping the `BCrypt.Net-N
 
 ### `R2Service` (`IR2Service`)
 
-- Wraps `AWSSDK.S3` against Cloudflare R2 (S3-API-compatible), registered in `Program.cs` with a custom `ServiceURL` pointing at R2's endpoint and `ForcePathStyle = true` (R2 requires path-style addressing, not the AWS-default virtual-hosted-style).
+- Wraps `AWSSDK.S3` against Cloudflare R2 (S3-API-compatible), registered in `AddInfra` with a custom `ServiceURL` pointing at R2's endpoint and `ForcePathStyle = true` (R2 requires path-style addressing, not the AWS-default virtual-hosted-style).
 - Reads `R2:BucketName` / `R2:FolderName` / `R2:PublicUrl` from configuration.
 - `UploadAsync(content, fileName, ct)`: generates a brand-new key per upload — `{folder}/{Guid.NewGuid()}{extension}` — discarding the caller-supplied `fileName` except for its extension, so no user-controlled path or filename ever reaches storage and no collision is possible. Returns the public URL as `{PublicUrl}/{key}`.
 - `DeleteAsync(url, ct)`: takes the full URL back (the same shape `UploadAsync` returned), recovers the object key via `new Uri(url).AbsolutePath.TrimStart('/')`, and deletes by key. This round-trips the URL back into a storage key rather than requiring the caller to track the key separately — a deliberate simplification, since callers (e.g. `Account.Avatars`) only ever hold the URL string, never a separate key.
@@ -76,7 +76,7 @@ The simplest adapter in `infra`: two one-line methods wrapping the `BCrypt.Net-N
 
 A general-purpose message broker adapter.
 
-- **Connection lifecycle**: `IConnection` is the `Program.cs` singleton (RabbitMQ.Client guarantees it's safe to share). `IChannel` is *not* thread-safe, so every `PublishAsync`/`ConsumeAsync` call opens its own channel: `PublishAsync` disposes its channel immediately after use (`using`); `ConsumeAsync`'s channel stays open for the lifetime of its long-running consume loop and is closed on cancellation.
+- **Connection lifecycle**: `IConnection` is the `AddInfra` singleton (RabbitMQ.Client guarantees it's safe to share). `IChannel` is *not* thread-safe, so every `PublishAsync`/`ConsumeAsync` call opens its own channel: `PublishAsync` disposes its channel immediately after use (`using`); `ConsumeAsync`'s channel stays open for the lifetime of its long-running consume loop and is closed on cancellation.
 - **`PublishAsync<T>(queueName, message, ct)`**: declares `queueName` as a durable queue (idempotent — safe to call repeatedly), serializes `message` to JSON, and publishes with `Persistent = true` so the message survives a broker restart while it sits in the queue.
 - **`ConsumeAsync<T>(queueName, getIdempotencyKey, onMessage, ct)`**: declares both `queueName` and its dead-letter queue `{queueName}.dlq` (also durable), sets QoS to `prefetchCount: 1` (one unacknowledged message per consumer at a time), and registers an `AsyncEventingBasicConsumer`. For every delivered message:
   1. Deserialize to `T`. If deserialization fails (`null`), the raw body is republished to `{queueName}.dlq` unchanged and the original is acked — a malformed message is never retried, since retrying can't fix a shape it will never parse.
@@ -104,7 +104,7 @@ Combines two `infra` mechanisms: ASP.NET Core's `IDataProtectionProvider` (to en
 
 ## Persistence Configuration (`infra/persistence/configuration`)
 
-`domain` takes no package references, so it carries no BSON attributes: nothing in `Account.cs` says that `Id` is `_id`, that `Email` is a subdocument, or that `Avatars` is backed by a private list. Every one of those decisions is declared here instead, in two static entry points that `Program.cs` calls once — `BsonConfiguration.Register()` before the host is built, and `IndexConfiguration.CreateAsync(...)` immediately after.
+`domain` takes no package references, so it carries no BSON attributes: nothing in `Account.cs` says that `Id` is `_id`, that `Email` is a subdocument, or that `Avatars` is backed by a private list. Every one of those decisions is declared here instead, in two static entry points called once at startup — `BsonConfiguration.Register()`, called directly by `AddInfra` while the container is still being built, and `IndexConfiguration.CreateAsync(...)`, called by the `IndexInitializer` hosted service the host awaits during start-up.
 
 ### `BsonConfiguration` — how a domain object becomes a document
 
@@ -169,6 +169,10 @@ Three query shapes are deliberately left unindexed:
 - **The embedded-array queries** (`follow` and `reaction` features, plus `FollowService`/`ReactionService`'s `AnyEq` guards) always match their parent by `_id` first, which the default index already covers; the `$unwind`/`$sort` happens on a single document's array.
 - **`Shop` name+address lookup has no dedicated non-unique index** — the unique partial index above already answers it.
 
+### `IndexInitializer` — when index creation runs
+
+`CreateAsync` is asynchronous, and DI registration cannot await it, so `AddInfra` registers `IndexInitializer` — an `IHostedService` holding the singleton `IMongoClient` and `IConfiguration` — instead of calling it inline. The host awaits `StartAsync` during start-up, before the server begins accepting requests, so every index is declared by the time the first handler runs. `StopAsync` does nothing. Because start-up awaits it, an unreachable MongoDB surfaces as a failure to start the host rather than as a failure on the first request.
+
 ## Queue Consumers (`infra/queue`)
 
 `FollowService` and `ReactionService` implement the ports in `app/common/interface/queue` and are written to be driven by `RabbitMQService.ConsumeAsync`, not called directly from a request. Three consequences follow from that, none of which are obvious from reading the classes on their own.
@@ -197,9 +201,9 @@ Three query shapes are deliberately left unindexed:
 | `EmailService` | `Email:Address`, `Email:AppPassword` (SMTP host/port are hard-coded, not configured) |
 | `JwtService` | `Jwt:SecretKey`, `Jwt:Issuer`, `Jwt:Audience`, `Jwt:ExpiryMinutes` |
 | `OtpService` | none directly (delegates to `IRedisService`) |
-| `R2Service` | `R2:BucketName`, `R2:FolderName`, `R2:PublicUrl` (plus `R2:AccountId`/`R2:AccessKeyId`/`R2:SecretAccessKey`, read in `Program.cs` when constructing the singleton `IAmazonS3`) |
-| `RabbitMQService` | none directly (`RabbitMQ:ConnectionString` is read in `Program.cs` when constructing the singleton `IConnection`) |
-| `RedisService` | none directly (`Redis:ConnectionString` is read in `Program.cs` when constructing the singleton `IConnectionMultiplexer`) |
-| `RegistrationService` | none directly (delegates to `IRedisService` and ASP.NET Core's Data Protection, configured via `AddDataProtection()` in `Program.cs`) |
+| `R2Service` | `R2:BucketName`, `R2:FolderName`, `R2:PublicUrl` (plus `R2:AccountId`/`R2:AccessKeyId`/`R2:SecretAccessKey`, read in `AddInfra` when constructing the singleton `IAmazonS3`) |
+| `RabbitMQService` | none directly (`RabbitMQ:ConnectionString` is read in `AddInfra` when constructing the singleton `IConnection`) |
+| `RedisService` | none directly (`Redis:ConnectionString` is read in `AddInfra` when constructing the singleton `IConnectionMultiplexer`) |
+| `RegistrationService` | none directly (delegates to `IRedisService` and ASP.NET Core's Data Protection, configured via `AddDataProtection()` in `AddInfra`) |
 
 None of these keys appear in `appsettings.json`/`appsettings.Development.json` — they're read from .NET User Secrets or host configuration per environment (see `doc/architecture.md`).

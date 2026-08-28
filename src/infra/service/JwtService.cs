@@ -8,7 +8,7 @@ using Microsoft.IdentityModel.Tokens;
 
 namespace infra;
 
-internal sealed class JwtService : IJwtService
+public sealed class JwtService : IJwtService
 {
     public const string AccountIdClaimType = "accountId";
     public const string RoleClaimType = "role";

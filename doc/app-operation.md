@@ -28,7 +28,7 @@ internal sealed class GetSpecificReportHandler
 
 ### 2. The behavior pipeline
 
-Three `IPipelineBehavior<TRequest, TResponse>` implementations in `app/common/behavior` wrap **every** request, in the order `Program.cs` registers them — MediatR executes behaviors in registration order, outermost first:
+Three `IPipelineBehavior<TRequest, TResponse>` implementations in `app/common/behavior` wrap **every** request, in the order `AddApp` registers them — MediatR executes behaviors in registration order, outermost first:
 
 | Order | Behavior | What it does |
 |---|---|---|
