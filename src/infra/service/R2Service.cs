@@ -5,7 +5,7 @@ using Microsoft.Extensions.Configuration;
 
 namespace infra;
 
-internal sealed class R2Service : IR2Service
+public sealed class R2Service : IR2Service
 {
     private readonly IAmazonS3 _s3Client;
     private readonly string _bucketName;

@@ -3,7 +3,7 @@ using Microsoft.AspNetCore.Http;
 
 namespace infra;
 
-internal sealed class CurrentIdentityService : ICurrentIdentityService
+public sealed class CurrentIdentityService : ICurrentIdentityService
 {
     private readonly IHttpContextAccessor _httpContextAccessor;
 

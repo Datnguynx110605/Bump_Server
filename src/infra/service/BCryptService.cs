@@ -2,7 +2,7 @@
 
 namespace infra;
 
-internal sealed class BCryptService : IBcryptService
+public sealed class BCryptService : IBcryptService
 {
     public string HashPassword(string password) => BCrypt.Net.BCrypt.HashPassword(password);
 

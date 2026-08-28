@@ -78,10 +78,6 @@ internal sealed class ChangeEmailHandler
             update,
             cancellationToken : cancellationToken);
 
-        await _registrationService.InvalidateTokenAsync(
-            request.registrationToken,
-            cancellationToken);
-
         await _redisService.RemoveAsync(
             CacheKey.Account(account.Id),
             cancellationToken);

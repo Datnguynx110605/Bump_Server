@@ -16,7 +16,7 @@ This document is the authoritative source for layer boundaries, the dependency r
 - **`domain`** — the innermost layer. Pure business/domain model: entities, value objects, domain events, the `DomainResult` result type. No project or package references at all, and **must stay that way**: `domain` may never reference `app`, `infra`, `api`, or any NuGet package — not MongoDB, not MediatR, not FluentResults, nothing. This is the one dependency the project treats as non-negotiable; the `MongoDB.Driver` exception below applies only to `app`, never to `domain`.
 - **`app`** — the use-case layer. Contains CQRS commands/queries/handlers/validators, DTOs, mapping profiles, and the port interfaces that `infra` must implement. Knows nothing about Redis, ASP.NET Core, or any other concrete technology — with one exception: it references the `MongoDB.Driver` package directly (see "Clean Architecture Compliance" below).
 - **`infra`** — the implementation layer. Implements every port declared in `app` using concrete technology: MongoDB, Redis, Cloudflare R2, MailKit/SMTP, BCrypt, JWT, ASP.NET Core Data Protection.
-- **`api`** — the entry-point layer and composition root. Hosts the ASP.NET Core process, wires every `infra` implementation to its `app`-defined interface via dependency injection, and exposes the application to clients as a RESTful API.
+- **`api`** — the entry-point layer and composition root. Hosts the ASP.NET Core process, composes the other layers' service registrations into one container, authenticates and authorizes incoming requests, and exposes the application to clients as a RESTful API.
 
 ## Dependency Rule
 
@@ -36,7 +36,7 @@ graph TD
 - `domain` is referenced by `app` and `infra`, but references nothing itself.
 - `app` references only `domain`.
 - `infra` references both `domain` and `app` — it sits between the use-case layer and the entry point precisely so it can implement `app`'s ports.
-- `api` references `infra` only (transitively pulling in `app` and `domain`); it never references `app` or `domain` directly.
+- `api` declares a `ProjectReference` to `infra` only, transitively pulling in `app` and `domain`. It does name `app` in one place — `AddApi` calls `AddApp()` — but never `domain`.
 
 A dependency can only point inward, toward `domain`. `domain` has zero package dependencies. `app` is free of ASP.NET Core and Redis, but does take a direct dependency on the `MongoDB.Driver` package (see "Clean Architecture Compliance" below).
 
@@ -52,7 +52,17 @@ Layers interact in two ways: through the **composition root** (wiring, at startu
 
 ### Composition Root
 
-`src/api/Program.cs` is the only place in the codebase that references both an `app` interface and its `infra` implementation together — e.g. `builder.Services.AddScoped<IJwtService, JwtService>()`. It also registers MediatR and AutoMapper via assembly scan of `app`, so every new handler/validator/mapping profile is picked up automatically. Everywhere else, `app` code depends on the interface only and never sees which `infra` type is behind it.
+Wiring is split across three `DependencyInjection` classes, one per outer layer, each registering only what its own project owns:
+
+- `app.DependencyInjection.AddApp()` registers MediatR, AutoMapper and FluentValidation via assembly scan of `app` itself, so every new handler/validator/mapping profile is picked up automatically, and names each pipeline behavior explicitly via `AddOpenBehavior` (an open generic cannot be found by a scan).
+- `infra.DependencyInjection.AddInfra(configuration)` is the only place in the codebase that references an `app` interface and its `infra` implementation together — e.g. `services.AddScoped<IJwtService, JwtService>()`. It also registers the long-lived external clients, the ASP.NET Core services those implementations depend on, and the startup work described below. Everywhere else, `app` code depends on the interface only and never sees which `infra` type is behind it.
+- `api.DependencyInjection.AddApi(configuration)` calls `AddApp()` and `AddInfra(configuration)`, then adds what only the host needs: OpenAPI, JWT bearer authentication, and authorization.
+
+`Program.cs` calls `AddApi(builder.Configuration)` and contains no registration of its own; after `builder.Build()` it holds only the middleware pipeline, in which `UseAuthentication()` precedes `UseAuthorization()`.
+
+Startup work that DI registration cannot express runs inside `AddInfra` instead: `BsonConfiguration.Register()` is called directly, because the MongoDB driver's class maps must exist before anything serializes a domain object, and `IndexConfiguration.CreateAsync(...)` is deferred to the `IndexInitializer` hosted service, which the host awaits once during start-up — before the first request is served — to declare indexes. Both are described in `doc/infra-operation.md`.
+
+Authentication is where the composition root names an `infra` type directly to read a constant off it: `JwtService` mints the `accountId` and `role` claims and exposes their names as constants, and `AddApi` feeds `JwtService.RoleClaimType` into `TokenValidationParameters` with `MapInboundClaims` disabled, so the token's own claim names survive validation unchanged and role-based authorization matches what `JwtService` wrote.
 
 ### Request Pipeline
 

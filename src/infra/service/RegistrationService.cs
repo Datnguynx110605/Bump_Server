@@ -5,7 +5,7 @@ using Microsoft.AspNetCore.WebUtilities;
 
 namespace infra;
 
-internal sealed class RegistrationService : IRegistrationService
+public sealed class RegistrationService : IRegistrationService
 {
     private const string Purpose = "RegistrationToken";
     private static readonly TimeSpan Ttl = TimeSpan.FromMinutes(10);
@@ -32,27 +32,19 @@ internal sealed class RegistrationService : IRegistrationService
     public async Task<string?> ExtractEmailAsync(string registrationToken, CancellationToken cancellationToken)
     {
         var key = BuildKey(registrationToken);
-        var protectedEmail = await _redisService.GetAsync<string>(key, cancellationToken);
+        var protectedEmail = await _redisService.GetAndRemoveAsync<string>(key, cancellationToken);
 
         if (protectedEmail is null)
             return null;
 
-        string email;
         try
         {
-            email = _dataProtector.Unprotect(protectedEmail);
+            return _dataProtector.Unprotect(protectedEmail);
         }
         catch (CryptographicException)
         {
             return null;
         }
-
-        return email;
-    }
-
-    public async Task InvalidateTokenAsync(string registrationToken, CancellationToken cancellationToken)
-    {
-        await _redisService.RemoveAsync(BuildKey(registrationToken), cancellationToken);
     }
 
     private static string BuildKey(string token) => $"registration:{token}";

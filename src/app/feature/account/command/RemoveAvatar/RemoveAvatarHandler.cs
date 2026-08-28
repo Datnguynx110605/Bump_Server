@@ -34,40 +34,35 @@ internal sealed class RemoveAvatarHandler
 
         var accountCollection = _dbContext.GetCollection<Account>(CollectionName.Account);
 
-        var projection = Builders<Account>.Projection
-            .Include(x => x.Avatars)
-            .Include(x => x.IsDeleted);
-
-        var account = await accountCollection
+        var exists = await accountCollection
             .Find(x => x.Id == identity.Value && !x.IsDeleted)
-            .Project<Account>(projection)
-            .FirstOrDefaultAsync(cancellationToken);
+            .AnyAsync(cancellationToken);
 
-        if(account is null)
+        if(!exists)
             return Result.Fail("Unauthenticated");
 
-        var result = account.RemoveAvatar(request.url);
-        if(!result.IsSuccess)
-            return Result.Fail(result.Error);
-
         var filter = Builders<Account>.Filter.And(
-            Builders<Account>.Filter.Eq(x => x.Id, account.Id),
-            Builders<Account>.Filter.Eq(x => x.IsDeleted, false));
+            Builders<Account>.Filter.Eq(x => x.Id, identity.Value),
+            Builders<Account>.Filter.Eq(x => x.IsDeleted, false),
+            Builders<Account>.Filter.AnyEq(x => x.Avatars.Select(a => a.Url), request.url));
 
         var update = Builders<Account>.Update
-            .Set(x => x.Avatars, account.Avatars)
-            .Set(x => x.UpdatedAt, account.UpdatedAt);
+            .PullFilter(x => x.Avatars, a => a.Url == request.url)
+            .Set(x => x.UpdatedAt, DateTime.UtcNow);
 
-        await accountCollection.UpdateOneAsync(
+        var updateResult = await accountCollection.UpdateOneAsync(
             filter,
             update,
             cancellationToken : cancellationToken);
+
+        if(updateResult.MatchedCount != 1)
+            return Result.Fail("Avatar not found");
 
         await _r2Service.DeleteAsync(
             request.url,
             cancellationToken);
 
-        string cacheKey = CacheKey.Account(account.Id);
+        string cacheKey = CacheKey.Account(identity.Value);
 
         await _redisService.RemoveAsync(
             cacheKey,

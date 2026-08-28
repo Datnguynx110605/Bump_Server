@@ -6,7 +6,7 @@ using RabbitMQ.Client.Events;
 
 namespace infra;
 
-internal sealed class RabbitMQService : IRabbitMQService
+public sealed class RabbitMQService : IRabbitMQService
 {
     private const int MaxAttempts = 3;
     private const string RetryCountHeader = "x-retry-count";

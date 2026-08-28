@@ -31,6 +31,9 @@ public sealed class Comment : BaseEntity
         if(accountId == Guid.Empty)
             return DomainResult<Comment>.Failure("AccountId is required");
 
+        if(postId == Guid.Empty)
+            return DomainResult<Comment>.Failure("PostId is required");
+
         if(content?.Length > ContentMaxLength)
             return DomainResult<Comment>.Failure("Content maximum length is 2000 characters");
 

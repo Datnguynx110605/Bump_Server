@@ -63,10 +63,6 @@ internal sealed class CreateAccountHandler
             cancellationToken : cancellationToken
         );
 
-        await _registrationService.InvalidateTokenAsync(
-            request.registrationToken,
-            cancellationToken);
-
         var dto = _mapper.Map<AccountDto>(account);
         var summaryDto = _mapper.Map<AccountSummaryDto>(account);
 

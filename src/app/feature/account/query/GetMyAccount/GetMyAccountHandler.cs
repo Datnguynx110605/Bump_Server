@@ -47,16 +47,9 @@ internal sealed class GetMyAccountHandler
 
         var accountCollection = _dbContext.GetCollection<Account>(CollectionName.Account);
 
-        var projection = Builders<Account>.Projection
-            .Include(x => x.Name)
-            .Include(x => x.Avatars.Last())
-            .Include(x => x.Bio)
-            .Include(x => x.FollowerAmount)
-            .Include(x => x.FollowingAmount);
-
         var dbAccount = await accountCollection
             .Find(x => x.Id == identity.Value && !x.IsDeleted)
-            .Project<Account>(projection)
+            .Project<Account>(AccountProjection.Summary)
             .FirstOrDefaultAsync(cancellationToken);
             
         if(dbAccount is null)

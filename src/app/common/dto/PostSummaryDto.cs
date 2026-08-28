@@ -5,7 +5,7 @@ namespace app;
 public sealed record PostSummaryDto(
     Guid Id,
     Guid AccountId,
-    ShopSummaryDto Shop,
+    Guid ShopId,
     List<ImageDto> Images,
     string? Caption,
     Amount Rate,

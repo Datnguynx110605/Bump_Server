@@ -4,7 +4,7 @@ using StackExchange.Redis;
 
 namespace infra;
 
-internal sealed class RedisService : IRedisService
+public sealed class RedisService : IRedisService
 {
     private readonly IConnectionMultiplexer _connectionMultiplexer;
 
@@ -25,6 +25,14 @@ internal sealed class RedisService : IRedisService
     {
         var db = _connectionMultiplexer.GetDatabase();
         var value = await db.StringGetAsync(key);
+
+        return value.HasValue ? JsonSerializer.Deserialize<T>(value!, DomainJsonOptions.Options) : default;
+    }
+
+    public async Task<T?> GetAndRemoveAsync<T>(string key, CancellationToken cancellationToken)
+    {
+        var db = _connectionMultiplexer.GetDatabase();
+        var value = await db.StringGetDeleteAsync(key);
 
         return value.HasValue ? JsonSerializer.Deserialize<T>(value!, DomainJsonOptions.Options) : default;
     }
