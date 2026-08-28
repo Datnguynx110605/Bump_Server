@@ -3,6 +3,7 @@ using domain;
 using MediatR;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.RateLimiting;
 
 namespace api;
 
@@ -47,6 +48,7 @@ public sealed class ShopController : ControllerBase
         return result.ToActionResult();
     }
 
+    [EnableRateLimiting(RateLimiterPolicy.Search)]
     [HttpGet("search")]
     public async Task<ActionResult<CursorPageResult<ShopSummaryDto>>> GetShopByKeyword(
         [FromQuery] string keyword,

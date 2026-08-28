@@ -4,6 +4,7 @@ using FluentResults;
 using MediatR;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.RateLimiting;
 
 namespace api;
 
@@ -20,6 +21,7 @@ public sealed class AccountController : ControllerBase
     }
 
     [AllowAnonymous]
+    [EnableRateLimiting(RateLimiterPolicy.Auth)]
     [HttpPost]
     public async Task<ActionResult<AccountDto>> CreateAccount(
         CreateAccountRequest request,
@@ -80,6 +82,7 @@ public sealed class AccountController : ControllerBase
         return result.ToActionResult();
     }
 
+    [EnableRateLimiting(RateLimiterPolicy.Upload)]
     [HttpPost("me/avatar")]
     public async Task<ActionResult> ChangeAvatar(
         IFormFile avatar,
@@ -161,6 +164,7 @@ public sealed class AccountController : ControllerBase
         return result.ToActionResult();
     }
 
+    [EnableRateLimiting(RateLimiterPolicy.Search)]
     [HttpGet("search")]
     public async Task<ActionResult<CursorPageResult<AccountSummaryDto>>> GetAccountByKeyword(
         [FromQuery] string keyword,

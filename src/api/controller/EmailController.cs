@@ -4,11 +4,13 @@ using FluentResults;
 using MediatR;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.RateLimiting;
 
 namespace api;
 
 [ApiController]
 [Authorize]
+[EnableRateLimiting(RateLimiterPolicy.Email)]
 [Route("api/[controller]")]
 public sealed class EmailController : ControllerBase
 {

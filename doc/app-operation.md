@@ -2,7 +2,7 @@
 
 This document explains how the `app` layer actually operates end to end: how a client request becomes a dispatched MediatR message, how a handler coordinates `domain` and `infra` to fulfill it, and how the cross-cutting mechanisms — validation, caching, pagination, domain event dispatch — fit into that flow. It does not cover layer boundaries or the dependency rule (see `doc/architecture.md`) or naming/folder conventions (see `doc/project-rules.md`). For what a handler is calling *into*, see `doc/domain-operation.md` (business rules) and `doc/infra-operation.md` (external systems).
 
-`app` is the use-case layer: every feature is one or more CQRS messages — a `<UseCase>Command` or `<UseCase>Query` record — plus one handler, discovered and invoked by MediatR through assembly scanning. Nothing outside `app` ever calls a handler by name; a caller only ever knows the message type and the `Result`/`Result<T>` it gets back. `app` has 9 feature areas (`account`, `auth`, `comment`, `email`, `follow`, `post`, `reaction`, `report`, `shop`), 58 handlers, and 22 validators.
+`app` is the use-case layer: every feature is one or more CQRS messages — a `<UseCase>Command` or `<UseCase>Query` record — plus one handler, discovered and invoked by MediatR through assembly scanning. Nothing outside `app` ever calls a handler by name; a caller only ever knows the message type and the `Result`/`Result<T>` it gets back. `app` has 9 feature areas (`account`, `auth`, `comment`, `email`, `follow`, `post`, `reaction`, `report`, `shop`), 64 handlers, and 28 validators.
 
 ## Core Patterns
 
@@ -216,6 +216,27 @@ sequenceDiagram
     Ctx-->>H: (returns)
 ```
 
+### 10. Fire-and-forget queue commands
+
+`follow`'s `Follow`/`Unfollow` and `reaction`'s `ReactPost`/`UnreactPost`/`ReactComment`/`UnreactComment` are the six commands that never touch MongoDB or Redis themselves: each handler resolves the caller's identity, applies one guard specific to that command, and publishes a message to RabbitMQ via `IRabbitMQService.PublishAsync` — the actual document mutation happens later, out-of-band, in `infra`'s `FollowService`/`ReactionService` consumers (see `doc/infra-operation.md`). All six share one shape:
+
+```csharp
+var identity = _identityService.GetAccountId();
+if(identity is null)
+    return Result.Fail("Unauthorized");
+
+var message = new FollowMessage(Guid.NewGuid(), identity.Value, request.followingId);
+await _rabbitMQService.PublishAsync(QueueName.Follow, message, cancellationToken);
+
+return Result.Ok();
+```
+
+- **Identity check**: every one of the six fails with `"Unauthorized"` if `ICurrentIdentityService.GetAccountId()` returns `null` — the same guard every other authenticated handler relies on `ICurrentIdentityService` for, made explicit here because there is no MongoDB read afterward that would otherwise fail first.
+- **Self-target guard (`follow` only)**: `Follow`/`Unfollow` additionally fail with `"Cannot follow yourself"`/`"Cannot unfollow yourself"` if `identity.Value == request.followingId`. `reaction`'s four commands have no equivalent self-target check.
+- **Message shape**: `Follow`/`Unfollow` both publish a `FollowMessage(MessageId, FollowerId, FollowingId)` (a fresh `Guid.NewGuid()` per publish, not reused across retries); all four `reaction` commands publish a `ReactionMessage(MessageId, AccountId, TargetId)`, where `TargetId` is a `postId` for `ReactPost`/`UnreactPost` and a `commentId` for `ReactComment`/`UnreactComment` — the message shape does not distinguish a post-target from a comment-target, that distinction lives entirely in which `QueueName` it was published to.
+- **Queue names**: `QueueName.Follow`, `.Unfollow`, `.ReactPost`, `.UnreactPost`, `.ReactComment`, `.UnreactComment` — six distinct queues, one per command, not one queue per feature. `doc/infra-operation.md`'s "Queue Consumers" section explains why: two operations on the same account pair produce the same idempotency key, so sharing a queue between e.g. `Follow` and `Unfollow` would make the second delivery collide with the first as an integrity conflict rather than being processed as a distinct operation.
+- **Return value carries no confirmation**: `Result.Ok()` is returned the instant the publish succeeds, before `FollowService`/`ReactionService` has processed the message — a caller sees success as soon as the message is queued, not once the relationship/reaction actually exists in MongoDB. `api` reflects this by returning `202 Accepted` rather than `204 No Content` for these six actions (see `doc/api-operation.md`).
+
 ## Feature Areas
 
 | Feature | Commands | Queries | Notes |
@@ -225,8 +246,8 @@ sequenceDiagram
 | `email` | SendEmailForRegister, SendEmailForVerify, VerifyEmail | — | Not command/query split: one-off notification use cases, each takes `Email email` directly |
 | `post` | Create, ChangeCaption, ChangeRate, Delete | GetSpecificPost, GetMyPost, GetLatestPost, GetPostByAccount, GetPostByShop, GetPostByKeyword, GetMostReactedPost | `Create` resolves-or-creates the post's `Shop` first |
 | `comment` | Create, ChangeContent, Delete | GetSpecificComment, GetCommentByPost, GetMyCommentHistory | `Create` raises `CommentedPostEvent` |
-| `follow` | — | GetMyFollower, GetMyFollowing, GetFollowerByAccount, GetFollowingByAccount | |
-| `reaction` | — | GetReactionByPost, GetReactionByComment | |
+| `follow` | Follow, Unfollow | GetMyFollower, GetMyFollowing, GetFollowerByAccount, GetFollowingByAccount | Commands only publish to RabbitMQ (`QueueName.Follow`/`Unfollow`) — see "Fire-and-forget queue commands" below; the actual mutation happens in `infra`'s `FollowService` (see `doc/infra-operation.md`) |
+| `reaction` | ReactPost, UnreactPost, ReactComment, UnreactComment | GetReactionByPost, GetReactionByComment | Commands only publish to RabbitMQ (`QueueName.ReactPost`/`UnreactPost`/`ReactComment`/`UnreactComment`) — same fire-and-forget shape as `follow`, applied by `infra`'s `ReactionService` |
 | `report` | Create | GetAllReport, GetSpecificReport, GetReportByTarget | `GetReportByTarget` discriminates on the `ReportTarget` enum (declared in `app`, not `domain` — see `doc/project-rules.md`) |
 | `shop` | Delete | GetAllShop, GetSpecificShop, GetShopByName, GetShopByAddress, GetShopByKeyword, GetMostRatedShop | No `Create` command — every `Shop` comes into existence as a side effect of `post/command/Create` |
 
@@ -1053,6 +1074,50 @@ sequenceDiagram
 
 ### Follow
 
+#### Follow
+
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant H as FollowHandler
+    participant I as ICurrentIdentityService
+    participant Q as RabbitMQ (IRabbitMQService)
+
+    C->>H: FollowCommand(followingId)
+    H->>I: GetAccountId()
+    I-->>H: identity or null
+    alt identity is null
+        H-->>C: Result.Fail("Unauthorized")
+    else identity.Value == followingId
+        H-->>C: Result.Fail("Cannot follow yourself")
+    else
+        H->>Q: PublishAsync(QueueName.Follow, FollowMessage(Guid.NewGuid(), identity, followingId))
+        H-->>C: Result.Ok()
+    end
+```
+
+#### Unfollow
+
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant H as UnfollowHandler
+    participant I as ICurrentIdentityService
+    participant Q as RabbitMQ (IRabbitMQService)
+
+    C->>H: UnfollowCommand(followingId)
+    H->>I: GetAccountId()
+    I-->>H: identity or null
+    alt identity is null
+        H-->>C: Result.Fail("Unauthorized")
+    else identity.Value == followingId
+        H-->>C: Result.Fail("Cannot unfollow yourself")
+    else
+        H->>Q: PublishAsync(QueueName.Unfollow, FollowMessage(Guid.NewGuid(), identity, followingId))
+        H-->>C: Result.Ok()
+    end
+```
+
 #### GetFollowerByAccount
 
 ```mermaid
@@ -1134,6 +1199,86 @@ sequenceDiagram
 ```
 
 ### Reaction
+
+#### ReactPost
+
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant H as ReactPostHandler
+    participant I as ICurrentIdentityService
+    participant Q as RabbitMQ (IRabbitMQService)
+
+    C->>H: ReactPostCommand(postId)
+    H->>I: GetAccountId()
+    I-->>H: identity or null
+    alt identity is null
+        H-->>C: Result.Fail("Unauthorized")
+    else
+        H->>Q: PublishAsync(QueueName.ReactPost, ReactionMessage(Guid.NewGuid(), identity, postId))
+        H-->>C: Result.Ok()
+    end
+```
+
+#### UnreactPost
+
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant H as UnreactPostHandler
+    participant I as ICurrentIdentityService
+    participant Q as RabbitMQ (IRabbitMQService)
+
+    C->>H: UnreactPostCommand(postId)
+    H->>I: GetAccountId()
+    I-->>H: identity or null
+    alt identity is null
+        H-->>C: Result.Fail("Unauthorized")
+    else
+        H->>Q: PublishAsync(QueueName.UnreactPost, ReactionMessage(Guid.NewGuid(), identity, postId))
+        H-->>C: Result.Ok()
+    end
+```
+
+#### ReactComment
+
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant H as ReactCommentHandler
+    participant I as ICurrentIdentityService
+    participant Q as RabbitMQ (IRabbitMQService)
+
+    C->>H: ReactCommentCommand(commentId)
+    H->>I: GetAccountId()
+    I-->>H: identity or null
+    alt identity is null
+        H-->>C: Result.Fail("Unauthorized")
+    else
+        H->>Q: PublishAsync(QueueName.ReactComment, ReactionMessage(Guid.NewGuid(), identity, commentId))
+        H-->>C: Result.Ok()
+    end
+```
+
+#### UnreactComment
+
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant H as UnreactCommentHandler
+    participant I as ICurrentIdentityService
+    participant Q as RabbitMQ (IRabbitMQService)
+
+    C->>H: UnreactCommentCommand(commentId)
+    H->>I: GetAccountId()
+    I-->>H: identity or null
+    alt identity is null
+        H-->>C: Result.Fail("Unauthorized")
+    else
+        H->>Q: PublishAsync(QueueName.UnreactComment, ReactionMessage(Guid.NewGuid(), identity, commentId))
+        H-->>C: Result.Ok()
+    end
+```
 
 #### GetReactionByPost
 
