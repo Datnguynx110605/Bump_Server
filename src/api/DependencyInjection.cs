@@ -13,6 +13,7 @@ public static class DependencyInjection
         services.AddApp();
         services.AddInfra(configuration);
 
+        services.AddControllers();
         services.AddOpenApi();
 
         services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)

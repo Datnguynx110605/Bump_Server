@@ -62,6 +62,12 @@ public static class DependencyInjection
         services.AddScoped<IRegistrationService, RegistrationService>();
 
         services.AddHostedService<IndexInitializer>();
+        services.AddHostedService<FollowConsumerHost>();
+        services.AddHostedService<UnfollowConsumerHost>();
+        services.AddHostedService<ReactPostConsumerHost>();
+        services.AddHostedService<UnreactPostConsumerHost>();
+        services.AddHostedService<ReactCommentConsumerHost>();
+        services.AddHostedService<UnreactCommentConsumerHost>();
 
         return services;
     }
