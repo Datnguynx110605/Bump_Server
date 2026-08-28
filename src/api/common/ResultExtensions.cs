@@ -22,6 +22,14 @@ public static class ResultExtensions
         return ToProblemResult(result.Errors);
     }
 
+    public static ActionResult ToAcceptedResult(this Result result)
+    {
+        if(result.IsSuccess)
+            return new AcceptedResult();
+
+        return ToProblemResult(result.Errors);
+    }
+
     private static ObjectResult ToProblemResult(IReadOnlyList<IError> errors)
     {
         if(errors.Count > 1)

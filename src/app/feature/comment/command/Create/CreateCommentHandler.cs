@@ -64,8 +64,7 @@ internal sealed class CreateCommentHandler
 
         await commentCollection.InsertOneAsync(
             comment,
-            cancellationToken : cancellationToken
-        );
+            cancellationToken : cancellationToken);
 
         var dto = _mapper.Map<CommentDto>(comment);
         var summaryDto = _mapper.Map<CommentSummaryDto>(comment);

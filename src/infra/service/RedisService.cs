@@ -13,15 +13,24 @@ public sealed class RedisService : IRedisService
         _connectionMultiplexer = connectionMultiplexer;
     }
 
-    public async Task SetAsync<T>(string key, T value, TimeSpan? ttl, CancellationToken cancellationToken)
+    public async Task SetAsync<T>(
+        string key,
+        T value, 
+        TimeSpan? ttl, 
+        CancellationToken cancellationToken)
     {
         var db = _connectionMultiplexer.GetDatabase();
         var expiration = ttl.HasValue ? (Expiration)ttl.Value : Expiration.Default;
 
-        await db.StringSetAsync(key, JsonSerializer.Serialize(value, DomainJsonOptions.Options), expiration);
+        await db.StringSetAsync(
+            key, 
+            JsonSerializer.Serialize(value, DomainJsonOptions.Options), 
+            expiration);
     }
 
-    public async Task<T?> GetAsync<T>(string key, CancellationToken cancellationToken)
+    public async Task<T?> GetAsync<T>(
+        string key, 
+        CancellationToken cancellationToken)
     {
         var db = _connectionMultiplexer.GetDatabase();
         var value = await db.StringGetAsync(key);
@@ -29,7 +38,9 @@ public sealed class RedisService : IRedisService
         return value.HasValue ? JsonSerializer.Deserialize<T>(value!, DomainJsonOptions.Options) : default;
     }
 
-    public async Task<T?> GetAndRemoveAsync<T>(string key, CancellationToken cancellationToken)
+    public async Task<T?> GetAndRemoveAsync<T>(
+        string key, 
+        CancellationToken cancellationToken)
     {
         var db = _connectionMultiplexer.GetDatabase();
         var value = await db.StringGetDeleteAsync(key);
@@ -37,7 +48,9 @@ public sealed class RedisService : IRedisService
         return value.HasValue ? JsonSerializer.Deserialize<T>(value!, DomainJsonOptions.Options) : default;
     }
 
-    public async Task RemoveAsync(string key, CancellationToken cancellationToken)
+    public async Task RemoveAsync(
+        string key, 
+        CancellationToken cancellationToken)
     {
         var db = _connectionMultiplexer.GetDatabase();
 

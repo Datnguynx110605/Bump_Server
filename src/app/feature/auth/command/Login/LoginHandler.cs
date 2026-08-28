@@ -60,8 +60,7 @@ internal sealed class LoginHandler
 
         await refreshTokenCollection.InsertOneAsync(
             refreshToken,
-            cancellationToken : cancellationToken
-        );
+            cancellationToken : cancellationToken);
 
         return Result.Ok(new AuthResult(
             accessToken, 

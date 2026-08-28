@@ -20,7 +20,11 @@ public sealed class EmailService : IEmailService
         _configuration = configuration;
     }
 
-    public async Task SendAsync(string to, string subject, string htmlBody, CancellationToken cancellationToken)
+    public async Task SendAsync(
+        string to, 
+        string subject, 
+        string htmlBody, 
+        CancellationToken cancellationToken)
     {
         var address = _configuration["Email:Address"]!;
 
@@ -32,16 +36,33 @@ public sealed class EmailService : IEmailService
         message.Body = new BodyBuilder { HtmlBody = htmlBody, TextBody = plainBody }.ToMessageBody();
 
         using var client = new SmtpClient();
-        await client.ConnectAsync(Host, Port, SecureSocketOptions.StartTls, cancellationToken);
-        await client.AuthenticateAsync(address, _configuration["Email:AppPassword"], cancellationToken);
-        await client.SendAsync(message, cancellationToken);
-        await client.DisconnectAsync(true, cancellationToken);
+        await client.ConnectAsync(
+            Host, 
+            Port, 
+            SecureSocketOptions.StartTls, 
+            cancellationToken);
+        await client.AuthenticateAsync(
+            address, 
+            _configuration["Email:AppPassword"], 
+            cancellationToken);
+        await client.SendAsync(
+            message, 
+            cancellationToken);
+        await client.DisconnectAsync(
+            true, 
+            cancellationToken);
     }
 
-    public Task SendOtpRegistrationEmailAsync(string to, string code, CancellationToken cancellationToken) =>
+    public Task SendOtpRegistrationEmailAsync(
+        string to, 
+        string code, 
+        CancellationToken cancellationToken) =>
         SendAsync(to, "Verify your account", BuildOtpRegistrationBody(code), cancellationToken);
 
-    public Task SendWelcomeEmailAsync(string to, string name, CancellationToken cancellationToken) =>
+    public Task SendWelcomeEmailAsync(
+        string to, 
+        string name, 
+        CancellationToken cancellationToken) =>
         SendAsync(to, "Welcome to Bump", BuildWelcomeBody(name), cancellationToken);
 
     private static string BuildOtpRegistrationBody(string code) =>

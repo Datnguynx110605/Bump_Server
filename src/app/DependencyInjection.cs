@@ -15,7 +15,7 @@ public static class DependencyInjection
             cfg.AddOpenBehavior(typeof(PerformanceBehavior<,>));
             cfg.AddOpenBehavior(typeof(ValidationBehavior<,>));
         });
-        services.AddAutoMapper(cfg => { }, typeof(DependencyInjection).Assembly);
+        services.AddAutoMapper(cfg => {}, typeof(DependencyInjection).Assembly);
         services.AddValidatorsFromAssembly(typeof(DependencyInjection).Assembly, includeInternalTypes: true);
 
         return services;

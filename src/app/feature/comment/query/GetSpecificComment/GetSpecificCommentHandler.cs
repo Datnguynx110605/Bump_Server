@@ -30,8 +30,7 @@ internal sealed class GetSpecificCommentHandler
 
         var cacheComment = await _redisService.GetAsync<CommentSummaryDto>(
             cacheKey,
-            cancellationToken
-        );
+            cancellationToken);
 
         if(cacheComment is not null)
             return Result.Ok(cacheComment);

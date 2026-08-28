@@ -33,8 +33,7 @@ internal sealed class CreateAccountHandler
     {
         var rawEmail = await _registrationService.ExtractEmailAsync(
             request.registrationToken,
-            cancellationToken
-        );
+            cancellationToken);
         if(rawEmail is null)
             return Result.Fail("Unauthenticated");
 
@@ -60,8 +59,7 @@ internal sealed class CreateAccountHandler
 
         await accountCollection.InsertOneAsync(
             account,
-            cancellationToken : cancellationToken
-        );
+            cancellationToken : cancellationToken);
 
         var dto = _mapper.Map<AccountDto>(account);
         var summaryDto = _mapper.Map<AccountSummaryDto>(account);

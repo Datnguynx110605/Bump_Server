@@ -30,8 +30,7 @@ internal sealed class GetAccountByEmailHandler
 
         var cacheAccount = await _redisService.GetAsync<AccountSummaryDto>(
             cacheKey,
-            cancellationToken
-        );
+            cancellationToken);
 
         if(cacheAccount is not null)
             return Result.Ok(cacheAccount);

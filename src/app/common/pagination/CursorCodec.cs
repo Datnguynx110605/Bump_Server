@@ -10,7 +10,7 @@ internal static class CursorCodec
 
     public static (DateTime CreatedAt, Guid Id)? Decode(string? cursor)
     {
-        if (string.IsNullOrEmpty(cursor))
+        if(string.IsNullOrEmpty(cursor))
             return null;
 
         try
@@ -22,11 +22,11 @@ internal static class CursorCodec
                 DateTime.Parse(parts[0], CultureInfo.InvariantCulture, DateTimeStyles.RoundtripKind),
                 Guid.Parse(parts[1]));
         }
-        catch (FormatException)
+        catch(FormatException)
         {
             return null;
         }
-        catch (IndexOutOfRangeException)
+        catch(IndexOutOfRangeException)
         {
             return null;
         }

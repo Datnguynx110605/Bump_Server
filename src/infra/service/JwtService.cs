@@ -20,7 +20,9 @@ public sealed class JwtService : IJwtService
         _configuration = configuration;
     }
 
-    public string GenerateAccessToken(Guid accountId, Role role)
+    public string GenerateAccessToken(
+        Guid accountId, 
+        Role role)
     {
         var claims = new[]
         {

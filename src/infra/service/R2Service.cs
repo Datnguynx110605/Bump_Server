@@ -12,7 +12,9 @@ public sealed class R2Service : IR2Service
     private readonly string _folderName;
     private readonly string _publicUrl;
 
-    public R2Service(IAmazonS3 s3Client, IConfiguration configuration)
+    public R2Service(
+        IAmazonS3 s3Client, 
+        IConfiguration configuration)
     {
         _s3Client = s3Client;
         _bucketName = configuration["R2:BucketName"]!;
@@ -20,7 +22,10 @@ public sealed class R2Service : IR2Service
         _publicUrl = configuration["R2:PublicUrl"]!;
     }
 
-    public async Task<string> UploadAsync(Stream content, string fileName, CancellationToken cancellationToken)
+    public async Task<string> UploadAsync(
+        Stream content, 
+        string fileName, 
+        CancellationToken cancellationToken)
     {
         var key = $"{_folderName}/{Guid.NewGuid()}{Path.GetExtension(fileName)}";
 
@@ -34,7 +39,9 @@ public sealed class R2Service : IR2Service
         return $"{_publicUrl}/{key}";
     }
 
-    public async Task DeleteAsync(string url, CancellationToken cancellationToken)
+    public async Task DeleteAsync(
+        string url, 
+        CancellationToken cancellationToken)
     {
         var key = new Uri(url).AbsolutePath.TrimStart('/');
 
