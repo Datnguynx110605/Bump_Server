@@ -145,30 +145,6 @@ public sealed class Account : BaseEntity
         return Update();
     }
 
-    public DomainResult ChangeAvatar(string url)
-    {
-        if(string.IsNullOrWhiteSpace(url))
-            return DomainResult.Failure("Url is required");
-
-        if(_avatars.Any(x => x.Url == url))
-            return DomainResult.Failure("New avatar must be different");
-
-        _avatars.Add(new Avatar(url));
-
-        return Update();
-    }
-
-    public DomainResult RemoveAvatar(string url)
-    {
-        var avatar = _avatars.FirstOrDefault(x => x.Url == url);
-        if(avatar is null)
-            return DomainResult.Failure("Avatar not found");
-
-        _avatars.Remove(avatar);
-
-        return Update();
-    }
-
     public DomainResult DeleteAccount()
     {
         return Delete();

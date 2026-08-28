@@ -29,6 +29,14 @@ internal sealed class RedisService : IRedisService
         return value.HasValue ? JsonSerializer.Deserialize<T>(value!, DomainJsonOptions.Options) : default;
     }
 
+    public async Task<T?> GetAndRemoveAsync<T>(string key, CancellationToken cancellationToken)
+    {
+        var db = _connectionMultiplexer.GetDatabase();
+        var value = await db.StringGetDeleteAsync(key);
+
+        return value.HasValue ? JsonSerializer.Deserialize<T>(value!, DomainJsonOptions.Options) : default;
+    }
+
     public async Task RemoveAsync(string key, CancellationToken cancellationToken)
     {
         var db = _connectionMultiplexer.GetDatabase();

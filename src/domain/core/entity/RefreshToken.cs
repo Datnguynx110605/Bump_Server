@@ -26,6 +26,16 @@ public sealed  class RefreshToken : BaseEntity
         return DomainResult<RefreshToken>.Success(refreshToken);
     }
 
+    public DomainResult Revoke()
+    {
+        if(IsRevoked)
+            return DomainResult.Failure("Refresh token has been revoked");
+
+        IsRevoked = true;
+
+        return DomainResult.Success();
+    }
+
     public DomainResult Validate()
     {
         if(IsRevoked)

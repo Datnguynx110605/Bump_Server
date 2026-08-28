@@ -47,26 +47,26 @@ internal sealed class ChangeAvatarHandler
             return Result.Fail("Unauthenticated");
 
         var url = await _r2Service.UploadAsync(
-            request.stream,
+            request.avatars,
             request.fileName,
             cancellationToken);
 
-        var result = account.ChangeAvatar(url);
-        if(!result.IsSuccess)
-            return Result.Fail(result.Error);
-
         var filter = Builders<Account>.Filter.And(
             Builders<Account>.Filter.Eq(x => x.Id, account.Id),
-            Builders<Account>.Filter.Eq(x => x.IsDeleted, false));
+            Builders<Account>.Filter.Eq(x => x.IsDeleted, false),
+            Builders<Account>.Filter.Not(Builders<Account>.Filter.AnyEq(x => x.Avatars.Select(r => r.Url), url)));
 
         var update = Builders<Account>.Update
-            .Set(x => x.Avatars, account.Avatars)
-            .Set(x => x.UpdatedAt, account.UpdatedAt);
+            .Push(x => x.Avatars, new Avatar(url))
+            .Set(x => x.UpdatedAt, DateTime.UtcNow);
 
-        await accountCollection.UpdateOneAsync(
+        var updateResult = await accountCollection.UpdateOneAsync(
             filter,
             update,
             cancellationToken : cancellationToken);
+
+        if(updateResult.MatchedCount != 1)
+            return Result.Fail("New avatar must be different");
 
         string cacheKey = CacheKey.Account(account.Id);
 

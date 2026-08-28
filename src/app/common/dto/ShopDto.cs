@@ -7,5 +7,4 @@ public sealed record ShopDto(
     string Name,
     string Address,
     Amount Rate,
-    List<PostSummaryDto> Posts,
     DateTime CreatedAt);

@@ -4,6 +4,6 @@ using MediatR;
 namespace app;
 
 public sealed record ChangeAvatarCommand(
-    Stream stream,
+    Stream avatars,
     string fileName)
     : IRequest<Result>;

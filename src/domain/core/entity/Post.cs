@@ -3,7 +3,7 @@
 public sealed class Post : BaseEntity
 {
     public Guid AccountId { get; private set; }
-    public Shop Shop { get; private set; }
+    public Guid ShopId { get; private set; }
     private List<Image> _images = new();
     public IReadOnlyCollection<Image> Images => _images.AsReadOnly();
     public string? Caption { get; private set; }
@@ -15,20 +15,19 @@ public sealed class Post : BaseEntity
     private Post() {}
     private Post(
         Guid accountId,
-        Shop shop,
+        Guid shopId,
         string? caption,
         Amount rate)
     {
         AccountId = accountId;
-        Shop = shop;
+        ShopId = shopId;
         Caption = caption;
         Rate = rate;
     }
 
     public static DomainResult<Post> Create(
         Guid accountId,
-        string name,
-        string address,
+        Guid shopId,
         string? caption,
         Amount rate,
         List<string>? urls = null)
@@ -36,15 +35,12 @@ public sealed class Post : BaseEntity
         if(accountId == Guid.Empty)
             return DomainResult<Post>.Failure("AccountId is required");
 
-        var shopResult = Shop.Create(name, address);
-        if(!shopResult.IsSuccess)
-            return DomainResult<Post>.Failure(shopResult.Error!);
-
-        Shop shop = shopResult.Value;
+        if(shopId == Guid.Empty)
+            return DomainResult<Post>.Failure("ShopId is required");
 
         Post post = new Post(
             accountId,
-            shop,
+            shopId,
             caption,
             rate);
 

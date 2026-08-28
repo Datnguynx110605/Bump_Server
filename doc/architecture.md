@@ -52,7 +52,9 @@ Layers interact in two ways: through the **composition root** (wiring, at startu
 
 ### Composition Root
 
-`src/api/Program.cs` is the only place in the codebase that references both an `app` interface and its `infra` implementation together — e.g. `builder.Services.AddScoped<IJwtService, JwtService>()`. It also registers MediatR and AutoMapper via assembly scan of `app`, so every new handler/validator/mapping profile is picked up automatically. Everywhere else, `app` code depends on the interface only and never sees which `infra` type is behind it.
+`src/api/Program.cs` is the only place in the codebase that references both an `app` interface and its `infra` implementation together — e.g. `builder.Services.AddScoped<IJwtService, JwtService>()`. It also registers MediatR, AutoMapper and FluentValidation via assembly scan of `app`, so every new handler/validator/mapping profile is picked up automatically, and names each pipeline behavior explicitly via `AddOpenBehavior` (an open generic cannot be found by a scan). Everywhere else, `app` code depends on the interface only and never sees which `infra` type is behind it.
+
+Two `infra` calls bracket the host: `BsonConfiguration.Register()` runs before `builder.Build()`, because the MongoDB driver's class maps must exist before anything serializes a domain object, and `IndexConfiguration.CreateAsync(...)` runs immediately after, reaching MongoDB once at startup to declare indexes. Both are described in `doc/infra-operation.md`.
 
 ### Request Pipeline
 

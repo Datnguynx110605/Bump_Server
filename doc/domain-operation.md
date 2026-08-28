@@ -117,7 +117,7 @@ This gives every aggregate root the same state machine: **Active → (Delete) �
 
 This is a **Template Method**: `BaseEntity` implements the lifecycle transitions once, and every subclass reuses that exact implementation rather than re-deriving "is this entity deleted" logic per aggregate — a subclass's job is only to decide *when* to call `Update()`/`Delete()`/`Recover()` (i.e. which of its own methods should trigger a state transition), not *how* the transition itself works.
 
-`Account`, `Post`, and `Comment` wrap these base methods with a domain-specific name: `Account.DeleteAccount()` and `Account.RecoverAccount()` call `Delete()`/`Recover()`; `Post.DeletePost()` and `Comment.DeleteComment()` call `Delete()`. `Shop`, `Report`, and `RefreshToken` have no such wrapper — their base `Update`/`Delete`/`Recover` are `public` and callable directly, without an entity-specific method name. The underlying state machine is identical for all six aggregate roots either way.
+`Account`, `Post`, `Comment`, and `Shop` wrap these base methods with a domain-specific name: `Account.DeleteAccount()` and `Account.RecoverAccount()` call `Delete()`/`Recover()`; `Post.DeletePost()`, `Comment.DeleteComment()`, and `Shop.DeleteShop()` call `Delete()`. `Report` and `RefreshToken` have no such wrapper — their base `Update`/`Delete`/`Recover` are `public` and callable directly, without an entity-specific method name. The underlying state machine is identical for all six aggregate roots either way.
 
 Value objects (`Email`, `Name`, `Amount`) and child objects (`Avatar`, `Image`, `Follower`, `Following`, `Reaction`) do **not** inherit `BaseEntity` — they have no `Id`, no timestamps, and no soft-delete lifecycle of their own; they live and die with the aggregate that owns them.
 
@@ -135,21 +135,21 @@ This no-identity, no-mutation shape is the DDD **Value Object** pattern in its o
 
 ## Aggregate Roots
 
-`domain` follows the DDD rule that aggregates reference other aggregates only by `Guid` id, never by holding a loaded object — `Post.AccountId`, `Comment.AccountId`/`PostId`, and `Report.PostId`/`CommentId`/`AccountId` are all plain `Guid`s, not navigation properties. This keeps each aggregate's consistency boundary self-contained: mutating an `Account` never requires loading or touching a `Post`. `Post` is the one deliberate exception — `Post.Create` embeds a freshly-created `Shop` object rather than referencing an existing one by id (see the `Post` profile below), so it does not fully follow this rule today.
+`domain` follows the DDD rule that aggregates reference other aggregates only by `Guid` id, never by holding a loaded object — `Post.AccountId`/`ShopId`, `Comment.AccountId`/`PostId`, and `Report.PostId`/`CommentId`/`AccountId` are all plain `Guid`s, not navigation properties. This keeps each aggregate's consistency boundary self-contained: mutating an `Account` never requires loading or touching a `Post`. `Shop` is itself an aggregate root with its own collection; `Post.Create` takes an already-resolved `shopId` rather than constructing a `Shop` — resolving that id (reusing an existing `Shop` with the same name/address, or creating a new one) is `app`'s `CreatePostHandler` responsibility, not `domain`'s, since it requires a database lookup that `domain` (zero package references) cannot perform.
 
 ### `Account`
 
 - **Identity/state**: `Email`, `Name`, `Password` (BCrypt hash), `Bio` (nullable, max 2000 chars), `Role` (defaults to `Role.User`), `FollowerAmount`/`FollowingAmount` (`Amount`, default 0).
 - **Owned collections**: `Avatars` (`List<Avatar>`), `Followers` (`List<Follower>`), `Followings` (`List<Following>`), `SavePosts` (`List<Post>`), `SaveShops` (`List<Shop>`).
-- **`Create(email, name, password, bio, url?)`**: fails if `password.Length != 60` (i.e. the caller must pass an already-BCrypt-hashed password, not plaintext); fails if `bio` exceeds 2000 characters. On success, optionally seeds one `Avatar` if `url` is non-empty, and raises `AccountCreatedEvent(accountId, email, createdAt)`.
+- **`Create(email, name, password, bio)`**: fails if `password.Length != 60` (i.e. the caller must pass an already-BCrypt-hashed password, not plaintext); fails if `bio` exceeds 2000 characters. Raises `AccountCreatedEvent(accountId, email, createdAt)`.
 - **Business methods**: `SavePost`/`RemoveSavedPost`, `SaveShop`/`RemoveSavedShop` (all fail if the target is already present / not found, respectively); `ChangeEmail`/`ChangeName` (fail if the new value equals the current one); `ChangePassword` (fails if identical to current, or if the new hash isn't exactly 60 characters); `ChangeBio` (fails only on the 2000-character limit — unlike the others, a `null`/empty bio is allowed and re-settable); `ChangeAvatar` (fails on empty URL or a duplicate URL already present); `RemoveAvatar` (fails if the URL isn't found).
 - **Lifecycle wrappers**: `DeleteAccount()`, `RecoverAccount()`.
 
 ### `Post`
 
-- **Identity/state**: `AccountId` (owner reference by `Guid`, not a loaded `Account`), `Shop` (embedded, not referenced by id — see note below), `Caption` (nullable), `Rate`/`ReactionAmount`/`CommentAmount` (`Amount`, latter two default 0).
+- **Identity/state**: `AccountId` (owner reference by `Guid`, not a loaded `Account`), `ShopId` (`Guid` reference, not a loaded `Shop`), `Caption` (nullable), `Rate`/`ReactionAmount`/`CommentAmount` (`Amount`, latter two default 0).
 - **Owned collections**: `Images` (`List<Image>`), `Reactions` (`List<Reaction>`).
-- **`Create(accountId, name, address, caption, rate, urls?)`**: fails if `accountId == Guid.Empty`; internally calls `Shop.Create(name, address)` and fails (propagating the `Shop` error) if that fails. On success, seeds `Images` from `urls` if provided, and raises `PostCreatedEvent(accountId, postId, createdAt)`. Note: this constructs a **new** `Shop` value every time a post is created — `Post` does not look up an existing `Shop` by id, so `Shop.Create` runs (and can fail) as part of every `Post.Create` call.
+- **`Create(accountId, shopId, caption, rate, urls?)`**: fails if `accountId == Guid.Empty` or `shopId == Guid.Empty`. On success, seeds `Images` from `urls` if provided, and raises `PostCreatedEvent(accountId, postId, createdAt)`. Note: `Post.Create` does not create or validate the referenced `Shop` — the caller (`CreatePostHandler`) resolves or creates the `Shop` first and passes its id in already resolved.
 - **Business methods**: `ChangeCaption` (takes a non-nullable `string`; no validation beyond `Update()`'s own soft-delete check — any text, including an empty string, is accepted and assigned directly), `ChangeRate` (same — accepts any `Amount`, no bounds check beyond `Amount.Create`'s own non-negative rule).
 - **Lifecycle wrapper**: `DeletePost()`.
 
@@ -157,17 +157,17 @@ This no-identity, no-mutation shape is the DDD **Value Object** pattern in its o
 
 - **Identity/state**: `AccountId`, `PostId` (both `Guid` references, not loaded aggregates), `Content` (nullable, max 2000 chars), `ReactionAmount` (`Amount`, default 0).
 - **Owned collections**: `Images` (`List<Image>`), `Reactions` (`List<Reaction>`).
-- **`Create(accountId, postId, content, urls?)`**: fails if `accountId == Guid.Empty`; fails if `content` exceeds 2000 characters. Seeds `Images` from `urls` if provided, and raises `CommentedPostEvent(accountId, commentId, postId, createdAt)`.
+- **`Create(accountId, postId, content, urls?)`**: fails if `accountId == Guid.Empty`; fails if `postId == Guid.Empty`; fails if `content` exceeds 2000 characters. Seeds `Images` from `urls` if provided, and raises `CommentedPostEvent(accountId, commentId, postId, createdAt)`.
 - **Business methods**: `ChangeContent(content)` — fails only on the 2000-character limit; unlike `Create`, this method takes a non-nullable `string`, so an edit can set `Content` to an empty string but never back to `null` — `Content == null` is a state only `Create(content: null)` can produce.
 - **Lifecycle wrapper**: `DeleteComment()`.
 
 ### `Shop`
 
 - **Identity/state**: `Name`, `Address` (both required strings), `Rate` (`Amount`, default 0).
-- **Owned collection**: `Posts` (`List<Post>`).
+- **Owned collections**: none — `Shop` holds no reference back to its `Post`s; `Post.ShopId` is the only link, and it points one way (`Post` → `Shop`).
 - **`Create(name, address)`**: fails if `name` or `address` is empty/whitespace. Raises no domain event.
-- **Business methods**: `AddPost(post)` (fails if a post with the same `Id` is already present), `RemovePost(postId)` (fails if not found).
-- **Lifecycle wrapper**: none — `Update()`/`Delete()`/`Recover()` are called directly if needed, with no `Shop`-specific method name.
+- **Business methods**: none beyond `Create`.
+- **Lifecycle wrapper**: `DeleteShop()`, calling `Delete()`.
 
 ### `Report`
 
@@ -182,7 +182,7 @@ This no-identity, no-mutation shape is the DDD **Value Object** pattern in its o
 - **Identity/state**: `AccountId` (required `Guid`), `Token` (a 64-byte random value, Base64-encoded, generated internally — never supplied by the caller), `IsRevoked` (`bool`, default `false`), `ExpiryDate` (defaults to `DateTime.UtcNow.AddDays(7)` at construction, not adjustable via `Create`).
 - **Owned collections**: none.
 - **`Create(accountId)`**: fails if `accountId == Guid.Empty`. Generates the token itself via a private `GenerateToken()` (`RandomNumberGenerator.GetBytes(64)`); the caller cannot choose or influence the token value.
-- **Business methods**: `Validate()` — returns `DomainResult` (not `DomainResult<T>`, since it produces no value): fails with `"Refresh token has been revoked"` if `IsRevoked`, fails with `"Expired"` if past `ExpiryDate`, otherwise succeeds. `IsRevoked` is `private set`, changeable only from within `RefreshToken` itself; no method on `RefreshToken` currently sets it.
+- **Business methods**: `Validate()` — returns `DomainResult` (not `DomainResult<T>`, since it produces no value): fails with `"Refresh token has been revoked"` if `IsRevoked`, fails with `"Expired"` if past `ExpiryDate`, otherwise succeeds. `Revoke()` — fails with the same `"Refresh token has been revoked"` message if already revoked (no double-revoke), otherwise sets `IsRevoked = true` and succeeds; unlike every other mutation method in `domain`, it does not call `Update()`, so `UpdatedAt` stays `null` even after a successful revoke.
 - **Lifecycle wrapper**: none.
 
 ## Child Objects (not aggregate roots)
@@ -210,13 +210,13 @@ public abstract record Event
 {
     public Guid Id { get; private set; } = Guid.NewGuid();
     public Guid EntityId { get; private set; }
-    public string PayloadHash { get; private set; }
+    public string? PayloadHash { get; private set; }
     public EventStatus Status { get; private set; } = EventStatus.Pending;
     public DateTime RaisedAt { get; private set; } = DateTime.UtcNow;
 }
 ```
 
-Only `Id` and `RaisedAt` are populated automatically at construction. `EntityId`, `PayloadHash`, and `Status` are declared on the base type but no derived event's constructor sets them — every event raised today has `EntityId == Guid.Empty`, `PayloadHash == null`, and `Status == EventStatus.Pending` regardless of what actually happened. Each derived event instead carries its own explicit identifiers (e.g. `AccountCreatedEvent.AccountId`) rather than using the base `EntityId`.
+Only `Id` and `RaisedAt` are populated automatically at construction. `EntityId`, `PayloadHash`, and `Status` are declared on the base type but no derived event's constructor sets them — every event raised today has `EntityId == Guid.Empty`, `PayloadHash == null`, and `Status == EventStatus.Pending` regardless of what actually happened. `PayloadHash` is declared `string?` precisely because of this — nothing ever assigns it. Each derived event instead carries its own explicit identifiers (e.g. `AccountCreatedEvent.AccountId`) rather than using the base `EntityId`.
 
 An aggregate raises an event by calling the `protected void RaiseEvent(Event @event)` method it inherits from `BaseEntity`, which appends to a private `List<Event> _events`; the event sits in `entity.Events` (`IReadOnlyCollection<Event>`) until something outside `domain` reads and dispatches it — that dispatch mechanism is `app`/`infra`'s responsibility, described in `doc/architecture.md`, not `domain`'s.
 

@@ -1,17 +1,27 @@
 using Amazon.S3;
 using app;
+using FluentValidation;
 using infra;
 using MongoDB.Driver;
 using RabbitMQ.Client;
 using StackExchange.Redis;
+
+BsonConfiguration.Register();
 
 var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.AddOpenApi();
 builder.Services.AddHttpContextAccessor();
 builder.Services.AddDataProtection();
-builder.Services.AddMediatR(cfg => cfg.RegisterServicesFromAssembly(typeof(IMongoDbContext).Assembly));
+builder.Services.AddMediatR(cfg =>
+{
+    cfg.RegisterServicesFromAssembly(typeof(IMongoDbContext).Assembly);
+    cfg.AddOpenBehavior(typeof(LoggingBehavior<,>));
+    cfg.AddOpenBehavior(typeof(PerformanceBehavior<,>));
+    cfg.AddOpenBehavior(typeof(ValidationBehavior<,>));
+});
 builder.Services.AddAutoMapper(cfg => { }, typeof(IMongoDbContext).Assembly);
+builder.Services.AddValidatorsFromAssembly(typeof(IMongoDbContext).Assembly, includeInternalTypes: true);
 
 builder.Services.AddSingleton<IConnectionMultiplexer>(_ =>
     ConnectionMultiplexer.Connect(builder.Configuration["Redis:ConnectionString"]!));
@@ -55,6 +65,11 @@ builder.Services.AddScoped<IRedisService, RedisService>();
 builder.Services.AddScoped<IRegistrationService, RegistrationService>();
 
 var app = builder.Build();
+
+await IndexConfiguration.CreateAsync(
+    app.Services.GetRequiredService<IMongoClient>(),
+    builder.Configuration,
+    CancellationToken.None);
 
 if (app.Environment.IsDevelopment())
 {

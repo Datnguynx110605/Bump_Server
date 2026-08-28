@@ -7,7 +7,7 @@ internal sealed class ChangeAvatarValidator
 {
     public ChangeAvatarValidator()
     {
-        RuleFor(x => x.stream)
+        RuleFor(x => x.avatars)
             .NotNull().WithMessage("File is required");
         RuleFor(x => x.fileName)
             .NotEmpty().WithMessage("FileName is required");
