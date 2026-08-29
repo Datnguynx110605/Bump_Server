@@ -46,11 +46,6 @@ internal sealed class FollowConsumerHost : BackgroundService
         }
         catch(Exception ex) when (!stoppingToken.IsCancellationRequested)
         {
-            // BackgroundService swallows unhandled exceptions from ExecuteAsync
-            // by default (no crash, no log) — without this catch, a failure
-            // setting up the RabbitMQ consumer (auth, connection/channel
-            // limits, etc.) is invisible: the queue just sits at 0 consumers
-            // forever with nothing in the console explaining why.
             _logger.LogError(ex, "Follow consumer stopped unexpectedly");
         }
     }

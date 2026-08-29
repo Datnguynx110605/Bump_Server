@@ -79,6 +79,9 @@ internal sealed class ChangeRateHandler
                 cancellationToken),
             _redisService.RemoveAsync(
                 CacheKey.List(CollectionName.Post, $"shop:{post.ShopId}", new CursorPageRequest(null)),
+                cancellationToken),
+            _redisService.RemoveAsync(
+                CacheKey.List(CollectionName.Post, "mostReacted", new CursorPageRequest(null)),
                 cancellationToken));
 
         var recalculateMessage = new RecalculateShopRateMessage(

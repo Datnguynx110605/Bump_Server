@@ -6,4 +6,3 @@ namespace app;
 
 public sealed record ChangeNameCommand(Name name) 
     : IRequest<Result>;
-

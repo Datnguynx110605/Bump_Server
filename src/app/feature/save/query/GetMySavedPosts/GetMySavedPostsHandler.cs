@@ -47,12 +47,6 @@ internal sealed class GetMySavedPostsHandler
             Builders<Account>.Filter.Eq(x => x.Id, identity.Value),
             Builders<Account>.Filter.Eq(x => x.IsDeleted, false));
 
-        // `SavedPost` only carries `PostId` + `SavedAt` (see `Account.SavePosts`'s doc
-        // comment) — unlike `Followers`/`Followings`, it isn't display-ready, so this
-        // can't go through `CachedEmbeddedArrayPaginator`'s direct item-to-DTO mapping.
-        // Paginate the id+timestamp array first, then hydrate against the live Post
-        // collection so a saved post always reflects its current caption/rate/reactions
-        // instead of a stale snapshot from when it was saved.
         var idPage = await EmbeddedArrayPaginator.PaginateAsync<Account, SavedPost>(
             accountCollection,
             parentFilter,
@@ -72,8 +66,6 @@ internal sealed class GetMySavedPostsHandler
 
         var postsById = posts.ToDictionary(x => x.Id);
 
-        // A saved post that's since been deleted has no live document to hydrate —
-        // it's dropped from the page rather than shown as a broken/empty tile.
         var items = postIds
             .Where(id => postsById.ContainsKey(id))
             .Select(id => _mapper.Map<PostSummaryDto>(postsById[id]))

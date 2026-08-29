@@ -30,7 +30,7 @@ public sealed class ShopController : ControllerBase
     }
 
     [HttpGet("{shopId:guid}")]
-    public async Task<ActionResult<ShopDto>> GetSpecificShop(
+    public async Task<ActionResult<ShopDetailDto>> GetSpecificShop(
         Guid shopId,
         CancellationToken cancellationToken)
     {

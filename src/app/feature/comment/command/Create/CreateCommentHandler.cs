@@ -84,7 +84,6 @@ internal sealed class CreateCommentHandler
             update,
             cancellationToken : cancellationToken);
         
-
         var dto = _mapper.Map<CommentDto>(comment);
         var summaryDto = _mapper.Map<CommentSummaryDto>(comment);
 
@@ -95,6 +94,9 @@ internal sealed class CreateCommentHandler
                 cacheKey,
                 summaryDto,
                 CacheKey.DefaultCommentTTL,
+                cancellationToken),
+            _redisService.RemoveAsync(
+                CacheKey.Post(comment.PostId),
                 cancellationToken),
             _redisService.RemoveAsync(
                 CacheKey.List(CollectionName.Comment, $"post:{comment.PostId}", new CursorPageRequest(null)),

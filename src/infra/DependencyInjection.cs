@@ -46,12 +46,6 @@ public static class DependencyInjection
             var factory = new ConnectionFactory
             {
                 Uri = new Uri(configuration["RabbitMQ:ConnectionString"]!),
-                // A hosted broker (CloudAMQP) sits behind a proxy that can silently
-                // drop a long-idle connection without either side seeing a clean
-                // close — the socket looks fine locally but nothing sent on it
-                // reaches the broker. A shorter heartbeat than the client's 60s
-                // default detects that faster, and automatic recovery (the
-                // client's default, made explicit here) reconnects once it does.
                 RequestedHeartbeat = TimeSpan.FromSeconds(30),
                 AutomaticRecoveryEnabled = true,
                 NetworkRecoveryInterval = TimeSpan.FromSeconds(5)

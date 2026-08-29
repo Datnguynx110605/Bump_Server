@@ -76,6 +76,9 @@ internal sealed class ChangeCaptionHandler
                 cancellationToken),
             _redisService.RemoveAsync(
                 CacheKey.List(CollectionName.Post, $"shop:{post.ShopId}", new CursorPageRequest(null)),
+                cancellationToken),
+            _redisService.RemoveAsync(
+                CacheKey.List(CollectionName.Post, "mostReacted", new CursorPageRequest(null)),
                 cancellationToken));
 
         return Result.Ok();

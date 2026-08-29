@@ -74,12 +74,6 @@ public sealed class RabbitMQService : IRabbitMQService
         {
             var retryCount = GetRetryCount(args.BasicProperties);
 
-            // Everything below — including deserialization and the
-            // idempotency lookup, not just onMessage — must stay inside this
-            // try/catch. A transient failure in any of it (e.g. Redis briefly
-            // unreachable during the idempotency check) would otherwise throw
-            // out of this event handler with the message never acked, never
-            // retried, and never dead-lettered: it just silently vanishes.
             try
             {
                 var message = JsonSerializer.Deserialize<T>(args.Body.Span);

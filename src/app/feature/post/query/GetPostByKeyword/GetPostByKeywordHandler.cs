@@ -9,25 +9,32 @@ using MongoDB.Driver;
 namespace app;
 
 internal sealed class GetPostByKeywordHandler
-    : IRequestHandler<GetPostByKeywordQuery, Result<CursorPageResult<PostSummaryDto>>>
+    : IRequestHandler<GetPostByKeywordQuery, Result<CursorPageResult<PostFeedItemDto>>>
 {
+    private readonly ICurrentIdentityService _identityService;
     private readonly IRedisService _redisService;
     private readonly IMongoDbContext _dbContext;
     private readonly IMapper _mapper;
     public GetPostByKeywordHandler(
+        ICurrentIdentityService identityService,
         IRedisService redisService,
         IMongoDbContext dbContext,
         IMapper mapper)
     {
+        _identityService = identityService;
         _redisService = redisService;
         _dbContext = dbContext;
         _mapper = mapper;
     }
 
-    public async Task<Result<CursorPageResult<PostSummaryDto>>> Handle(
+    public async Task<Result<CursorPageResult<PostFeedItemDto>>> Handle(
         GetPostByKeywordQuery request,
         CancellationToken cancellationToken)
     {
+        var identity = _identityService.GetAccountId();
+        if(identity is null)
+            return Result.Fail("Unauthorized");
+
         string filterSignature = $"keyword:{request.keyword}";
         string cacheKey = CacheKey.List(CollectionName.Post, filterSignature, request.pageRequest);
 
@@ -49,6 +56,6 @@ internal sealed class GetPostByKeywordHandler
             cacheKey,
             cancellationToken);
 
-        return Result.Ok(dtoPage);
+        return Result.Ok(await PostFeedEnricher.EnrichAsync(_dbContext, dtoPage, identity.Value, cancellationToken));
     }
 }
