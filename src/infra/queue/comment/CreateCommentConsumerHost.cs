@@ -23,23 +23,30 @@ internal sealed class CreateCommentConsumerHost : BackgroundService
         using var scope = _scopeFactory.CreateScope();
         var rabbitMQService = scope.ServiceProvider.GetRequiredService<IRabbitMQService>();
 
-        await rabbitMQService.ConsumeAsync<CommentMessage>(
-            QueueName.CreateComment,
-            message => message.MessageId.ToString(),
-            async (message, cancellationToken) =>
-            {
-                using var messageScope = _scopeFactory.CreateScope();
-                var commentService = messageScope.ServiceProvider.GetRequiredService<ICommentService>();
-                var result = await commentService.ProcessCreateCommentAsync(
-                    message.AccountId,
-                    message.CommentId,
-                    cancellationToken);
+        try
+        {
+            await rabbitMQService.ConsumeAsync<CommentMessage>(
+                QueueName.CreateComment,
+                message => message.MessageId.ToString(),
+                async (message, cancellationToken) =>
+                {
+                    using var messageScope = _scopeFactory.CreateScope();
+                    var commentService = messageScope.ServiceProvider.GetRequiredService<ICommentService>();
+                    var result = await commentService.ProcessCreateCommentAsync(
+                        message.AccountId,
+                        message.CommentId,
+                        cancellationToken);
 
-                if(result.IsFailed)
-                    _logger.LogWarning(
-                        "CreateComment {MessageId} ({AccountId} -> {CommentId}) did not apply: {Error}",
-                        message.MessageId, message.AccountId, message.CommentId, result.Errors[0].Message);
-            },
-            stoppingToken);
+                    if(result.IsFailed)
+                        _logger.LogWarning(
+                            "CreateComment {MessageId} ({AccountId} -> {CommentId}) did not apply: {Error}",
+                            message.MessageId, message.AccountId, message.CommentId, result.Errors[0].Message);
+                },
+                stoppingToken);
+        }
+        catch(Exception ex) when (!stoppingToken.IsCancellationRequested)
+        {
+            _logger.LogError(ex, "CreateComment consumer stopped unexpectedly");
+        }
     }
 }

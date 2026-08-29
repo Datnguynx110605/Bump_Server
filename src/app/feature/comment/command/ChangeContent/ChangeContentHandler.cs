@@ -33,6 +33,7 @@ internal sealed class ChangeContentHandler
 
         var projection = Builders<Comment>.Projection
             .Include(x => x.Content)
+            .Include(x => x.PostId)
             .Include(x => x.IsDeleted);
 
         var comment = await commentCollection
@@ -63,9 +64,13 @@ internal sealed class ChangeContentHandler
 
         string cacheKey = CacheKey.Comment(comment.Id);
 
-        await _redisService.RemoveAsync(
-            cacheKey,
-            cancellationToken);
+        await Task.WhenAll(
+            _redisService.RemoveAsync(
+                cacheKey,
+                cancellationToken),
+            _redisService.RemoveAsync(
+                CacheKey.List(CollectionName.Comment, $"post:{comment.PostId}", new CursorPageRequest(null)),
+                cancellationToken));
 
         return Result.Ok();
     }

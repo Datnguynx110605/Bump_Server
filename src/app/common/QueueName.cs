@@ -10,4 +10,8 @@ public sealed record QueueName
     public static string UnreactComment = "unreact-comment";
     public static string CreateComment = "create-comment";
     public static string RecalculateShopRate = "recalculate-shop-rate";
+    public static string SavePost = "save-post";
+    public static string UnsavePost = "unsave-post";
+    public static string SaveShop = "save-shop";
+    public static string UnsaveShop = "unsave-shop";
 }

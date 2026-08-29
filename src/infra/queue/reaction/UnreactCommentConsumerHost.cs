@@ -23,23 +23,30 @@ internal sealed class UnreactCommentConsumerHost : BackgroundService
         using var scope = _scopeFactory.CreateScope();
         var rabbitMQService = scope.ServiceProvider.GetRequiredService<IRabbitMQService>();
 
-        await rabbitMQService.ConsumeAsync<ReactionMessage>(
-            QueueName.UnreactComment,
-            message => message.MessageId.ToString(),
-            async (message, cancellationToken) =>
-            {
-                using var messageScope = _scopeFactory.CreateScope();
-                var reactionService = messageScope.ServiceProvider.GetRequiredService<IReactionService>();
-                var result = await reactionService.ProcessUnreactCommentAsync(
-                    message.AccountId, 
-                    message.TargetId, 
-                    cancellationToken);
+        try
+        {
+            await rabbitMQService.ConsumeAsync<ReactionMessage>(
+                QueueName.UnreactComment,
+                message => message.MessageId.ToString(),
+                async (message, cancellationToken) =>
+                {
+                    using var messageScope = _scopeFactory.CreateScope();
+                    var reactionService = messageScope.ServiceProvider.GetRequiredService<IReactionService>();
+                    var result = await reactionService.ProcessUnreactCommentAsync(
+                        message.AccountId,
+                        message.TargetId,
+                        cancellationToken);
 
-                if(result.IsFailed)
-                    _logger.LogWarning(
-                        "UnreactComment {MessageId} ({AccountId} -> {CommentId}) did not apply: {Error}",
-                        message.MessageId, message.AccountId, message.TargetId, result.Errors[0].Message);
-            },
-            stoppingToken);
+                    if(result.IsFailed)
+                        _logger.LogWarning(
+                            "UnreactComment {MessageId} ({AccountId} -> {CommentId}) did not apply: {Error}",
+                            message.MessageId, message.AccountId, message.TargetId, result.Errors[0].Message);
+                },
+                stoppingToken);
+        }
+        catch(Exception ex) when (!stoppingToken.IsCancellationRequested)
+        {
+            _logger.LogError(ex, "UnreactComment consumer stopped unexpectedly");
+        }
     }
 }

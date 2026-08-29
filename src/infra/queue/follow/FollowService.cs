@@ -82,13 +82,19 @@ public sealed class FollowService : IFollowService
         if(bulkResult.MatchedCount != 2)
             return Result.Fail("Already following");
 
-        await _redisService.RemoveAsync(
-            CacheKey.Account(followerId),
-            cancellationToken);
-
-        await _redisService.RemoveAsync(
-            CacheKey.Account(followingId),
-            cancellationToken);
+        await Task.WhenAll(
+            _redisService.RemoveAsync(
+                CacheKey.Account(followerId),
+                cancellationToken),
+            _redisService.RemoveAsync(
+                CacheKey.Account(followingId),
+                cancellationToken),
+            _redisService.RemoveAsync(
+                CacheKey.List($"{CollectionName.Account}:following", $"account:{followerId}", new CursorPageRequest(null)),
+                cancellationToken),
+            _redisService.RemoveAsync(
+                CacheKey.List($"{CollectionName.Account}:follower", $"account:{followingId}", new CursorPageRequest(null)),
+                cancellationToken));
 
         return await _notificationSerivce.CreateAsync(
             following.Id,
@@ -139,13 +145,19 @@ public sealed class FollowService : IFollowService
         if(bulkResult.MatchedCount != 2)
             return Result.Fail("Not following this account");
 
-        await _redisService.RemoveAsync(
-            CacheKey.Account(followerId),
-            cancellationToken);
-
-        await _redisService.RemoveAsync(
-            CacheKey.Account(followingId),
-            cancellationToken);
+        await Task.WhenAll(
+            _redisService.RemoveAsync(
+                CacheKey.Account(followerId),
+                cancellationToken),
+            _redisService.RemoveAsync(
+                CacheKey.Account(followingId),
+                cancellationToken),
+            _redisService.RemoveAsync(
+                CacheKey.List($"{CollectionName.Account}:following", $"account:{followerId}", new CursorPageRequest(null)),
+                cancellationToken),
+            _redisService.RemoveAsync(
+                CacheKey.List($"{CollectionName.Account}:follower", $"account:{followingId}", new CursorPageRequest(null)),
+                cancellationToken));
 
         return Result.Ok();
     }

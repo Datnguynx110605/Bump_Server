@@ -35,6 +35,7 @@ internal sealed class DeleteCommentHandler
         var commentCollection = _dbContext.GetCollection<Comment>(CollectionName.Comment);
 
         var projection = Builders<Comment>.Projection
+            .Include(x => x.PostId)
             .Include(x => x.Images)
             .Include(x => x.IsDeleted);
 
@@ -73,9 +74,16 @@ internal sealed class DeleteCommentHandler
 
         string cacheKey = CacheKey.Comment(comment.Id);
 
-        await _redisService.RemoveAsync(
-            cacheKey,
-            cancellationToken);
+        await Task.WhenAll(
+            _redisService.RemoveAsync(
+                cacheKey,
+                cancellationToken),
+            _redisService.RemoveAsync(
+                CacheKey.List(CollectionName.Comment, $"post:{comment.PostId}", new CursorPageRequest(null)),
+                cancellationToken),
+            _redisService.RemoveAsync(
+                CacheKey.List(CollectionName.Comment, $"account:{identity.Value}", new CursorPageRequest(null)),
+                cancellationToken));
 
         return Result.Ok();
     }

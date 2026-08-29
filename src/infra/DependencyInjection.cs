@@ -1,3 +1,4 @@
+using Amazon.Runtime;
 using Amazon.S3;
 using app;
 using Microsoft.AspNetCore.DataProtection;
@@ -29,7 +30,9 @@ public static class DependencyInjection
             var s3Config = new AmazonS3Config
             {
                 ServiceURL = $"https://{configuration["R2:AccountId"]}.r2.cloudflarestorage.com",
-                ForcePathStyle = true
+                ForcePathStyle = true,
+                RequestChecksumCalculation = RequestChecksumCalculation.WHEN_REQUIRED,
+                ResponseChecksumValidation = ResponseChecksumValidation.WHEN_REQUIRED
             };
 
             return new AmazonS3Client(
@@ -42,7 +45,16 @@ public static class DependencyInjection
         {
             var factory = new ConnectionFactory
             {
-                Uri = new Uri(configuration["RabbitMQ:ConnectionString"]!)
+                Uri = new Uri(configuration["RabbitMQ:ConnectionString"]!),
+                // A hosted broker (CloudAMQP) sits behind a proxy that can silently
+                // drop a long-idle connection without either side seeing a clean
+                // close — the socket looks fine locally but nothing sent on it
+                // reaches the broker. A shorter heartbeat than the client's 60s
+                // default detects that faster, and automatic recovery (the
+                // client's default, made explicit here) reconnects once it does.
+                RequestedHeartbeat = TimeSpan.FromSeconds(30),
+                AutomaticRecoveryEnabled = true,
+                NetworkRecoveryInterval = TimeSpan.FromSeconds(5)
             };
 
             return factory.CreateConnectionAsync().GetAwaiter().GetResult();
@@ -67,6 +79,7 @@ public static class DependencyInjection
         services.AddScoped<IReactionService, ReactionService>();
         services.AddScoped<IRedisService, RedisService>();
         services.AddScoped<IRegistrationService, RegistrationService>();
+        services.AddScoped<ISaveService, SaveService>();
         services.AddScoped<IShopRateService, ShopRateService>();
 
         services.AddHostedService<IndexInitializer>();
@@ -78,6 +91,10 @@ public static class DependencyInjection
         services.AddHostedService<UnreactCommentConsumerHost>();
         services.AddHostedService<CreateCommentConsumerHost>();
         services.AddHostedService<RecalculateShopRateConsumerHost>();
+        services.AddHostedService<SavePostConsumerHost>();
+        services.AddHostedService<UnsavePostConsumerHost>();
+        services.AddHostedService<SaveShopConsumerHost>();
+        services.AddHostedService<UnsaveShopConsumerHost>();
 
         return services;
     }

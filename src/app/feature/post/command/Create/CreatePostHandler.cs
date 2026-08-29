@@ -84,11 +84,18 @@ internal sealed class CreatePostHandler
 
             var shopSummaryDto = _mapper.Map<ShopSummaryDto>(shop);
 
-            await _redisService.SetAsync(
-                CacheKey.Shop(shop.Id),
-                shopSummaryDto,
-                CacheKey.DefaultShopTTL,
-                cancellationToken);
+            await Task.WhenAll(
+                _redisService.SetAsync(
+                    CacheKey.Shop(shop.Id),
+                    shopSummaryDto,
+                    CacheKey.DefaultShopTTL,
+                    cancellationToken),
+                _redisService.RemoveAsync(
+                    CacheKey.List(CollectionName.Shop, filterSignature: null, new CursorPageRequest(null)),
+                    cancellationToken),
+                _redisService.RemoveAsync(
+                    CacheKey.List(CollectionName.Shop, "mostRated", new CursorPageRequest(null)),
+                    cancellationToken));
 
             shopId = shop.Id;
         }
@@ -115,11 +122,24 @@ internal sealed class CreatePostHandler
 
         string cacheKey = CacheKey.Post(post.Id);
 
-        await _redisService.SetAsync(
-            cacheKey,
-            summaryDto,
-            CacheKey.DefaultPostTTL,
-            cancellationToken);
+        await Task.WhenAll(
+            _redisService.SetAsync(
+                cacheKey,
+                summaryDto,
+                CacheKey.DefaultPostTTL,
+                cancellationToken),
+            _redisService.RemoveAsync(
+                CacheKey.List(CollectionName.Post, filterSignature: null, new CursorPageRequest(null)),
+                cancellationToken),
+            _redisService.RemoveAsync(
+                CacheKey.List(CollectionName.Post, $"account:{identity.Value}", new CursorPageRequest(null)),
+                cancellationToken),
+            _redisService.RemoveAsync(
+                CacheKey.List(CollectionName.Post, $"shop:{shopId}", new CursorPageRequest(null)),
+                cancellationToken),
+            _redisService.RemoveAsync(
+                CacheKey.List(CollectionName.Post, "mostReacted", new CursorPageRequest(null)),
+                cancellationToken));
 
         var recalculateMessage = new RecalculateShopRateMessage(
             Guid.NewGuid(),

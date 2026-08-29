@@ -48,20 +48,20 @@ public sealed class NotificationService : INotificationService
 
         var summaryDto = _mapper.Map<NotificationSummaryDto>(notification);
 
-        await _redisService.SetAsync(
-            CacheKey.Notification(notification.Id),
-            summaryDto,
-            CacheKey.DefaultNotificationTTL,
-            cancellationToken);
-
         string listCacheKey = CacheKey.List(
             CollectionName.Notification,
             $"account:{toAccountId}",
             new CursorPageRequest(null));
 
-        await _redisService.RemoveAsync(
-            listCacheKey,
-            cancellationToken);
+        await Task.WhenAll(
+            _redisService.SetAsync(
+                CacheKey.Notification(notification.Id),
+                summaryDto,
+                CacheKey.DefaultNotificationTTL,
+                cancellationToken),
+            _redisService.RemoveAsync(
+                listCacheKey,
+                cancellationToken));
 
         var onlineCount = await _redis.GetDatabase().StringGetAsync(NotificationHub.OnlineKey(toAccountId.ToString()));
         bool isOnline = onlineCount.HasValue && (long)onlineCount > 0;

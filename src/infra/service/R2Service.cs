@@ -33,7 +33,8 @@ public sealed class R2Service : IR2Service
         {
             BucketName = _bucketName,
             Key = key,
-            InputStream = content
+            InputStream = content,
+            UseChunkEncoding = false
         }, cancellationToken);
 
         return $"{_publicUrl}/{key}";

@@ -61,9 +61,16 @@ internal sealed class DeleteShopHandler
 
         string cacheKey = CacheKey.Shop(shop.Id);
 
-        await _redisService.RemoveAsync(
-            cacheKey,
-            cancellationToken);
+        await Task.WhenAll(
+            _redisService.RemoveAsync(
+                cacheKey,
+                cancellationToken),
+            _redisService.RemoveAsync(
+                CacheKey.List(CollectionName.Shop, filterSignature: null, new CursorPageRequest(null)),
+                cancellationToken),
+            _redisService.RemoveAsync(
+                CacheKey.List(CollectionName.Shop, "mostRated", new CursorPageRequest(null)),
+                cancellationToken));
 
         return Result.Ok();
     }

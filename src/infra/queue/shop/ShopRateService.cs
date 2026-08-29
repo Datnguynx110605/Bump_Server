@@ -67,9 +67,16 @@ public sealed class ShopRateService : IShopRateService
             update,
             cancellationToken : cancellationToken);
 
-        await _redisService.RemoveAsync(
-            CacheKey.Shop(shop.Id),
-            cancellationToken);
+        await Task.WhenAll(
+            _redisService.RemoveAsync(
+                CacheKey.Shop(shop.Id),
+                cancellationToken),
+            _redisService.RemoveAsync(
+                CacheKey.List(CollectionName.Shop, filterSignature: null, new CursorPageRequest(null)),
+                cancellationToken),
+            _redisService.RemoveAsync(
+                CacheKey.List(CollectionName.Shop, "mostRated", new CursorPageRequest(null)),
+                cancellationToken));
 
         return Result.Ok();
     }

@@ -74,63 +74,69 @@ public sealed class RabbitMQService : IRabbitMQService
         {
             var retryCount = GetRetryCount(args.BasicProperties);
 
-            var message = JsonSerializer.Deserialize<T>(args.Body.Span);
-            if(message is null)
-            {
-                await PublishRawAsync(
-                    channel, 
-                    DeadLetterQueueName(queueName), 
-                    args.Body.ToArray(), 
-                    retryCount, 
-                    cancellationToken);
-                await channel.BasicAckAsync(
-                    args.DeliveryTag, 
-                    multiple: false, 
-                    cancellationToken);
-                return;
-            }
-
-            var idempotencyKey = BuildIdempotencyKey(
-                queueName, 
-                getIdempotencyKey(message));
-            var payloadHash = Convert.ToHexString(SHA256.HashData(args.Body.Span));
-
-            var processedHash = await _redisService.GetAsync<string?>(
-                idempotencyKey, 
-                cancellationToken);
-            if(processedHash is not null)
-            {
-                if(processedHash != payloadHash)
-                {
-                    await PublishRawAsync(
-                        channel, 
-                        DeadLetterQueueName(queueName), 
-                        args.Body.ToArray(), 
-                        retryCount, 
-                        cancellationToken);
-                }
-
-                await channel.BasicAckAsync(
-                    args.DeliveryTag, 
-                    multiple: false, 
-                    cancellationToken);
-                return;
-            }
-
+            // Everything below — including deserialization and the
+            // idempotency lookup, not just onMessage — must stay inside this
+            // try/catch. A transient failure in any of it (e.g. Redis briefly
+            // unreachable during the idempotency check) would otherwise throw
+            // out of this event handler with the message never acked, never
+            // retried, and never dead-lettered: it just silently vanishes.
             try
             {
+                var message = JsonSerializer.Deserialize<T>(args.Body.Span);
+                if(message is null)
+                {
+                    await PublishRawAsync(
+                        channel,
+                        DeadLetterQueueName(queueName),
+                        args.Body.ToArray(),
+                        retryCount,
+                        cancellationToken);
+                    await channel.BasicAckAsync(
+                        args.DeliveryTag,
+                        multiple: false,
+                        cancellationToken);
+                    return;
+                }
+
+                var idempotencyKey = BuildIdempotencyKey(
+                    queueName,
+                    getIdempotencyKey(message));
+                var payloadHash = Convert.ToHexString(SHA256.HashData(args.Body.Span));
+
+                var processedHash = await _redisService.GetAsync<string?>(
+                    idempotencyKey,
+                    cancellationToken);
+                if(processedHash is not null)
+                {
+                    if(processedHash != payloadHash)
+                    {
+                        await PublishRawAsync(
+                            channel,
+                            DeadLetterQueueName(queueName),
+                            args.Body.ToArray(),
+                            retryCount,
+                            cancellationToken);
+                    }
+
+                    await channel.BasicAckAsync(
+                        args.DeliveryTag,
+                        multiple: false,
+                        cancellationToken);
+                    return;
+                }
+
                 await onMessage(
-                    message, 
+                    message,
                     cancellationToken);
 
                 await _redisService.SetAsync(
-                    idempotencyKey, 
-                    payloadHash, 
-                    IdempotencyTtl, 
+                    idempotencyKey,
+                    payloadHash,
+                    IdempotencyTtl,
                     cancellationToken);
                 await channel.BasicAckAsync(
-                    args.DeliveryTag, 
-                    multiple: false, 
+                    args.DeliveryTag,
+                    multiple: false,
                     cancellationToken);
             }
             catch
@@ -139,14 +145,14 @@ public sealed class RabbitMQService : IRabbitMQService
                 var targetQueue = nextAttempt >= MaxAttempts ? DeadLetterQueueName(queueName) : queueName;
 
                 await PublishRawAsync(
-                    channel, 
-                    targetQueue, 
-                    args.Body.ToArray(), 
-                    nextAttempt, 
+                    channel,
+                    targetQueue,
+                    args.Body.ToArray(),
+                    nextAttempt,
                     cancellationToken);
                 await channel.BasicAckAsync(
-                    args.DeliveryTag, 
-                    multiple: false, 
+                    args.DeliveryTag,
+                    multiple: false,
                     cancellationToken);
             }
         };

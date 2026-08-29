@@ -16,10 +16,10 @@ public sealed class Account : BaseEntity
     private List<Following> _followings = new();
     public IReadOnlyCollection<Following> Followings => _followings.AsReadOnly();
     public Amount FollowingAmount { get; private set; } =  Amount.Create(0).Value;
-    private List<Post> _savePosts = new();
-    public IReadOnlyCollection<Post> SavePosts => _savePosts.AsReadOnly();
-    private List<Shop> _saveShops = new();
-    public IReadOnlyCollection<Shop> SaveShops => _saveShops.AsReadOnly();
+    private List<SavedPost> _savePosts = new();
+    public IReadOnlyCollection<SavedPost> SavePosts => _savePosts.AsReadOnly();
+    private List<SavedShop> _saveShops = new();
+    public IReadOnlyCollection<SavedShop> SaveShops => _saveShops.AsReadOnly();
     public Role Role { get; private set; } = Role.User;
     private Account() {}
     private Account(
@@ -53,48 +53,6 @@ public sealed class Account : BaseEntity
             bio);
 
         return DomainResult<Account>.Success(account);
-    }
-
-    public DomainResult SavePost(Post post)
-    {
-        if(_savePosts.Any(x => x.Id == post.Id))
-            return DomainResult.Failure("Post already saved");
-
-        _savePosts.Add(post);
-
-        return DomainResult.Success();
-    }
-
-    public DomainResult RemoveSavedPost(Guid postId)
-    {
-       var post = _savePosts.FirstOrDefault(x => x.Id == postId);
-        if(post is null)
-            return DomainResult.Failure("Post not found");
-
-        _savePosts.Remove(post);
-
-        return DomainResult.Success();
-    }
-
-    public DomainResult SaveShop(Shop shop)
-    {
-        if(_saveShops.Any(x => x.Id == shop.Id))
-            return DomainResult.Failure("Shop already saved");
-
-        _saveShops.Add(shop);
-
-        return DomainResult.Success();
-    }
-
-    public DomainResult RemoveSavedShop(Guid shopId)
-    {
-        var shop = _saveShops.FirstOrDefault(x => x.Id == shopId);
-        if(shop is null)
-            return DomainResult.Failure("Shop not found");
-
-        _saveShops.Remove(shop);
-
-        return DomainResult.Success();
     }
 
     public DomainResult ChangeEmail(Email email)
