@@ -70,6 +70,8 @@ public static class BsonConfiguration
             map.MapField("_reactions").SetElementName(nameof(Post.Reactions));
         });
 
+        BsonClassMap.RegisterClassMap<Notification>(map => map.AutoMap());
+
         BsonClassMap.RegisterClassMap<RefreshToken>(map => map.AutoMap());
 
         BsonClassMap.RegisterClassMap<Report>(map => map.AutoMap());

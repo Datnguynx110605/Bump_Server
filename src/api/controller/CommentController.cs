@@ -2,6 +2,7 @@ using app;
 using MediatR;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.RateLimiting;
 
 namespace api;
 
@@ -17,6 +18,7 @@ public sealed class CommentController : ControllerBase
         _sender = sender;
     }
 
+    [EnableRateLimiting(RateLimiterPolicy.Upload)]
     [HttpPost]
     public async Task<ActionResult<CommentDto>> CreateComment(
         [FromForm] Guid postId,

@@ -47,11 +47,6 @@ public sealed class Post : BaseEntity
         if(urls?.Any() == true)
             post._images.AddRange(urls.Select(url => new Image(url)));
 
-        post.RaiseEvent(new PostCreatedEvent(
-            post.AccountId,
-            post.Id,
-            post.CreatedAt));
-
         return DomainResult<Post>.Success(post);
     }
 

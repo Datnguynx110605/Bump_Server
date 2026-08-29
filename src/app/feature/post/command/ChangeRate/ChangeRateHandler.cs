@@ -11,14 +11,17 @@ internal sealed class ChangeRateHandler
     private readonly IMongoDbContext _dbContext;
     private readonly IRedisService _redisService;
     private readonly ICurrentIdentityService _identityService;
+    private readonly IRabbitMQService _rabbitMQService;
     public ChangeRateHandler(
         IMongoDbContext dbContext,
         IRedisService redisService,
-        ICurrentIdentityService identityService)
+        ICurrentIdentityService identityService,
+        IRabbitMQService rabbitMQService)
     {
         _dbContext = dbContext;
         _redisService = redisService;
         _identityService = identityService;
+        _rabbitMQService = rabbitMQService;
     }
 
     public async Task<Result> Handle(
@@ -32,6 +35,7 @@ internal sealed class ChangeRateHandler
         var postCollection = _dbContext.GetCollection<Post>(CollectionName.Post);
 
         var projection = Builders<Post>.Projection
+            .Include(x => x.ShopId)
             .Include(x => x.Rate)
             .Include(x => x.IsDeleted);
 
@@ -65,6 +69,15 @@ internal sealed class ChangeRateHandler
 
         await _redisService.RemoveAsync(
             cacheKey,
+            cancellationToken);
+
+        var recalculateMessage = new RecalculateShopRateMessage(
+            Guid.NewGuid(),
+            post.ShopId);
+
+        await _rabbitMQService.PublishAsync(
+            QueueName.RecalculateShopRate,
+            recalculateMessage,
             cancellationToken);
 
         return Result.Ok();

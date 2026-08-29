@@ -14,18 +14,21 @@ internal sealed class CreatePostHandler
     private readonly IRedisService _redisService;
     private readonly IMongoDbContext _dbContext;
     private readonly IMapper _mapper;
+    private readonly IRabbitMQService _rabbitMQService;
     public CreatePostHandler(
         ICurrentIdentityService identityService,
         IR2Service r2Service,
         IRedisService redisService,
         IMongoDbContext dbContext,
-        IMapper mapper)
+        IMapper mapper,
+        IRabbitMQService rabbitMQService)
     {
         _identityService = identityService;
         _r2Service = r2Service;
         _redisService = redisService;
         _dbContext = dbContext;
         _mapper = mapper;
+        _rabbitMQService = rabbitMQService;
     }
 
     public async Task<Result<PostDto>> Handle(
@@ -118,8 +121,13 @@ internal sealed class CreatePostHandler
             CacheKey.DefaultPostTTL,
             cancellationToken);
 
-        await _dbContext.DispatchEventAsync(
-            post.Events,
+        var recalculateMessage = new RecalculateShopRateMessage(
+            Guid.NewGuid(),
+            shopId);
+
+        await _rabbitMQService.PublishAsync(
+            QueueName.RecalculateShopRate,
+            recalculateMessage,
             cancellationToken);
 
         return Result.Ok(dto);

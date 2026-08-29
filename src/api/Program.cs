@@ -1,20 +1,49 @@
 using api;
+using infra;
+using Serilog;
 
-var builder = WebApplication.CreateBuilder(args);
+Log.Logger = new LoggerConfiguration()
+    .WriteTo.Console()
+    .CreateBootstrapLogger();
 
-builder.Services.AddApi(builder.Configuration);
+try
+{
+    var builder = WebApplication.CreateBuilder(args);
 
-var app = builder.Build();
+    builder.Host.UseSerilog((context, services, configuration) => configuration
+        .ReadFrom.Configuration(context.Configuration)
+        .ReadFrom.Services(services)
+        .Enrich.FromLogContext());
 
-if(app.Environment.IsDevelopment())
-    app.MapOpenApi();
+    builder.Services.AddApi(builder.Configuration);
 
-app.UseHttpsRedirection();
+    var app = builder.Build();
 
-app.UseAuthentication();
+    if(app.Environment.IsDevelopment())
+        app.MapOpenApi();
 
-app.UseAuthorization();
+    app.UseForwardedHeaders();
 
-app.MapControllers();
+    app.UseHttpsRedirection();
 
-app.Run();
+    app.UseCorrelationId();
+
+    app.UsePerformance();
+
+    app.UseSerilogRequestLogging();
+
+    app.UseAuthentication();
+
+    app.UseRateLimiter();
+
+    app.UseAuthorization();
+
+    app.MapControllers();
+    app.MapHub<NotificationHub>("/hubs/notification");
+
+    app.Run();
+}
+finally
+{
+    Log.CloseAndFlush();
+}

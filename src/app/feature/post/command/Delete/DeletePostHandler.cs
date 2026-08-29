@@ -12,16 +12,19 @@ internal sealed class DeletePostHandler
     private readonly IR2Service _r2Service;
     private readonly IRedisService _redisService;
     private readonly ICurrentIdentityService _identityService;
+    private readonly IRabbitMQService _rabbitMQService;
     public DeletePostHandler(
         IMongoDbContext dbContext,
         IR2Service r2Service,
         IRedisService redisService,
-        ICurrentIdentityService identityService)
+        ICurrentIdentityService identityService,
+        IRabbitMQService rabbitMQService)
     {
         _dbContext = dbContext;
         _r2Service = r2Service;
         _redisService = redisService;
         _identityService = identityService;
+        _rabbitMQService = rabbitMQService;
     }
 
     public async Task<Result> Handle(
@@ -35,6 +38,7 @@ internal sealed class DeletePostHandler
         var postCollection = _dbContext.GetCollection<Post>(CollectionName.Post);
 
         var projection = Builders<Post>.Projection
+            .Include(x => x.ShopId)
             .Include(x => x.Images)
             .Include(x => x.IsDeleted);
 
@@ -75,6 +79,15 @@ internal sealed class DeletePostHandler
 
         await _redisService.RemoveAsync(
             cacheKey,
+            cancellationToken);
+
+        var recalculateMessage = new RecalculateShopRateMessage(
+            Guid.NewGuid(),
+            post.ShopId);
+
+        await _rabbitMQService.PublishAsync(
+            QueueName.RecalculateShopRate,
+            recalculateMessage,
             cancellationToken);
 
         return Result.Ok();

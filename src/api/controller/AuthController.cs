@@ -4,6 +4,7 @@ using FluentResults;
 using MediatR;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.RateLimiting;
 
 namespace api;
 
@@ -20,6 +21,7 @@ public sealed class AuthController : ControllerBase
     }
 
     [AllowAnonymous]
+    [EnableRateLimiting(RateLimiterPolicy.Auth)]
     [HttpPost("login")]
     public async Task<ActionResult<AuthResult>> Login(
         LoginRequest request,
@@ -34,6 +36,7 @@ public sealed class AuthController : ControllerBase
     }
 
     [AllowAnonymous]
+    [EnableRateLimiting(RateLimiterPolicy.Auth)]
     [HttpPost("refresh")]
     public async Task<ActionResult<AuthResult>> RequestNewAccessToken(
         RequestNewAccessTokenRequest request,

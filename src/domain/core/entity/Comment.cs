@@ -45,12 +45,6 @@ public sealed class Comment : BaseEntity
         if(urls is not null)
             comment._images.AddRange(urls.Select(url => new Image(url)));
 
-        comment.RaiseEvent(new CommentedPostEvent(
-            comment.AccountId,
-            comment.Id,
-            comment.PostId,
-            comment.CreatedAt));
-
         return DomainResult<Comment>.Success(comment);
     }
 

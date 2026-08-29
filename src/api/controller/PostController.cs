@@ -4,6 +4,7 @@ using FluentResults;
 using MediatR;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.RateLimiting;
 
 namespace api;
 
@@ -19,6 +20,7 @@ public sealed class PostController : ControllerBase
         _sender = sender;
     }
 
+    [EnableRateLimiting(RateLimiterPolicy.Upload)]
     [HttpPost]
     public async Task<ActionResult<PostDto>> CreatePost(
         [FromForm] string shopName,
@@ -114,6 +116,7 @@ public sealed class PostController : ControllerBase
         return result.ToActionResult();
     }
 
+    [EnableRateLimiting(RateLimiterPolicy.Search)]
     [HttpGet("search")]
     public async Task<ActionResult<CursorPageResult<PostSummaryDto>>> GetPostByKeyword(
         [FromQuery] string keyword,
