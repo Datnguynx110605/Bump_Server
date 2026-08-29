@@ -2,7 +2,7 @@
 
 This document explains how the `app` layer actually operates end to end: how a client request becomes a dispatched MediatR message, how a handler coordinates `domain` and `infra` to fulfill it, and how the cross-cutting mechanisms — validation, caching, pagination, domain event dispatch — fit into that flow. It does not cover layer boundaries or the dependency rule (see `doc/architecture.md`) or naming/folder conventions (see `doc/project-rules.md`). For what a handler is calling *into*, see `doc/domain-operation.md` (business rules) and `doc/infra-operation.md` (external systems).
 
-`app` is the use-case layer: every feature is one or more CQRS messages — a `<UseCase>Command` or `<UseCase>Query` record — plus one handler, discovered and invoked by MediatR through assembly scanning. Nothing outside `app` ever calls a handler by name; a caller only ever knows the message type and the `Result`/`Result<T>` it gets back. `app` has 9 feature areas (`account`, `auth`, `comment`, `email`, `follow`, `post`, `reaction`, `report`, `shop`), 64 handlers, and 28 validators.
+`app` is the use-case layer: every feature is one or more CQRS messages — a `<UseCase>Command` or `<UseCase>Query` record — plus one handler, discovered and invoked by MediatR through assembly scanning. Nothing outside `app` ever calls a handler by name; a caller only ever knows the message type and the `Result`/`Result<T>` it gets back. `app` has 10 feature areas (`account`, `auth`, `comment`, `email`, `follow`, `notification`, `post`, `reaction`, `report`, `shop`), 64 handlers, and 28 validators. `notification` has no `command` folder and no validators — see "Feature Areas" below.
 
 ## Core Patterns
 
@@ -92,7 +92,7 @@ Every entity has a `<Entity>Profile : Profile` (AutoMapper) mapping it to a `<En
 
 Query handlers that return a `*SummaryDto` reference a shared `<Entity>Projection.Summary` (`AccountProjection`, `PostProjection`, `CommentProjection`, `ShopProjection`) instead of repeating `.Include(...)` calls — a `sealed record` static holder, one per feature, listing exactly the fields that `SummaryDto` needs. Command handlers that mutate a narrow slice of an entity build their own inline, narrower projection instead (e.g. `ChangePasswordHandler` projects only `Password`+`IsDeleted`).
 
-**Known defect:** `AccountProjection.Summary` includes `.Include(x => x.Avatars.Last())`. `Last()` is a method call, not a field expression, and the MongoDB driver cannot render it — the projection throws `ExpressionNotSupportedException: Expression not supported: x.Avatars.Last()` before any query reaches the database, which takes down every handler that references it (`GetMyAccount`, `GetSpecificAccount`, `GetAllAccount`, `GetAccountByEmail`, `GetAccountByName`, `GetAccountByKeyword`). `.Include(x => x.Avatars)` renders correctly and needs no other change, since the `.ForCtorParam` mapping above already reduces the array to the single current avatar in memory.
+`AccountProjection.Summary` projects `.Include(x => x.Avatars)` — the full array, not just the current one — because `Builders<T>.Projection.Include` can only render a field-access expression, not a method call like `.Avatars.Last()`; the `.ForCtorParam` mapping above is what actually reduces the array down to the single current avatar in memory, on the `AccountSummaryDto` side.
 
 ### 5. Read: cache-aside
 
@@ -195,28 +195,7 @@ sequenceDiagram
 
 The remove side mirrors this exactly: filter requires the item to currently be present (`AnyEq`), update is `PullFilter`. `FollowService` additionally spans two `Account` documents in one `BulkWriteAsync` (not atomic across documents) — see `doc/infra-operation.md` for how it detects and repairs a partial write via retry.
 
-### 9. Domain event dispatch
-
-After a write that produces domain events, a handler calls `_dbContext.DispatchEventAsync(entity.Events, cancellationToken)`, which wraps each event in `DomainEventNotification<TEvent>` and publishes it via MediatR's `IPublisher`. `PostCreatedEventHandler` and `CommentedPostEventHandler` implement `INotificationHandler<DomainEventNotification<TEvent>>`; each `Handle` method returns `Task.CompletedTask`.
-
-```mermaid
-sequenceDiagram
-    participant H as Handler
-    participant M as MongoDB
-    participant Ctx as DbContext.DispatchEventAsync
-    participant Pub as MediatR IPublisher
-    participant EH as &lt;Event&gt;Handler
-
-    H->>M: InsertOneAsync(entity) — commits
-    H->>Ctx: DispatchEventAsync(entity.Events, ct)
-    loop each raised event
-        Ctx->>Pub: Publish(DomainEventNotification&lt;TEvent&gt;)
-        Pub->>EH: Handle(notification, ct)
-    end
-    Ctx-->>H: (returns)
-```
-
-### 10. Fire-and-forget queue commands
+### 9. Fire-and-forget queue commands
 
 `follow`'s `Follow`/`Unfollow` and `reaction`'s `ReactPost`/`UnreactPost`/`ReactComment`/`UnreactComment` are the six commands that never touch MongoDB or Redis themselves: each handler resolves the caller's identity, applies one guard specific to that command, and publishes a message to RabbitMQ via `IRabbitMQService.PublishAsync` — the actual document mutation happens later, out-of-band, in `infra`'s `FollowService`/`ReactionService` consumers (see `doc/infra-operation.md`). All six share one shape:
 
@@ -234,8 +213,23 @@ return Result.Ok();
 - **Identity check**: every one of the six fails with `"Unauthorized"` if `ICurrentIdentityService.GetAccountId()` returns `null` — the same guard every other authenticated handler relies on `ICurrentIdentityService` for, made explicit here because there is no MongoDB read afterward that would otherwise fail first.
 - **Self-target guard (`follow` only)**: `Follow`/`Unfollow` additionally fail with `"Cannot follow yourself"`/`"Cannot unfollow yourself"` if `identity.Value == request.followingId`. `reaction`'s four commands have no equivalent self-target check.
 - **Message shape**: `Follow`/`Unfollow` both publish a `FollowMessage(MessageId, FollowerId, FollowingId)` (a fresh `Guid.NewGuid()` per publish, not reused across retries); all four `reaction` commands publish a `ReactionMessage(MessageId, AccountId, TargetId)`, where `TargetId` is a `postId` for `ReactPost`/`UnreactPost` and a `commentId` for `ReactComment`/`UnreactComment` — the message shape does not distinguish a post-target from a comment-target, that distinction lives entirely in which `QueueName` it was published to.
-- **Queue names**: `QueueName.Follow`, `.Unfollow`, `.ReactPost`, `.UnreactPost`, `.ReactComment`, `.UnreactComment` — six distinct queues, one per command, not one queue per feature. `doc/infra-operation.md`'s "Queue Consumers" section explains why: two operations on the same account pair produce the same idempotency key, so sharing a queue between e.g. `Follow` and `Unfollow` would make the second delivery collide with the first as an integrity conflict rather than being processed as a distinct operation.
+- **Queue names**: `QueueName.Follow`, `.Unfollow`, `.ReactPost`, `.UnreactPost`, `.ReactComment`, `.UnreactComment` — six distinct queues, one per command, not one queue per feature. `doc/infra-operation.md`'s "Queue Consumers" section explains why: two operations on the same account pair produce the same idempotency key, so sharing a queue between e.g. `Follow` and `Unfollow` would make the second delivery collide with the first as an integrity conflict rather than being processed as a distinct operation. `QueueName` declares one more entry beyond these six, `.CreateComment` — it belongs to a different shape entirely, see the next pattern.
 - **Return value carries no confirmation**: `Result.Ok()` is returned the instant the publish succeeds, before `FollowService`/`ReactionService` has processed the message — a caller sees success as soon as the message is queued, not once the relationship/reaction actually exists in MongoDB. `api` reflects this by returning `202 Accepted` rather than `204 No Content` for these six actions (see `doc/api-operation.md`).
+
+### 10. Post-write notification publish (`comment`'s `Create`)
+
+`CreateCommentHandler` is not a seventh fire-and-forget command — it does the opposite of Pattern 9's shape. It performs its entire synchronous job first (upload images, `Comment.Create`, `InsertOneAsync`, write-through cache the DTO — the ordinary "Create: write-through" shape from Pattern 6) and only *after* that succeeds does it also publish a `CommentMessage(Guid.NewGuid(), identity.Value, comment.Id)` to `QueueName.CreateComment`:
+
+```csharp
+await _redisService.SetAsync(cacheKey, summaryDto, CacheKey.DefaultCommentTTL, cancellationToken);
+
+var message = new CommentMessage(Guid.NewGuid(), identity.Value, comment.Id);
+await _rabbitMQService.PublishAsync(QueueName.CreateComment, message, cancellationToken);
+
+return Result.Ok(dto);
+```
+
+The publish must come after the insert, never before — a consumer that received the message first could look up a `Comment` that doesn't exist yet. Unlike Pattern 9, the publish here is not the operation the client is waiting on: the `CommentDto` returned to the caller already reflects a fully committed write, and the queue exists only to drive a side effect out-of-band — `infra`'s `CommentService` reads the new comment's post, finds the post's owner, and calls `INotificationService.CreateAsync` to notify them (see `doc/infra-operation.md`). If `PublishAsync` itself throws, the exception propagates uncaught out of the handler (same as every other RabbitMQ publish in `app` — see Pattern 9's identity-check note), but by that point the comment already exists in MongoDB; a client that retries the request on that error would create a second, duplicate comment. This is a known, accepted property of persisting before publishing, not an oversight — publishing before the insert would be strictly worse, racing the consumer to a comment that may not exist yet.
 
 ## Feature Areas
 
@@ -245,9 +239,10 @@ return Result.Ok();
 | `auth` | Login, RequestNewAccessToken | GetAllRefreshToken, GetSpecificRefreshToken | No Redis anywhere in this feature — `RefreshToken` is a security-sensitive credential |
 | `email` | SendEmailForRegister, SendEmailForVerify, VerifyEmail | — | Not command/query split: one-off notification use cases, each takes `Email email` directly |
 | `post` | Create, ChangeCaption, ChangeRate, Delete | GetSpecificPost, GetMyPost, GetLatestPost, GetPostByAccount, GetPostByShop, GetPostByKeyword, GetMostReactedPost | `Create` resolves-or-creates the post's `Shop` first |
-| `comment` | Create, ChangeContent, Delete | GetSpecificComment, GetCommentByPost, GetMyCommentHistory | `Create` raises `CommentedPostEvent` |
-| `follow` | Follow, Unfollow | GetMyFollower, GetMyFollowing, GetFollowerByAccount, GetFollowingByAccount | Commands only publish to RabbitMQ (`QueueName.Follow`/`Unfollow`) — see "Fire-and-forget queue commands" below; the actual mutation happens in `infra`'s `FollowService` (see `doc/infra-operation.md`) |
-| `reaction` | ReactPost, UnreactPost, ReactComment, UnreactComment | GetReactionByPost, GetReactionByComment | Commands only publish to RabbitMQ (`QueueName.ReactPost`/`UnreactPost`/`ReactComment`/`UnreactComment`) — same fire-and-forget shape as `follow`, applied by `infra`'s `ReactionService` |
+| `comment` | Create, ChangeContent, Delete | GetSpecificComment, GetCommentByPost, GetMyCommentHistory | `Create` persists synchronously, then publishes `QueueName.CreateComment` to notify the post's owner — see "Post-write notification publish" below |
+| `follow` | Follow, Unfollow | GetMyFollower, GetMyFollowing, GetFollowerByAccount, GetFollowingByAccount | Commands only publish to RabbitMQ (`QueueName.Follow`/`Unfollow`) — see "Fire-and-forget queue commands" below; the actual mutation, plus notifying the followed account, happens in `infra`'s `FollowService` (see `doc/infra-operation.md`) |
+| `notification` | — | GetMyNotification, GetSpecificNotification | Read-only: no command folder, no validators. A `Notification` is created directly by `infra`'s `NotificationService`, never dispatched as a MediatR command — see `doc/domain-operation.md`/`doc/infra-operation.md` |
+| `reaction` | ReactPost, UnreactPost, ReactComment, UnreactComment | GetReactionByPost, GetReactionByComment | Commands only publish to RabbitMQ (`QueueName.ReactPost`/`UnreactPost`/`ReactComment`/`UnreactComment`) — same fire-and-forget shape as `follow`, applied by `infra`'s `ReactionService`, which also notifies the reacted-to post's/comment's owner |
 | `report` | Create | GetAllReport, GetSpecificReport, GetReportByTarget | `GetReportByTarget` discriminates on the `ReportTarget` enum (declared in `app`, not `domain` — see `doc/project-rules.md`) |
 | `shop` | Delete | GetAllShop, GetSpecificShop, GetShopByName, GetShopByAddress, GetShopByKeyword, GetMostRatedShop | No `Create` command — every `Shop` comes into existence as a side effect of `post/command/Create` |
 
@@ -272,10 +267,9 @@ sequenceDiagram
     Reg-->>H: email
     H->>Bc: HashPassword(password)
     H->>D: Account.Create(email, name, hash, bio)
-    D-->>H: Account (raises AccountCreatedEvent)
+    D-->>H: Account
     H->>M: InsertOneAsync(Account)
     H->>R: SetAsync(CacheKey.Account(id), AccountSummaryDto)
-    H->>H: DispatchEventAsync(account.Events)
     H-->>C: Result.Ok(AccountDto)
 ```
 
@@ -728,10 +722,9 @@ sequenceDiagram
         H->>H: cache Shop (write-through)
     end
     H->>D: Post.Create(accountId, shopId, caption, rate, urls)
-    D-->>H: Post (raises PostCreatedEvent)
+    D-->>H: Post
     H->>M: InsertOneAsync(Post)
     H->>H: cache PostSummaryDto (write-through)
-    H->>H: DispatchEventAsync(post.Events)
 ```
 
 #### ChangeCaption
@@ -951,8 +944,7 @@ sequenceDiagram
     participant D as domain (Comment.Create)
     participant M as MongoDB
     participant R as Redis
-    participant Pub as MediatR IPublisher
-    participant EH as CommentedPostEventHandler
+    participant Q as RabbitMQ (IRabbitMQService)
 
     C->>H: CreateCommentCommand(postId, content, images)
     opt images present
@@ -960,13 +952,14 @@ sequenceDiagram
         R2-->>H: url
     end
     H->>D: Comment.Create(accountId, postId, content, urls)
-    D-->>H: Comment (raises CommentedPostEvent)
+    D-->>H: Comment
     H->>M: InsertOneAsync(Comment)
     H->>R: SetAsync(CacheKey.Comment(id), CommentSummaryDto)
-    H->>Pub: DispatchEventAsync(comment.Events)
-    Pub->>EH: Handle(DomainEventNotification&lt;CommentedPostEvent&gt;)
+    H->>Q: PublishAsync(QueueName.CreateComment, CommentMessage(Guid.NewGuid(), identity, comment.Id))
     H-->>C: Result.Ok(CommentDto)
 ```
+
+The publish happens after the comment is already committed and cached — see "Post-write notification publish" (Pattern 10) above for why this is deliberately the reverse of every fire-and-forget queue command's ordering.
 
 #### ChangeContent
 
@@ -1197,6 +1190,58 @@ sequenceDiagram
     end
     H-->>C: Result.Ok(CursorPageResult&lt;FollowingDto&gt;)
 ```
+
+### Notification
+
+`notification` has no `command` folder — every `Notification` in existence was created directly by `infra`'s `NotificationService`, not by a handler in this section (see `doc/domain-operation.md`/`doc/infra-operation.md`). Both handlers below are ordinary reads over rows that already exist by the time a client asks for them.
+
+#### GetMyNotification
+
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant H as GetMyNotificationHandler
+    participant R as Redis
+    participant M as MongoDB
+
+    C->>H: GetMyNotificationQuery(pageRequest)
+    H->>R: GetAsync(CacheKey.List("notification", "account:{identity}", pageRequest))
+    R-->>H: hit: page / miss: null
+    opt miss
+        H->>M: CachedCursorPaginator: Find(ToAccountId=identity, IsDeleted=false), Project(NotificationProjection.Summary)
+        M-->>H: Notification[]
+        H->>R: SetAsync(cacheKey, page, DefaultListTTL)
+    end
+    H-->>C: Result.Ok(page)
+```
+
+#### GetSpecificNotification
+
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant H as GetSpecificNotificationHandler
+    participant R as Redis
+    participant M as MongoDB
+
+    C->>H: GetSpecificNotificationQuery(notificationId)
+    H->>R: GetAsync(CacheKey.Notification(notificationId))
+    R-->>H: hit: NotificationSummaryDto / miss: null
+    alt cache hit
+        H->>H: cached.ToAccountId == identity ? Ok(cached) : Fail("Notification not found")
+    else miss
+        H->>M: Find(Id=notificationId, ToAccountId=identity, IsDeleted=false) + Project(NotificationProjection.Summary)
+        M-->>H: Notification or null
+        alt found
+            H->>R: SetAsync(cacheKey, dto, DefaultNotificationTTL)
+            H-->>C: Result.Ok(dto)
+        else not found
+            H-->>C: Result.Fail("Notification not found")
+        end
+    end
+```
+
+Unlike every other single-entity `Get*` handler in `app`, a cache hit here still re-checks ownership (`cached.ToAccountId == identity`) before returning — `CacheKey.Notification(id)` is keyed by id alone, with no account segment, so the cached DTO could belong to a different account than the one asking. The Mongo fallback filters `ToAccountId == identity` directly in the query instead, so a miss never leaks another account's notification the way an unchecked cache hit could.
 
 ### Reaction
 

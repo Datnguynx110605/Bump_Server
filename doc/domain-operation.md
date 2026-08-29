@@ -1,6 +1,6 @@
 # Domain Operation
 
-This document explains how the `domain` layer actually operates end to end: how an object comes into existence, how it enforces its own rules, how it communicates success/failure, and how it raises events — entirely within `domain`'s own boundary. It does not cover how `app`/`infra` consume `domain` (composition, dispatch, persistence) — see `doc/architecture.md` for that. For naming and formatting conventions, see `doc/project-rules.md`.
+This document explains how the `domain` layer actually operates end to end: how an object comes into existence, how it enforces its own rules, and how it communicates success/failure — entirely within `domain`'s own boundary. It does not cover how `app`/`infra` consume `domain` (composition, persistence) — see `doc/architecture.md` for that. For naming and formatting conventions, see `doc/project-rules.md`.
 
 `domain` is 100% pure: it has no project or package references. Every mechanism described below is plain C#, with no framework involved.
 
@@ -37,7 +37,7 @@ public sealed class Email
 
 Because both constructors are `private`, it is a compile error to write `new Email("x")` or `new Account(...)` from `app` or anywhere else in the codebase. The only path to an instance is through `Create`, so an invalid `Account` or `Email` cannot exist in memory — the type system itself enforces the invariant, not caller discipline.
 
-This pattern applies to every aggregate root and every value object. It does **not** apply to the five plain child objects (`Avatar`, `Image`, `Follower`, `Following`, `Reaction`) — see "Child Objects" below for why they're the exception.
+This pattern applies to every aggregate root and every value object, with one exception: `Notification` has a `public` parameterized constructor and no `Create` factory at all — see "Aggregate Roots" below. It does **not** apply to the five plain child objects (`Avatar`, `Image`, `Follower`, `Following`, `Reaction`) — see "Child Objects" below for why they're the exception.
 
 ### 2. Rich Domain Model
 
@@ -93,11 +93,11 @@ public class DomainResult<T> : DomainResult
 - Failure carries a plain `string Error` — there is no error code, error type hierarchy, or list of multiple errors. One operation fails for exactly one reason at a time.
 - Methods commonly delegate to `BaseEntity.Update()` as their last step, so a mutation's `DomainResult` is often literally the `DomainResult` that `Update()` produced (see below) — failures compose without extra glue code.
 
-The result pattern is only as good as how consistently it's applied, and the codebase applies it the same way everywhere: every `Create` and every mutation method opens with one or more **guard clauses** — `if(invalid) return DomainResult.Failure(...);` — before touching any state, and only reaches the "happy path" assignment/mutation at the bottom once every guard has passed. This fail-fast style holds with no exception across all 13 entities and 3 value objects: there is no method in `domain` that validates partway through a mutation, or validates after already changing state.
+The result pattern is only as good as how consistently it's applied, and the codebase applies it the same way everywhere: every `Create` and every mutation method opens with one or more **guard clauses** — `if(invalid) return DomainResult.Failure(...);` — before touching any state, and only reaches the "happy path" assignment/mutation at the bottom once every guard has passed. This fail-fast style holds with no exception across every entity and value object that has a `Create`/mutation method to apply it to — there is no method in `domain` that validates partway through a mutation, or validates after already changing state. `Notification` is outside this claim entirely, not an exception to it: it has no `Create` factory and no guard clauses anywhere (see "Aggregate Roots" below).
 
 ## Entity Lifecycle (`BaseEntity`)
 
-Every aggregate root (`Account`, `Post`, `Comment`, `Shop`, `Report`, `RefreshToken`) inherits identity and soft-delete lifecycle from `BaseEntity`, which is the one non-sealed, `abstract` type in `domain/core/entity`:
+Every aggregate root (`Account`, `Post`, `Comment`, `Shop`, `Report`, `RefreshToken`, `Notification`) inherits identity and soft-delete lifecycle from `BaseEntity`, which is the one non-sealed, `abstract` type in `domain/core/entity`:
 
 | Member | Behavior |
 |---|---|
@@ -117,7 +117,7 @@ This gives every aggregate root the same state machine: **Active → (Delete) �
 
 This is a **Template Method**: `BaseEntity` implements the lifecycle transitions once, and every subclass reuses that exact implementation rather than re-deriving "is this entity deleted" logic per aggregate — a subclass's job is only to decide *when* to call `Update()`/`Delete()`/`Recover()` (i.e. which of its own methods should trigger a state transition), not *how* the transition itself works.
 
-`Account`, `Post`, `Comment`, and `Shop` wrap these base methods with a domain-specific name: `Account.DeleteAccount()` and `Account.RecoverAccount()` call `Delete()`/`Recover()`; `Post.DeletePost()`, `Comment.DeleteComment()`, and `Shop.DeleteShop()` call `Delete()`. `Report` and `RefreshToken` have no such wrapper — their base `Update`/`Delete`/`Recover` are `public` and callable directly, without an entity-specific method name. The underlying state machine is identical for all six aggregate roots either way.
+`Account`, `Post`, `Comment`, and `Shop` wrap these base methods with a domain-specific name: `Account.DeleteAccount()` and `Account.RecoverAccount()` call `Delete()`/`Recover()`; `Post.DeletePost()`, `Comment.DeleteComment()`, and `Shop.DeleteShop()` call `Delete()`. `Report`, `RefreshToken`, and `Notification` have no such wrapper — their base `Update`/`Delete`/`Recover` are `public` and callable directly, without an entity-specific method name. The underlying state machine is identical for all seven aggregate roots either way, though nothing in the codebase currently calls `Delete()`/`Recover()` on a `Notification` — see "Aggregate Roots" below.
 
 Value objects (`Email`, `Name`, `Amount`) and child objects (`Avatar`, `Image`, `Follower`, `Following`, `Reaction`) do **not** inherit `BaseEntity` — they have no `Id`, no timestamps, and no soft-delete lifecycle of their own; they live and die with the aggregate that owns them.
 
@@ -141,7 +141,7 @@ This no-identity, no-mutation shape is the DDD **Value Object** pattern in its o
 
 - **Identity/state**: `Email`, `Name`, `Password` (BCrypt hash), `Bio` (nullable, max 2000 chars), `Role` (defaults to `Role.User`), `FollowerAmount`/`FollowingAmount` (`Amount`, default 0).
 - **Owned collections**: `Avatars` (`List<Avatar>`), `Followers` (`List<Follower>`), `Followings` (`List<Following>`), `SavePosts` (`List<Post>`), `SaveShops` (`List<Shop>`).
-- **`Create(email, name, password, bio)`**: fails if `password.Length != 60` (i.e. the caller must pass an already-BCrypt-hashed password, not plaintext); fails if `bio` exceeds 2000 characters. Raises `AccountCreatedEvent(accountId, email, createdAt)`.
+- **`Create(email, name, password, bio)`**: fails if `password.Length != 60` (i.e. the caller must pass an already-BCrypt-hashed password, not plaintext); fails if `bio` exceeds 2000 characters.
 - **Business methods**: `SavePost`/`RemoveSavedPost`, `SaveShop`/`RemoveSavedShop` (all fail if the target is already present / not found, respectively); `ChangeEmail`/`ChangeName` (fail if the new value equals the current one); `ChangePassword` (fails if identical to current, or if the new hash isn't exactly 60 characters); `ChangeBio` (fails only on the 2000-character limit — unlike the others, a `null`/empty bio is allowed and re-settable); `ChangeAvatar` (fails on empty URL or a duplicate URL already present); `RemoveAvatar` (fails if the URL isn't found).
 - **Lifecycle wrappers**: `DeleteAccount()`, `RecoverAccount()`.
 
@@ -149,7 +149,7 @@ This no-identity, no-mutation shape is the DDD **Value Object** pattern in its o
 
 - **Identity/state**: `AccountId` (owner reference by `Guid`, not a loaded `Account`), `ShopId` (`Guid` reference, not a loaded `Shop`), `Caption` (nullable), `Rate`/`ReactionAmount`/`CommentAmount` (`Amount`, latter two default 0).
 - **Owned collections**: `Images` (`List<Image>`), `Reactions` (`List<Reaction>`).
-- **`Create(accountId, shopId, caption, rate, urls?)`**: fails if `accountId == Guid.Empty` or `shopId == Guid.Empty`. On success, seeds `Images` from `urls` if provided, and raises `PostCreatedEvent(accountId, postId, createdAt)`. Note: `Post.Create` does not create or validate the referenced `Shop` — the caller (`CreatePostHandler`) resolves or creates the `Shop` first and passes its id in already resolved.
+- **`Create(accountId, shopId, caption, rate, urls?)`**: fails if `accountId == Guid.Empty` or `shopId == Guid.Empty`. On success, seeds `Images` from `urls` if provided. Note: `Post.Create` does not create or validate the referenced `Shop` — the caller (`CreatePostHandler`) resolves or creates the `Shop` first and passes its id in already resolved.
 - **Business methods**: `ChangeCaption` (takes a non-nullable `string`; no validation beyond `Update()`'s own soft-delete check — any text, including an empty string, is accepted and assigned directly), `ChangeRate` (same — accepts any `Amount`, no bounds check beyond `Amount.Create`'s own non-negative rule).
 - **Lifecycle wrapper**: `DeletePost()`.
 
@@ -157,7 +157,7 @@ This no-identity, no-mutation shape is the DDD **Value Object** pattern in its o
 
 - **Identity/state**: `AccountId`, `PostId` (both `Guid` references, not loaded aggregates), `Content` (nullable, max 2000 chars), `ReactionAmount` (`Amount`, default 0).
 - **Owned collections**: `Images` (`List<Image>`), `Reactions` (`List<Reaction>`).
-- **`Create(accountId, postId, content, urls?)`**: fails if `accountId == Guid.Empty`; fails if `postId == Guid.Empty`; fails if `content` exceeds 2000 characters. Seeds `Images` from `urls` if provided, and raises `CommentedPostEvent(accountId, commentId, postId, createdAt)`.
+- **`Create(accountId, postId, content, urls?)`**: fails if `accountId == Guid.Empty`; fails if `postId == Guid.Empty`; fails if `content` exceeds 2000 characters. Seeds `Images` from `urls` if provided.
 - **Business methods**: `ChangeContent(content)` — fails only on the 2000-character limit; unlike `Create`, this method takes a non-nullable `string`, so an edit can set `Content` to an empty string but never back to `null` — `Content == null` is a state only `Create(content: null)` can produce.
 - **Lifecycle wrapper**: `DeleteComment()`.
 
@@ -185,6 +185,14 @@ This no-identity, no-mutation shape is the DDD **Value Object** pattern in its o
 - **Business methods**: `Validate()` — returns `DomainResult` (not `DomainResult<T>`, since it produces no value): fails with `"Refresh token has been revoked"` if `IsRevoked`, fails with `"Expired"` if past `ExpiryDate`, otherwise succeeds. `Revoke()` — fails with the same `"Refresh token has been revoked"` message if already revoked (no double-revoke), otherwise sets `IsRevoked = true` and succeeds; unlike every other mutation method in `domain`, it does not call `Update()`, so `UpdatedAt` stays `null` even after a successful revoke.
 - **Lifecycle wrapper**: none.
 
+### `Notification`
+
+- **Identity/state**: `ToAccountId` (recipient, `Guid` reference, not a loaded `Account`), `Title` and `Content` (both required `string`, no length or emptiness validation), `IsSent` (`bool`, default `false`).
+- **Owned collections**: none.
+- **Construction breaks Pattern 1**: `Notification` is the *only* aggregate root in `domain` with a `public` parameterized constructor and no `Create` factory — `infra`'s `NotificationService` calls `new Notification(toAccountId, title, content)` directly from outside `domain`. Neither `Title` nor `Content` is validated the way `Comment.Content`/`Report.Reason` are (no max length, no required check); the private parameterless constructor exists (for persistence materialization, matching every other entity) but the public parameterized one bypasses the "only `Create` produces a valid instance" guarantee this document opens with. This is current behavior, not a proposed direction.
+- **Business methods**: `MarkAsSent()` — unconditionally sets `IsSent = true` and calls `Update()`; it has no guard clause, since there is nothing to reject.
+- **Lifecycle wrapper**: none. Nothing in the codebase calls `Delete()`/`Recover()` on a `Notification` today, though `app`'s notification query handlers still filter `IsDeleted == false` defensively, consistent with every other aggregate root.
+
 ## Child Objects (not aggregate roots)
 
 `Avatar`, `Image`, `Follower`, `Following`, and `Reaction` are the five entities in `domain/core/entity` that do **not** derive from `BaseEntity` and do **not** follow the static-factory pattern — each has a `public` constructor callable directly, with no `Create` method and no validation:
@@ -199,35 +207,4 @@ This no-identity, no-mutation shape is the DDD **Value Object** pattern in its o
 
 These are intentionally lighter-weight than aggregate roots: they carry denormalized display data (`Name`, `Avatar`) rather than being looked up by reference, they have no independent identity or lifecycle, and they are only ever meant to be added to / removed from a parent aggregate's private collection — never persisted or queried on their own. Their public constructor is a smaller version of the same ownership rule the aggregate roots enforce with `private` constructors: nothing outside `domain` is expected to hold a bare `Avatar` or `Reaction` that isn't already attached to an aggregate, even though the compiler does not currently prevent it the way it prevents `new Account(...)`.
 
-## Domain Events
-
-Alongside static factories, the rich domain model, value objects, and the result pattern, **Domain Events** are the fifth pattern `domain` applies: instead of a mutation only changing state and returning a result, a significant occurrence (an account being created, a post being commented on) is also recorded as an immutable fact for interested parties elsewhere in the system to react to later — decoupling "what happened inside this aggregate" from "who needs to know and what they do about it."
-
-Every domain event is a `sealed record` deriving from the `abstract record Event`:
-
-```csharp
-public abstract record Event
-{
-    public Guid Id { get; private set; } = Guid.NewGuid();
-    public Guid EntityId { get; private set; }
-    public string? PayloadHash { get; private set; }
-    public EventStatus Status { get; private set; } = EventStatus.Pending;
-    public DateTime RaisedAt { get; private set; } = DateTime.UtcNow;
-}
-```
-
-Only `Id` and `RaisedAt` are populated automatically at construction. `EntityId`, `PayloadHash`, and `Status` are declared on the base type but no derived event's constructor sets them — every event raised today has `EntityId == Guid.Empty`, `PayloadHash == null`, and `Status == EventStatus.Pending` regardless of what actually happened. `PayloadHash` is declared `string?` precisely because of this — nothing ever assigns it. Each derived event instead carries its own explicit identifiers (e.g. `AccountCreatedEvent.AccountId`) rather than using the base `EntityId`.
-
-An aggregate raises an event by calling the `protected void RaiseEvent(Event @event)` method it inherits from `BaseEntity`, which appends to a private `List<Event> _events`; the event sits in `entity.Events` (`IReadOnlyCollection<Event>`) until something outside `domain` reads and dispatches it — that dispatch mechanism is `app`/`infra`'s responsibility, described in `doc/architecture.md`, not `domain`'s.
-
-Seven event types exist in `domain/core/event`; three are constructed, all from inside a `Create` factory:
-
-| Event | Raised by |
-|---|---|
-| `AccountCreatedEvent` | `Account.Create` |
-| `PostCreatedEvent` | `Post.Create` |
-| `CommentedPostEvent` | `Comment.Create` |
-| `FollowedAccountEvent` | no domain method constructs one |
-| `GetFollowedEvent` | no domain method constructs one |
-| `ReactedPostEvent` | no domain method constructs one |
-| `ReactedCommentEvent` | no domain method constructs one |
+`domain` has no domain-event mechanism: there is no `Event` base type, no `RaiseEvent` method on `BaseEntity`, and no `domain/core/event` folder — a prior version of this document described one, but it was removed from the codebase. An aggregate's `Create`/mutation methods only ever change state and return a `DomainResult`; nothing in `domain` records a side-channel fact about what happened for something else to react to later. Where `app`/`infra` need to react to a write today (e.g. notifying a post's owner when someone comments on it), that is built as an explicit call from the handler or a downstream RabbitMQ consumer — see `doc/app-operation.md` and `doc/infra-operation.md`.

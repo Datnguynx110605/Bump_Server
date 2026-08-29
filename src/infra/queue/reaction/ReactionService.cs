@@ -29,7 +29,7 @@ public sealed class ReactionService : IReactionService
 
         var accountProjection = Builders<Account>.Projection
             .Include(x => x.Name)
-            .Include(x => x.Avatars.Last());
+            .Include(x => x.Avatars);
 
         var account = await accountCollection
             .Find(x => x.Id == accountId && !x.IsDeleted)
@@ -123,7 +123,7 @@ public sealed class ReactionService : IReactionService
 
         var accountProjection = Builders<Account>.Projection
             .Include(x => x.Name)
-            .Include(x => x.Avatars.Last());
+            .Include(x => x.Avatars);
 
         var account = await accountCollection
             .Find(x => x.Id == accountId && !x.IsDeleted)

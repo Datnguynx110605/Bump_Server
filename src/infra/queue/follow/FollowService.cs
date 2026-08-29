@@ -32,7 +32,7 @@ public sealed class FollowService : IFollowService
 
         var projection = Builders<Account>.Projection
             .Include(x => x.Name)
-            .Include(x => x.Avatars.Last());
+            .Include(x => x.Avatars);
 
         var follower = await accountCollection
             .Find(x => x.Id == followerId && !x.IsDeleted)
