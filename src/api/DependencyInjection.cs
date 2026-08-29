@@ -7,6 +7,7 @@ using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.RateLimiting;
+using Microsoft.AspNetCore.SignalR;
 using Microsoft.IdentityModel.Tokens;
 
 namespace api;
@@ -20,6 +21,9 @@ public static class DependencyInjection
 
         services.AddControllers();
         services.AddOpenApi();
+
+        services.AddSignalR();
+        services.AddSingleton<IUserIdProvider, AccountIdUserIdProvider>();
 
         services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
             .AddJwtBearer(options =>
@@ -35,6 +39,17 @@ public static class DependencyInjection
                     ValidAudience = configuration["Jwt:Audience"],
                     IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(configuration["Jwt:SecretKey"]!)),
                     RoleClaimType = JwtService.RoleClaimType
+                };
+                options.Events = new JwtBearerEvents
+                {
+                    OnMessageReceived = context =>
+                    {
+                        var accessToken = context.Request.Query["access_token"];
+                        if(!string.IsNullOrEmpty(accessToken) && context.HttpContext.Request.Path.StartsWithSegments("/hubs"))
+                            context.Token = accessToken;
+
+                        return Task.CompletedTask;
+                    }
                 };
             });
 

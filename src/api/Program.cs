@@ -1,4 +1,5 @@
 using api;
+using infra;
 using Serilog;
 
 Log.Logger = new LoggerConfiguration()
@@ -38,6 +39,7 @@ try
     app.UseAuthorization();
 
     app.MapControllers();
+    app.MapHub<NotificationHub>("/hubs/notification");
 
     app.Run();
 }

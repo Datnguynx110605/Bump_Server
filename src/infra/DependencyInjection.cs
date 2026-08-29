@@ -54,12 +54,14 @@ public static class DependencyInjection
         services.AddScoped<IFollowService, FollowService>();
         services.AddScoped<IJwtService, JwtService>();
         services.AddScoped<IMongoDbContext, DbContext>();
+        services.AddScoped<INotificationService, NotificationService>();
         services.AddScoped<IOtpService, OtpService>();
         services.AddScoped<IR2Service, R2Service>();
         services.AddScoped<IRabbitMQService, RabbitMQService>();
         services.AddScoped<IReactionService, ReactionService>();
         services.AddScoped<IRedisService, RedisService>();
         services.AddScoped<IRegistrationService, RegistrationService>();
+        services.AddScoped<IShopRateService, ShopRateService>();
 
         services.AddHostedService<IndexInitializer>();
         services.AddHostedService<FollowConsumerHost>();
@@ -68,6 +70,7 @@ public static class DependencyInjection
         services.AddHostedService<UnreactPostConsumerHost>();
         services.AddHostedService<ReactCommentConsumerHost>();
         services.AddHostedService<UnreactCommentConsumerHost>();
+        services.AddHostedService<RecalculateShopRateConsumerHost>();
 
         return services;
     }

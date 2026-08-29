@@ -77,10 +77,6 @@ internal sealed class CreateCommentHandler
             CacheKey.DefaultCommentTTL,
             cancellationToken);
 
-        await _dbContext.DispatchEventAsync(
-            comment.Events,
-            cancellationToken);
-
         return Result.Ok(dto);
     }
 }

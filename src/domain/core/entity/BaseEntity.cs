@@ -8,10 +8,6 @@ public abstract class BaseEntity
     public DateTime? DeletedAt { get; private set; } = null;
     public bool IsDeleted { get; private set; } = false;
     public DateTime? RecoveredAt { get; private set; } = null;
-    private List<Event> _events = new();
-    public IReadOnlyCollection<Event> Events => _events.AsReadOnly();
-    protected void RaiseEvent(Event @event) => _events.Add(@event);
-    public void ClearEvent() => _events.Clear();
 
     public DomainResult Update()
     {

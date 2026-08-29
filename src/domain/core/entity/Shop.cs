@@ -27,6 +27,13 @@ public sealed class Shop : BaseEntity
         return DomainResult<Shop>.Success(shop);
     }
 
+    public DomainResult ChangeRate(Amount rate)
+    {
+        Rate = rate;
+
+        return Update();
+    }
+
     public DomainResult DeleteShop()
     {
         return Delete();

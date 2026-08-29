@@ -39,6 +39,12 @@ public sealed record CacheKey
         return $"shop:v1:id:{shopId}";
     }
 
+    public static TimeSpan DefaultNotificationTTL = TimeSpan.FromDays(7);
+    public static string Notification(Guid notificationId)
+    {
+        return $"notification:v1:id:{notificationId}";
+    }
+
     public static TimeSpan DefaultListTTL = TimeSpan.FromMinutes(2);
     public static string List(string entity, string? filterSignature, CursorPageRequest request)
     {

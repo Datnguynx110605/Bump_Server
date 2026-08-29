@@ -52,11 +52,6 @@ public sealed class Account : BaseEntity
             password,
             bio);
 
-        account.RaiseEvent(new AccountCreatedEvent(
-            account.Id,
-            account.Email,
-            account.CreatedAt));
-
         return DomainResult<Account>.Success(account);
     }
 

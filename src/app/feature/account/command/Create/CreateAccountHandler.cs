@@ -72,10 +72,6 @@ internal sealed class CreateAccountHandler
             CacheKey.DefaultAccountTTL,
             cancellationToken);
 
-        await _dbContext.DispatchEventAsync(
-            account.Events,
-            cancellationToken);
-
         return Result.Ok(dto);
     }
 }
