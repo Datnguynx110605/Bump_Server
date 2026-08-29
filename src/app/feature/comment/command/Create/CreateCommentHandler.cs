@@ -13,18 +13,21 @@ internal sealed class CreateCommentHandler
     private readonly IRedisService _redisService;
     private readonly IMongoDbContext _dbContext;
     private readonly IMapper _mapper;
+    private readonly IRabbitMQService _rabbitMQService;
     public CreateCommentHandler(
         ICurrentIdentityService identityService,
         IR2Service r2Service,
         IRedisService redisService,
         IMongoDbContext dbContext,
-        IMapper mapper)
+        IMapper mapper,
+        IRabbitMQService rabbitMQService)
     {
         _identityService = identityService;
         _r2Service = r2Service;
         _redisService = redisService;
         _dbContext = dbContext;
         _mapper = mapper;
+        _rabbitMQService = rabbitMQService;
     }
 
     public async Task<Result<CommentDto>> Handle(
@@ -75,6 +78,16 @@ internal sealed class CreateCommentHandler
             cacheKey,
             summaryDto,
             CacheKey.DefaultCommentTTL,
+            cancellationToken);
+
+        var message = new CommentMessage(
+            Guid.NewGuid(),
+            identity.Value,
+            comment.Id);
+
+        await _rabbitMQService.PublishAsync(
+            QueueName.CreateComment,
+            message,
             cancellationToken);
 
         return Result.Ok(dto);

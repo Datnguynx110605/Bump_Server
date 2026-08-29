@@ -40,6 +40,7 @@ try
 
     app.MapControllers();
     app.MapHub<NotificationHub>("/hubs/notification");
+    app.MapHealthChecks("/health");
 
     app.Run();
 }

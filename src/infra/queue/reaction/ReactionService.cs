@@ -9,12 +9,15 @@ public sealed class ReactionService : IReactionService
 {
     private readonly IMongoDbContext _dbContext;
     private readonly IRedisService _redisService;
+    private readonly INotificationService _notificationService;
     public ReactionService(
         IMongoDbContext dbContext,
-        IRedisService redisService)
+        IRedisService redisService,
+        INotificationService notificationService)
     {
         _dbContext = dbContext;
         _redisService = redisService;
+        _notificationService = notificationService;
     }
 
     public async Task<Result> ProcessReactPostAsync(
@@ -26,7 +29,7 @@ public sealed class ReactionService : IReactionService
 
         var accountProjection = Builders<Account>.Projection
             .Include(x => x.Name)
-            .Include(x => x.Avatars.Last());
+            .Include(x => x.Avatars);
 
         var account = await accountCollection
             .Find(x => x.Id == accountId && !x.IsDeleted)
@@ -59,7 +62,25 @@ public sealed class ReactionService : IReactionService
             CacheKey.Post(postId),
             cancellationToken);
 
-        return Result.Ok();
+        var postOwnerProjection = Builders<Post>.Projection
+            .Include(x => x.AccountId);
+
+        var post = await postCollection
+            .Find(x => x.Id == postId && !x.IsDeleted)
+            .Project<Post>(postOwnerProjection)
+            .FirstOrDefaultAsync(cancellationToken);
+
+        if(post is null)
+            return Result.Fail("Post not found");
+
+        if(post.AccountId == accountId)
+            return Result.Ok();
+
+        return await _notificationService.CreateAsync(
+            post.AccountId,
+            "New reaction",
+            $"{account.Name.Value} reacted your post",
+            cancellationToken);
     }
 
     public async Task<Result> ProcessUnreactPostAsync(
@@ -102,7 +123,7 @@ public sealed class ReactionService : IReactionService
 
         var accountProjection = Builders<Account>.Projection
             .Include(x => x.Name)
-            .Include(x => x.Avatars.Last());
+            .Include(x => x.Avatars);
 
         var account = await accountCollection
             .Find(x => x.Id == accountId && !x.IsDeleted)
@@ -135,7 +156,25 @@ public sealed class ReactionService : IReactionService
             CacheKey.Comment(commentId),
             cancellationToken);
 
-        return Result.Ok();
+        var commentOwnerProjection = Builders<Comment>.Projection
+            .Include(x => x.AccountId);
+
+        var comment = await commentCollection
+            .Find(x => x.Id == commentId && !x.IsDeleted)
+            .Project<Comment>(commentOwnerProjection)
+            .FirstOrDefaultAsync(cancellationToken);
+
+        if(comment is null)
+            return Result.Fail("Comment not found");
+
+        if(comment.AccountId == accountId)
+            return Result.Ok();
+
+        return await _notificationService.CreateAsync(
+            comment.AccountId,
+            "New reaction",
+            $"{account.Name.Value} reacted your comment",
+            cancellationToken);
     }
 
     public async Task<Result> ProcessUnreactCommentAsync(

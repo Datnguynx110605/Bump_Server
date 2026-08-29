@@ -9,12 +9,15 @@ public sealed class FollowService : IFollowService
 {
     private readonly IMongoDbContext _dbContext;
     private readonly IRedisService _redisService;
+    private readonly INotificationService _notificationSerivce;
     public FollowService(
         IMongoDbContext dbContext,
-        IRedisService redisService)
+        IRedisService redisService,
+        INotificationService notificationService)
     {
         _dbContext = dbContext;
         _redisService = redisService;
+        _notificationSerivce = notificationService;
     }
 
     public async Task<Result> ProcessFollowAsync(
@@ -29,7 +32,7 @@ public sealed class FollowService : IFollowService
 
         var projection = Builders<Account>.Projection
             .Include(x => x.Name)
-            .Include(x => x.Avatars.Last());
+            .Include(x => x.Avatars);
 
         var follower = await accountCollection
             .Find(x => x.Id == followerId && !x.IsDeleted)
@@ -87,7 +90,11 @@ public sealed class FollowService : IFollowService
             CacheKey.Account(followingId),
             cancellationToken);
 
-        return Result.Ok();
+        return await _notificationSerivce.CreateAsync(
+            following.Id,
+            "New follower",
+            $"{follower.Name.Value} followed you",
+            cancellationToken);
     }
 
     public async Task<Result> ProcessUnfollowAsync(

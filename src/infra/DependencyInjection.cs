@@ -48,7 +48,13 @@ public static class DependencyInjection
             return factory.CreateConnectionAsync().GetAwaiter().GetResult();
         });
 
+        services.AddHealthChecks()
+            .AddCheck<MongoHealthCheck>("mongodb")
+            .AddCheck<RedisHealthCheck>("redis")
+            .AddCheck<RabbitMQHealthCheck>("rabbitmq");
+
         services.AddScoped<IBcryptService, BCryptService>();
+        services.AddScoped<ICommentService, CommentService>();
         services.AddScoped<ICurrentIdentityService, CurrentIdentityService>();
         services.AddScoped<IEmailService, EmailService>();
         services.AddScoped<IFollowService, FollowService>();
@@ -70,6 +76,7 @@ public static class DependencyInjection
         services.AddHostedService<UnreactPostConsumerHost>();
         services.AddHostedService<ReactCommentConsumerHost>();
         services.AddHostedService<UnreactCommentConsumerHost>();
+        services.AddHostedService<CreateCommentConsumerHost>();
         services.AddHostedService<RecalculateShopRateConsumerHost>();
 
         return services;

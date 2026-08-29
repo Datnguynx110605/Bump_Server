@@ -2,7 +2,7 @@
 
 This document explains how the `api` layer actually operates end to end: how an incoming HTTP request becomes a dispatched MediatR message, how authentication/authorization/rate limiting gate it, and how the `Result`/`Result<T>` a handler returns (or a rejection that never reaches a handler) becomes an HTTP response. It does not cover layer boundaries or the dependency rule (see `doc/architecture.md`) or naming conventions (see `doc/project-rules.md`, which also holds the API Layer Conventions — the status-mapping *rule* lives there; this document covers the *mechanism*). For what happens after dispatch, see `doc/app-operation.md`.
 
-`api` is the entry-point layer and composition root: a thin ASP.NET Core Web API host with no business logic of its own. It has 9 controllers — one per `app` feature area (`account`, `auth`, `comment`, `email`, `follow`, `post`, `reaction`, `report`, `shop`) — exposing 62 actions in total, backed by 13 request records for the actions whose body doesn't bind directly to a route/query parameter or an existing `app`/`domain` type.
+`api` is the entry-point layer and composition root: a thin ASP.NET Core Web API host with no business logic of its own. It has 10 controllers — one per `app` feature area (`account`, `auth`, `comment`, `email`, `follow`, `notification`, `post`, `reaction`, `report`, `shop`) — exposing 64 actions in total, backed by 13 request records for the actions whose body doesn't bind directly to a route/query parameter or an existing `app`/`domain` type. `api` also hosts one SignalR hub, `NotificationHub` (`infra`, mapped at `/hubs/notification`) — see "Composition Root" below.
 
 ## Core Patterns
 
@@ -41,7 +41,7 @@ Every controller carries a class-level `[Authorize]`, so an action is authentica
 
 - **`[AllowAnonymous]`** (6 actions): `AccountController.CreateAccount`, `AuthController.Login`, `AuthController.RequestNewAccessToken`, `EmailController.SendForRegister`, `EmailController.SendForVerify`, `EmailController.Verify` — the only actions reachable before a caller has credentials, which is exactly the account-creation/login/OTP-verification bootstrap sequence.
 - **`[Authorize(Roles = nameof(Role.Admin))]`** (8 actions): `AccountController.GetAllAccount`/`GetAccountByEmail`, `AuthController.GetAllRefreshToken`/`GetSpecificRefreshToken`, `ReportController.GetAllReport`/`GetSpecificReport`/`GetReportByTarget`, `ShopController.DeleteShop`. `nameof(Role.Admin)` reads the `domain` enum directly (see `doc/domain-operation.md`), so the attribute cannot drift from the enum's member names; it works at runtime only because `AddApi` disables inbound claim mapping (`MapInboundClaims = false`) and binds `RoleClaimType` to `JwtService.RoleClaimType` (see "Composition Root" below), so the `role` claim `JwtService` writes at login survives token validation under the exact name this attribute checks. `ReportController.CreateReport` is the one report action open to any authenticated user — reporting is not an admin-only action, only reviewing reports is.
-- All 48 remaining actions require only an authenticated caller — no role check.
+- All 50 remaining actions require only an authenticated caller — no role check.
 
 ### 4. Domain value-object construction at the boundary
 
@@ -134,7 +134,9 @@ Three additions sit alongside rate limiting, all for making a rejected or slow r
 
 None of the `Jwt:*`/`R2:*`/`Redis:*`/`ForwardedHeaders:*`/etc. keys `AddApi`/`AddInfra` read live in `appsettings.json`/`appsettings.Development.json` (both hold only a `Serilog` section and `AllowedHosts`) — they come from .NET User Secrets or host configuration per environment, consistent with `doc/infra-operation.md`.
 
-`Program.cs` calls `AddApi` and registers nothing of its own beyond the Serilog bootstrap described in Pattern 9; the middleware pipeline order is: `MapOpenApi()` (Development only) → `UseForwardedHeaders()` → `UseHttpsRedirection()` → `UseCorrelationId()` → `UsePerformance()` → `UseSerilogRequestLogging()` → `UseAuthentication()` → `UseRateLimiter()` → `UseAuthorization()` → `MapControllers()`. The ordering is load-bearing in three places: `UseForwardedHeaders()` must precede anything reading `Connection.RemoteIpAddress` (HTTPS redirection's scheme check, the rate limiter's partition key); `UseCorrelationId()` must precede `UsePerformance()`/`UseSerilogRequestLogging()` so their log lines are tagged with the correlation id (Pattern 9); `UseRateLimiter()` must follow `UseAuthentication()` so its partition-key resolution can read the `accountId` claim, and precede `UseAuthorization()` since a rejected request should never reach role enforcement.
+`Program.cs` calls `AddApi` and registers nothing of its own beyond the Serilog bootstrap described in Pattern 9; the middleware pipeline order is: `MapOpenApi()` (Development only) → `UseForwardedHeaders()` → `UseHttpsRedirection()` → `UseCorrelationId()` → `UsePerformance()` → `UseSerilogRequestLogging()` → `UseAuthentication()` → `UseRateLimiter()` → `UseAuthorization()` → `MapControllers()` → `MapHub<NotificationHub>("/hubs/notification")`. The ordering is load-bearing in three places: `UseForwardedHeaders()` must precede anything reading `Connection.RemoteIpAddress` (HTTPS redirection's scheme check, the rate limiter's partition key); `UseCorrelationId()` must precede `UsePerformance()`/`UseSerilogRequestLogging()` so their log lines are tagged with the correlation id (Pattern 9); `UseRateLimiter()` must follow `UseAuthentication()` so its partition-key resolution can read the `accountId` claim, and precede `UseAuthorization()` since a rejected request should never reach role enforcement.
+
+`MapHub<NotificationHub>` is the one place `Program.cs` names an `infra` type directly rather than going through `AddApi`/`AddInfra` — `NotificationHub` (`infra/hub`, see `doc/infra-operation.md`) is a SignalR `Hub`, and SignalR hubs are mapped on the endpoint-routing surface built by `MapControllers()`, not registered inside `AddInfra`'s `IServiceCollection` wiring like every other `infra` type. It runs `[Authorize]` and `UseAuthentication()`/`UseAuthorization()` already precede `MapControllers()` in the pipeline above, so a hub connection is authenticated the same way an HTTP request is; `ICurrentIdentityService`/the JWT bearer middleware are what the hub's `[Authorize]` relies on, same as any controller action.
 
 ## Controllers
 
@@ -200,6 +202,15 @@ Each table lists every action's HTTP verb + route, who may call it, its rate-lim
 | `GET /following/{accountId:guid}` | Authenticated | Global | `GetFollowingByAccountQuery` | 200 `CursorPageResult<FollowingDto>` |
 | `GET /me/follower` | Authenticated | Global | `GetMyFollowerQuery` | 200 `CursorPageResult<FollowerDto>` |
 | `GET /me/following` | Authenticated | Global | `GetMyFollowingQuery` | 200 `CursorPageResult<FollowingDto>` |
+
+### NotificationController — `api/Notification`
+
+| Verb + route | Access | Rate limit | Dispatches | Success |
+|---|---|---|---|---|
+| `GET /{notificationId:guid}` | Authenticated | Global | `GetSpecificNotificationQuery` | 200 `NotificationSummaryDto` |
+| `GET /mine` | Authenticated | Global | `GetMyNotificationQuery` | 200 `CursorPageResult<NotificationSummaryDto>` |
+
+`NotificationController` has no `POST`/create action, for the same underlying reason `ShopController` has no create action but a different mechanism: a `Notification` is never created through this controller, or through any MediatR command — `infra`'s `NotificationService` constructs one directly whenever `FollowService`/`ReactionService`/`CommentService` decide a recipient needs telling (see `doc/infra-operation.md`, `doc/project-rules.md`). Real-time delivery for an online recipient goes over `NotificationHub` (SignalR, `/hubs/notification`), not through this controller either — these two `GET` actions exist only to read back a notification's history/current state.
 
 ### PostController — `api/Post`
 
