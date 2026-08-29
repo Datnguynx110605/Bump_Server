@@ -76,7 +76,7 @@ public sealed class PostController : ControllerBase
     }
 
     [HttpGet("{postId:guid}")]
-    public async Task<ActionResult<PostSummaryDto>> GetSpecificPost(
+    public async Task<ActionResult<PostFeedItemDto>> GetSpecificPost(
         Guid postId,
         CancellationToken cancellationToken)
     {
@@ -118,7 +118,7 @@ public sealed class PostController : ControllerBase
 
     [EnableRateLimiting(RateLimiterPolicy.Search)]
     [HttpGet("search")]
-    public async Task<ActionResult<CursorPageResult<PostSummaryDto>>> GetPostByKeyword(
+    public async Task<ActionResult<CursorPageResult<PostFeedItemDto>>> GetPostByKeyword(
         [FromQuery] string keyword,
         [FromQuery] string? cursor,
         [FromQuery] int pageSize = 20,
@@ -129,7 +129,7 @@ public sealed class PostController : ControllerBase
     }
 
     [HttpGet("latest")]
-    public async Task<ActionResult<CursorPageResult<PostSummaryDto>>> GetLatestPost(
+    public async Task<ActionResult<CursorPageResult<PostFeedItemDto>>> GetLatestPost(
         [FromQuery] string? cursor,
         [FromQuery] int pageSize = 20,
         CancellationToken cancellationToken = default)
@@ -139,7 +139,7 @@ public sealed class PostController : ControllerBase
     }
 
     [HttpGet("most-reacted")]
-    public async Task<ActionResult<CursorPageResult<PostSummaryDto>>> GetMostReactedPost(
+    public async Task<ActionResult<CursorPageResult<PostFeedItemDto>>> GetMostReactedPost(
         [FromQuery] string? cursor,
         [FromQuery] int pageSize = 20,
         CancellationToken cancellationToken = default)

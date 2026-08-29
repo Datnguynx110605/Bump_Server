@@ -7,27 +7,34 @@ using MongoDB.Driver;
 namespace app;
 
 internal sealed class GetMostReactedPostHandler
-    : IRequestHandler<GetMostReactedPostQuery, Result<CursorPageResult<PostSummaryDto>>>
+    : IRequestHandler<GetMostReactedPostQuery, Result<CursorPageResult<PostFeedItemDto>>>
 {
     private const int MinPageSize = 1;
     private const int MaxPageSize = 100;
+    private readonly ICurrentIdentityService _identityService;
     private readonly IRedisService _redisService;
     private readonly IMongoDbContext _dbContext;
     private readonly IMapper _mapper;
     public GetMostReactedPostHandler(
+        ICurrentIdentityService identityService,
         IRedisService redisService,
         IMongoDbContext dbContext,
         IMapper mapper)
     {
+        _identityService = identityService;
         _redisService = redisService;
         _dbContext = dbContext;
         _mapper = mapper;
     }
 
-    public async Task<Result<CursorPageResult<PostSummaryDto>>> Handle(
+    public async Task<Result<CursorPageResult<PostFeedItemDto>>> Handle(
         GetMostReactedPostQuery request,
         CancellationToken cancellationToken)
     {
+        var identity = _identityService.GetAccountId();
+        if(identity is null)
+            return Result.Fail("Unauthorized");
+
         string filterSignature = "mostReacted";
         string cacheKey = CacheKey.List(CollectionName.Post, filterSignature, request.pageRequest);
 
@@ -36,7 +43,7 @@ internal sealed class GetMostReactedPostHandler
             cancellationToken);
 
         if(cachedPage is not null)
-            return Result.Ok(cachedPage);
+            return Result.Ok(await PostFeedEnricher.EnrichAsync(_dbContext, cachedPage, identity.Value, cancellationToken));
 
         var postCollection = _dbContext.GetCollection<Post>(CollectionName.Post);
 
@@ -65,6 +72,6 @@ internal sealed class GetMostReactedPostHandler
             CacheKey.DefaultListTTL,
             cancellationToken);
 
-        return Result.Ok(dtoPage);
+        return Result.Ok(await PostFeedEnricher.EnrichAsync(_dbContext, dtoPage, identity.Value, cancellationToken));
     }
 }

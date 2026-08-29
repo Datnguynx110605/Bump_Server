@@ -36,6 +36,7 @@ public sealed class EmailService : IEmailService
         message.Body = new BodyBuilder { HtmlBody = htmlBody, TextBody = plainBody }.ToMessageBody();
 
         using var client = new SmtpClient();
+        client.CheckCertificateRevocation = false;
         await client.ConnectAsync(
             Host, 
             Port, 

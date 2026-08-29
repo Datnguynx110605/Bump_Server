@@ -24,4 +24,3 @@ public sealed class Notification : BaseEntity
         return Update();
     }
 }
-

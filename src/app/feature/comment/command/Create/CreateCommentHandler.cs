@@ -2,6 +2,7 @@ using AutoMapper;
 using domain;
 using FluentResults;
 using MediatR;
+using MongoDB.Driver;
 
 namespace app;
 
@@ -69,16 +70,40 @@ internal sealed class CreateCommentHandler
             comment,
             cancellationToken : cancellationToken);
 
+        var postCollection = _dbContext.GetCollection<Post>(CollectionName.Post);
+
+        var filter = Builders<Post>.Filter.And(
+            Builders<Post>.Filter.Eq(x => x.Id, comment.PostId),
+            Builders<Post>.Filter.Eq(x => x.IsDeleted, false));
+
+        var update = Builders<Post>.Update
+            .Inc(x => x.CommentAmount.Value, 1);
+
+        await postCollection.UpdateOneAsync(
+            filter,
+            update,
+            cancellationToken : cancellationToken);
+        
         var dto = _mapper.Map<CommentDto>(comment);
         var summaryDto = _mapper.Map<CommentSummaryDto>(comment);
 
         string cacheKey = CacheKey.Comment(comment.Id);
 
-        await _redisService.SetAsync(
-            cacheKey,
-            summaryDto,
-            CacheKey.DefaultCommentTTL,
-            cancellationToken);
+        await Task.WhenAll(
+            _redisService.SetAsync(
+                cacheKey,
+                summaryDto,
+                CacheKey.DefaultCommentTTL,
+                cancellationToken),
+            _redisService.RemoveAsync(
+                CacheKey.Post(comment.PostId),
+                cancellationToken),
+            _redisService.RemoveAsync(
+                CacheKey.List(CollectionName.Comment, $"post:{comment.PostId}", new CursorPageRequest(null)),
+                cancellationToken),
+            _redisService.RemoveAsync(
+                CacheKey.List(CollectionName.Comment, $"account:{identity.Value}", new CursorPageRequest(null)),
+                cancellationToken));
 
         var message = new CommentMessage(
             Guid.NewGuid(),

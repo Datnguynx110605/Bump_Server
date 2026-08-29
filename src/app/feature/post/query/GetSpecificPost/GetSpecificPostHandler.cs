@@ -7,25 +7,32 @@ using MongoDB.Driver;
 namespace app;
 
 internal sealed class GetSpecificPostHandler
-    : IRequestHandler<GetSpecificPostQuery, Result<PostSummaryDto>>
+    : IRequestHandler<GetSpecificPostQuery, Result<PostFeedItemDto>>
 {
+    private readonly ICurrentIdentityService _identityService;
     private readonly IRedisService _redisService;
     private readonly IMongoDbContext _dbContext;
     private readonly IMapper _mapper;
     public GetSpecificPostHandler(
+        ICurrentIdentityService identityService,
         IRedisService redisService,
         IMongoDbContext dbContext,
         IMapper mapper)
     {
+        _identityService = identityService;
         _redisService = redisService;
         _dbContext = dbContext;
         _mapper = mapper;
     }
 
-    public async Task<Result<PostSummaryDto>> Handle(
+    public async Task<Result<PostFeedItemDto>> Handle(
         GetSpecificPostQuery request,
         CancellationToken cancellationToken)
     {
+        var identity = _identityService.GetAccountId();
+        if(identity is null)
+            return Result.Fail("Unauthorized");
+
         string cacheKey = CacheKey.Post(request.postId);
 
         var cachePost = await _redisService.GetAsync<PostSummaryDto>(
@@ -33,7 +40,7 @@ internal sealed class GetSpecificPostHandler
             cancellationToken);
 
         if(cachePost is not null)
-            return Result.Ok(cachePost);
+            return Result.Ok(await PostFeedEnricher.EnrichAsync(_dbContext, cachePost, identity.Value, cancellationToken));
 
         var postCollection = _dbContext.GetCollection<Post>(CollectionName.Post);
 
@@ -53,6 +60,6 @@ internal sealed class GetSpecificPostHandler
             CacheKey.DefaultPostTTL,
             cancellationToken);
 
-        return Result.Ok(dto);
+        return Result.Ok(await PostFeedEnricher.EnrichAsync(_dbContext, dto, identity.Value, cancellationToken));
     }
 }

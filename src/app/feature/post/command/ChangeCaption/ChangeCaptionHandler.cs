@@ -33,6 +33,7 @@ internal sealed class ChangeCaptionHandler
 
         var projection = Builders<Post>.Projection
             .Include(x => x.Caption)
+            .Include(x => x.ShopId)
             .Include(x => x.IsDeleted);
 
         var post = await postCollection
@@ -63,9 +64,22 @@ internal sealed class ChangeCaptionHandler
 
         string cacheKey = CacheKey.Post(post.Id);
 
-        await _redisService.RemoveAsync(
-            cacheKey,
-            cancellationToken);
+        await Task.WhenAll(
+            _redisService.RemoveAsync(
+                cacheKey,
+                cancellationToken),
+            _redisService.RemoveAsync(
+                CacheKey.List(CollectionName.Post, filterSignature: null, new CursorPageRequest(null)),
+                cancellationToken),
+            _redisService.RemoveAsync(
+                CacheKey.List(CollectionName.Post, $"account:{identity.Value}", new CursorPageRequest(null)),
+                cancellationToken),
+            _redisService.RemoveAsync(
+                CacheKey.List(CollectionName.Post, $"shop:{post.ShopId}", new CursorPageRequest(null)),
+                cancellationToken),
+            _redisService.RemoveAsync(
+                CacheKey.List(CollectionName.Post, "mostReacted", new CursorPageRequest(null)),
+                cancellationToken));
 
         return Result.Ok();
     }

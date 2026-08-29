@@ -58,12 +58,17 @@ public sealed class ReactionService : IReactionService
         if(result.MatchedCount != 1)
             return Result.Fail("Already reacted to this post");
 
-        await _redisService.RemoveAsync(
-            CacheKey.Post(postId),
-            cancellationToken);
+        await Task.WhenAll(
+            _redisService.RemoveAsync(
+                CacheKey.Post(postId),
+                cancellationToken),
+            _redisService.RemoveAsync(
+                CacheKey.List($"{CollectionName.Post}:reaction", $"post:{postId}", new CursorPageRequest(null)),
+                cancellationToken));
 
         var postOwnerProjection = Builders<Post>.Projection
-            .Include(x => x.AccountId);
+            .Include(x => x.AccountId)
+            .Include(x => x.ShopId);
 
         var post = await postCollection
             .Find(x => x.Id == postId && !x.IsDeleted)
@@ -72,6 +77,8 @@ public sealed class ReactionService : IReactionService
 
         if(post is null)
             return Result.Fail("Post not found");
+
+        await InvalidatePostListsAsync(post.AccountId, post.ShopId, cancellationToken);
 
         if(post.AccountId == accountId)
             return Result.Ok();
@@ -107,9 +114,25 @@ public sealed class ReactionService : IReactionService
         if(result.MatchedCount != 1)
             return Result.Fail("Not reacted to this post");
 
-        await _redisService.RemoveAsync(
-            CacheKey.Post(postId),
-            cancellationToken);
+        await Task.WhenAll(
+            _redisService.RemoveAsync(
+                CacheKey.Post(postId),
+                cancellationToken),
+            _redisService.RemoveAsync(
+                CacheKey.List($"{CollectionName.Post}:reaction", $"post:{postId}", new CursorPageRequest(null)),
+                cancellationToken));
+
+        var postOwnerProjection = Builders<Post>.Projection
+            .Include(x => x.AccountId)
+            .Include(x => x.ShopId);
+
+        var post = await postCollection
+            .Find(x => x.Id == postId && !x.IsDeleted)
+            .Project<Post>(postOwnerProjection)
+            .FirstOrDefaultAsync(cancellationToken);
+
+        if(post is not null)
+            await InvalidatePostListsAsync(post.AccountId, post.ShopId, cancellationToken);
 
         return Result.Ok();
     }
@@ -152,12 +175,17 @@ public sealed class ReactionService : IReactionService
         if(result.MatchedCount != 1)
             return Result.Fail("Already reacted to this comment");
 
-        await _redisService.RemoveAsync(
-            CacheKey.Comment(commentId),
-            cancellationToken);
+        await Task.WhenAll(
+            _redisService.RemoveAsync(
+                CacheKey.Comment(commentId),
+                cancellationToken),
+            _redisService.RemoveAsync(
+                CacheKey.List($"{CollectionName.Comment}:reaction", $"comment:{commentId}", new CursorPageRequest(null)),
+                cancellationToken));
 
         var commentOwnerProjection = Builders<Comment>.Projection
-            .Include(x => x.AccountId);
+            .Include(x => x.AccountId)
+            .Include(x => x.PostId);
 
         var comment = await commentCollection
             .Find(x => x.Id == commentId && !x.IsDeleted)
@@ -166,6 +194,8 @@ public sealed class ReactionService : IReactionService
 
         if(comment is null)
             return Result.Fail("Comment not found");
+
+        await InvalidateCommentListsAsync(comment.PostId, comment.AccountId, cancellationToken);
 
         if(comment.AccountId == accountId)
             return Result.Ok();
@@ -201,10 +231,54 @@ public sealed class ReactionService : IReactionService
         if(result.MatchedCount != 1)
             return Result.Fail("Not reacted to this comment");
 
-        await _redisService.RemoveAsync(
-            CacheKey.Comment(commentId),
-            cancellationToken);
+        await Task.WhenAll(
+            _redisService.RemoveAsync(
+                CacheKey.Comment(commentId),
+                cancellationToken),
+            _redisService.RemoveAsync(
+                CacheKey.List($"{CollectionName.Comment}:reaction", $"comment:{commentId}", new CursorPageRequest(null)),
+                cancellationToken));
+
+        var commentOwnerProjection = Builders<Comment>.Projection
+            .Include(x => x.AccountId)
+            .Include(x => x.PostId);
+
+        var comment = await commentCollection
+            .Find(x => x.Id == commentId && !x.IsDeleted)
+            .Project<Comment>(commentOwnerProjection)
+            .FirstOrDefaultAsync(cancellationToken);
+
+        if(comment is not null)
+            await InvalidateCommentListsAsync(comment.PostId, comment.AccountId, cancellationToken);
 
         return Result.Ok();
+    }
+
+    private Task InvalidatePostListsAsync(Guid postAccountId, Guid shopId, CancellationToken cancellationToken)
+    {
+        return Task.WhenAll(
+            _redisService.RemoveAsync(
+                CacheKey.List(CollectionName.Post, filterSignature: null, new CursorPageRequest(null)),
+                cancellationToken),
+            _redisService.RemoveAsync(
+                CacheKey.List(CollectionName.Post, $"account:{postAccountId}", new CursorPageRequest(null)),
+                cancellationToken),
+            _redisService.RemoveAsync(
+                CacheKey.List(CollectionName.Post, $"shop:{shopId}", new CursorPageRequest(null)),
+                cancellationToken),
+            _redisService.RemoveAsync(
+                CacheKey.List(CollectionName.Post, "mostReacted", new CursorPageRequest(null)),
+                cancellationToken));
+    }
+
+    private Task InvalidateCommentListsAsync(Guid postId, Guid commentAccountId, CancellationToken cancellationToken)
+    {
+        return Task.WhenAll(
+            _redisService.RemoveAsync(
+                CacheKey.List(CollectionName.Comment, $"post:{postId}", new CursorPageRequest(null)),
+                cancellationToken),
+            _redisService.RemoveAsync(
+                CacheKey.List(CollectionName.Comment, $"account:{commentAccountId}", new CursorPageRequest(null)),
+                cancellationToken));
     }
 }

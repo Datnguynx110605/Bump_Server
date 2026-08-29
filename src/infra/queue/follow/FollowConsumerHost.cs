@@ -23,23 +23,30 @@ internal sealed class FollowConsumerHost : BackgroundService
         using var scope = _scopeFactory.CreateScope();
         var rabbitMQService = scope.ServiceProvider.GetRequiredService<IRabbitMQService>();
 
-        await rabbitMQService.ConsumeAsync<FollowMessage>(
-            QueueName.Follow,
-            message => message.MessageId.ToString(),
-            async (message, cancellationToken) =>
-            {
-                using var messageScope = _scopeFactory.CreateScope();
-                var followService = messageScope.ServiceProvider.GetRequiredService<IFollowService>();
-                var result = await followService.ProcessFollowAsync(
-                    message.FollowerId, 
-                    message.FollowingId, 
-                    cancellationToken);
+        try
+        {
+            await rabbitMQService.ConsumeAsync<FollowMessage>(
+                QueueName.Follow,
+                message => message.MessageId.ToString(),
+                async (message, cancellationToken) =>
+                {
+                    using var messageScope = _scopeFactory.CreateScope();
+                    var followService = messageScope.ServiceProvider.GetRequiredService<IFollowService>();
+                    var result = await followService.ProcessFollowAsync(
+                        message.FollowerId,
+                        message.FollowingId,
+                        cancellationToken);
 
-                if(result.IsFailed)
-                    _logger.LogWarning(
-                        "Follow {MessageId} ({FollowerId} -> {FollowingId}) did not apply: {Error}",
-                        message.MessageId, message.FollowerId, message.FollowingId, result.Errors[0].Message);
-            },
-            stoppingToken);
+                    if(result.IsFailed)
+                        _logger.LogWarning(
+                            "Follow {MessageId} ({FollowerId} -> {FollowingId}) did not apply: {Error}",
+                            message.MessageId, message.FollowerId, message.FollowingId, result.Errors[0].Message);
+                },
+                stoppingToken);
+        }
+        catch(Exception ex) when (!stoppingToken.IsCancellationRequested)
+        {
+            _logger.LogError(ex, "Follow consumer stopped unexpectedly");
+        }
     }
 }

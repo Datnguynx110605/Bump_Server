@@ -67,9 +67,22 @@ internal sealed class ChangeRateHandler
 
         string cacheKey = CacheKey.Post(post.Id);
 
-        await _redisService.RemoveAsync(
-            cacheKey,
-            cancellationToken);
+        await Task.WhenAll(
+            _redisService.RemoveAsync(
+                cacheKey,
+                cancellationToken),
+            _redisService.RemoveAsync(
+                CacheKey.List(CollectionName.Post, filterSignature: null, new CursorPageRequest(null)),
+                cancellationToken),
+            _redisService.RemoveAsync(
+                CacheKey.List(CollectionName.Post, $"account:{identity.Value}", new CursorPageRequest(null)),
+                cancellationToken),
+            _redisService.RemoveAsync(
+                CacheKey.List(CollectionName.Post, $"shop:{post.ShopId}", new CursorPageRequest(null)),
+                cancellationToken),
+            _redisService.RemoveAsync(
+                CacheKey.List(CollectionName.Post, "mostReacted", new CursorPageRequest(null)),
+                cancellationToken));
 
         var recalculateMessage = new RecalculateShopRateMessage(
             Guid.NewGuid(),

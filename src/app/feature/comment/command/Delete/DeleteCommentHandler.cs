@@ -35,6 +35,7 @@ internal sealed class DeleteCommentHandler
         var commentCollection = _dbContext.GetCollection<Comment>(CollectionName.Comment);
 
         var projection = Builders<Comment>.Projection
+            .Include(x => x.PostId)
             .Include(x => x.Images)
             .Include(x => x.IsDeleted);
 
@@ -71,11 +72,35 @@ internal sealed class DeleteCommentHandler
                 cancellationToken);
         }
 
+        var postCollection = _dbContext.GetCollection<Post>(CollectionName.Post);
+
+        var postFilter = Builders<Post>.Filter.And(
+            Builders<Post>.Filter.Eq(x => x.Id, comment.PostId),
+            Builders<Post>.Filter.Eq(x => x.IsDeleted, false));
+
+        var postUpdate = Builders<Post>.Update
+            .Inc(x => x.CommentAmount.Value, -1);
+
+        await postCollection.UpdateOneAsync(
+            postFilter,
+            postUpdate,
+            cancellationToken : cancellationToken);
+
         string cacheKey = CacheKey.Comment(comment.Id);
 
-        await _redisService.RemoveAsync(
-            cacheKey,
-            cancellationToken);
+        await Task.WhenAll(
+            _redisService.RemoveAsync(
+                cacheKey,
+                cancellationToken),
+            _redisService.RemoveAsync(
+                CacheKey.Post(comment.PostId),
+                cancellationToken),
+            _redisService.RemoveAsync(
+                CacheKey.List(CollectionName.Comment, $"post:{comment.PostId}", new CursorPageRequest(null)),
+                cancellationToken),
+            _redisService.RemoveAsync(
+                CacheKey.List(CollectionName.Comment, $"account:{identity.Value}", new CursorPageRequest(null)),
+                cancellationToken));
 
         return Result.Ok();
     }
