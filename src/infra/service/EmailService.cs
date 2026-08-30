@@ -11,7 +11,7 @@ namespace infra;
 public sealed class EmailService : IEmailService
 {
     private const string Host = "smtp.gmail.com";
-    private const int Port = 587;
+    private const int Port = 465;
 
     private readonly IConfiguration _configuration;
 
@@ -37,10 +37,11 @@ public sealed class EmailService : IEmailService
 
         using var client = new SmtpClient();
         client.CheckCertificateRevocation = false;
+        client.Timeout = 10000;
         await client.ConnectAsync(
             Host, 
             Port, 
-            SecureSocketOptions.StartTls, 
+            SecureSocketOptions.SslOnConnect,
             cancellationToken);
         await client.AuthenticateAsync(
             address, 
