@@ -98,9 +98,17 @@ internal sealed class DeletePostHandler
             Guid.NewGuid(),
             post.ShopId);
 
+        var deletePostMessage = new PostMessage(
+            Guid.NewGuid(),
+            post.Id);
+
         await _rabbitMQService.PublishAsync(
             QueueName.RecalculateShopRate,
             recalculateMessage,
+            cancellationToken);
+        await _rabbitMQService.PublishAsync(
+            QueueName.DeletePost,
+            deletePostMessage,
             cancellationToken);
 
         return Result.Ok();

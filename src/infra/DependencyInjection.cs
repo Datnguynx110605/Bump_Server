@@ -62,6 +62,8 @@ public static class DependencyInjection
         services.AddScoped<IBcryptService, BCryptService>();
         services.AddScoped<ICommentService, CommentService>();
         services.AddScoped<ICurrentIdentityService, CurrentIdentityService>();
+        services.AddScoped<IDeleteAccountService, DeleteAccountService>();
+        services.AddScoped<IDeletePostService, DeletePostService>();
         services.AddScoped<IEmailService, EmailService>();
         services.AddScoped<IFollowService, FollowService>();
         services.AddScoped<IJwtService, JwtService>();
@@ -89,6 +91,8 @@ public static class DependencyInjection
         services.AddHostedService<UnsavePostConsumerHost>();
         services.AddHostedService<SaveShopConsumerHost>();
         services.AddHostedService<UnsaveShopConsumerHost>();
+        services.AddHostedService<DeleteAccountConsumerHost>();
+        services.AddHostedService<DeletePostConsumerHost>();
 
         return services;
     }

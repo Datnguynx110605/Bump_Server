@@ -2,7 +2,7 @@
 
 This document explains how the `api` layer actually operates end to end: how an incoming HTTP request becomes a dispatched MediatR message, how authentication/authorization/rate limiting gate it, and how the `Result`/`Result<T>` a handler returns (or a rejection that never reaches a handler) becomes an HTTP response. It does not cover layer boundaries or the dependency rule (see `doc/architecture.md`) or naming conventions (see `doc/project-rules.md`, which also holds the API Layer Conventions — the status-mapping *rule* lives there; this document covers the *mechanism*). For what happens after dispatch, see `doc/app-operation.md`.
 
-`api` is the entry-point layer and composition root: a thin ASP.NET Core Web API host with no business logic of its own. It has 10 controllers — one per `app` feature area (`account`, `auth`, `comment`, `email`, `follow`, `notification`, `post`, `reaction`, `report`, `shop`) — exposing 64 actions in total, backed by 13 request records for the actions whose body doesn't bind directly to a route/query parameter or an existing `app`/`domain` type. `api` also hosts one SignalR hub, `NotificationHub` (`infra`, mapped at `/hubs/notification`) — see "Composition Root" below.
+`api` is the entry-point layer and composition root: a thin ASP.NET Core Web API host with no business logic of its own. It has 11 controllers — one per `app` feature area (`account`, `auth`, `comment`, `email`, `follow`, `notification`, `post`, `reaction`, `report`, `save`, `shop`) — exposing 70 actions in total, backed by 13 request records for the actions whose body doesn't bind directly to a route/query parameter or an existing `app`/`domain` type. `api` also hosts one SignalR hub, `NotificationHub` (`infra`, mapped at `/hubs/notification`) — see "Composition Root" below.
 
 ## Core Patterns
 
@@ -13,7 +13,7 @@ Every controller is a `[ApiController]`, `public sealed class <Feature>Controlle
 ```csharp
 [ApiController]
 [Authorize]
-[Route("api/[controller]")]
+[Route("api/v1/[controller]")]
 public sealed class ShopController : ControllerBase
 {
     private readonly ISender _sender;
@@ -25,11 +25,11 @@ public sealed class ShopController : ControllerBase
 }
 ```
 
-Every action follows the same three steps: build a command/query record from the request, `await _sender.Send(...)`, translate the returned `Result`/`Result<T>` to an `ActionResult` via one of the `ResultExtensions` methods. No controller injects `IMongoDbContext`, `IRedisService`, or any other `infra` port; `ISender` plus the three `domain` value-object factories (Pattern 4 below) are the entire outbound surface — matching `doc/architecture.md`'s rule that `api` only ever exchanges one use-case message with `app` and never reaches into `domain`/`infra` directly. There is no base controller — the nine controllers repeat this shape independently rather than sharing one through inheritance.
+Every action follows the same three steps: build a command/query record from the request, `await _sender.Send(...)`, translate the returned `Result`/`Result<T>` to an `ActionResult` via one of the `ResultExtensions` methods. No controller injects `IMongoDbContext`, `IRedisService`, or any other `infra` port; `ISender` plus the three `domain` value-object factories (Pattern 4 below) are the entire outbound surface — matching `doc/architecture.md`'s rule that `api` only ever exchanges one use-case message with `app` and never reaches into `domain`/`infra` directly. There is no base controller — the 11 controllers repeat this shape independently rather than sharing one through inheritance.
 
 ### 2. Routing and model binding
 
-- **Route template**: `[Route("api/[controller]")]` on every controller, so a route is always `api/<ControllerName-minus-Controller>` (`AccountController` → `api/Account`), with per-action `[HttpGet]`/`[HttpPost]`/`[HttpPut]`/`[HttpDelete]` templates nested under it (e.g. `[HttpPut("me/name")]` → `PUT api/Account/me/name`).
+- **Route template**: `[Route("api/v1/[controller]")]` on every controller, so a route is always `api/v1/<ControllerName-minus-Controller>` (`AccountController` → `api/v1/Account`), with per-action `[HttpGet]`/`[HttpPost]`/`[HttpPut]`/`[HttpDelete]` templates nested under it (e.g. `[HttpPut("me/name")]` → `PUT api/v1/Account/me/name`). The `v1` segment is a plain route literal, not a versioning library — a future v2 would be a distinct route prefix on a new/duplicated controller, not content negotiation on the existing one.
 - **Route-constrained ids**: every path segment carrying a `Guid` uses the `:guid` route constraint (`{postId:guid}`), so a malformed id fails model binding before the action body runs (see "What never reaches the pipeline" below), rather than reaching a handler as an unparsable string.
 - **Cursor pagination parameters**: every action returning a `CursorPageResult<T>` repeats the same two `[FromQuery]` parameters — `string? cursor` and `int pageSize = 20` — and wraps them into a `new CursorPageRequest(cursor, pageSize)` passed to the query record. This is a repeated shape, not a shared parameter object, matching `app`'s own `CursorPageRequest`/`CursorPageResult<T>` pair (see `doc/app-operation.md`).
 - **Multipart form binding**: the three actions that accept a file (`AccountController.ChangeAvatar`, `PostController.CreatePost`, `CommentController.CreateComment`) bind `IFormFile`/`List<IFormFile>?` parameters (with `[FromForm]` on the accompanying scalar fields for `CreatePost`/`CreateComment`, since those actions have no request record to bind the rest of the form to) rather than a JSON body.
@@ -41,7 +41,7 @@ Every controller carries a class-level `[Authorize]`, so an action is authentica
 
 - **`[AllowAnonymous]`** (6 actions): `AccountController.CreateAccount`, `AuthController.Login`, `AuthController.RequestNewAccessToken`, `EmailController.SendForRegister`, `EmailController.SendForVerify`, `EmailController.Verify` — the only actions reachable before a caller has credentials, which is exactly the account-creation/login/OTP-verification bootstrap sequence.
 - **`[Authorize(Roles = nameof(Role.Admin))]`** (8 actions): `AccountController.GetAllAccount`/`GetAccountByEmail`, `AuthController.GetAllRefreshToken`/`GetSpecificRefreshToken`, `ReportController.GetAllReport`/`GetSpecificReport`/`GetReportByTarget`, `ShopController.DeleteShop`. `nameof(Role.Admin)` reads the `domain` enum directly (see `doc/domain-operation.md`), so the attribute cannot drift from the enum's member names; it works at runtime only because `AddApi` disables inbound claim mapping (`MapInboundClaims = false`) and binds `RoleClaimType` to `JwtService.RoleClaimType` (see "Composition Root" below), so the `role` claim `JwtService` writes at login survives token validation under the exact name this attribute checks. `ReportController.CreateReport` is the one report action open to any authenticated user — reporting is not an admin-only action, only reviewing reports is.
-- All 50 remaining actions require only an authenticated caller — no role check.
+- All 56 remaining actions require only an authenticated caller — no role check.
 
 ### 4. Domain value-object construction at the boundary
 
@@ -77,7 +77,7 @@ The stream is opened in the controller, carried inside the command record throug
 | `ToActionResult()` (non-generic) | `204 No Content` | same |
 | `ToAcceptedResult()` | `202 Accepted` | same |
 
-`ToAcceptedResult()` is used by exactly six actions — `FollowController.Follow`/`Unfollow`, `ReactionController.ReactPost`/`UnreactPost`/`ReactComment`/`UnreactComment` — because their handlers only publish a message to RabbitMQ and return `Result.Ok()` immediately; the actual follow/react mutation happens later, out-of-band, in `FollowService`/`ReactionService` (see `doc/infra-operation.md`). `202 Accepted` is the accurate status for "the request was accepted for processing, not yet applied," where `204 No Content` (used by every other void-returning action) would imply the mutation already committed. No action in the codebase constructs a `201 Created` response.
+`ToAcceptedResult()` is used by exactly ten actions — `FollowController.Follow`/`Unfollow`, `ReactionController.ReactPost`/`UnreactPost`/`ReactComment`/`UnreactComment`, `SaveController.SavePost`/`UnsavePost`/`SaveShop`/`UnsaveShop` — because their handlers only publish a message to RabbitMQ and return `Result.Ok()` immediately; the actual follow/react/save mutation happens later, out-of-band, in `FollowService`/`ReactionService`/`SaveService` (see `doc/infra-operation.md`). `202 Accepted` is the accurate status for "the request was accepted for processing, not yet applied," where `204 No Content` (used by every other void-returning action) would imply the mutation already committed. No action in the codebase constructs a `201 Created` response.
 
 On failure, `ToProblemResult` branches on error count:
 
@@ -127,22 +127,23 @@ Three additions sit alongside rate limiting, all for making a rejected or slow r
 
 1. `services.AddApp()` and `services.AddInfra(configuration)` — wires the two inner layers (see `doc/architecture.md`).
 2. `services.AddControllers()` and `services.AddOpenApi()`.
-3. JWT bearer authentication: `AddJwtBearer` reads `Jwt:Issuer`, `Jwt:Audience`, `Jwt:SecretKey` from `IConfiguration` and validates issuer, audience, lifetime, and signing key. `configuration["Jwt:SecretKey"]!` is null-forgiven — a missing key at startup throws a `NullReferenceException` from `Encoding.UTF8.GetBytes(null)` rather than failing with a configuration-specific error message. `MapInboundClaims = false` and `RoleClaimType = JwtService.RoleClaimType` are what make `[Authorize(Roles = nameof(Role.Admin))]` match the `role` claim `JwtService` writes (see Pattern 3 above).
-4. `services.AddAuthorization()`.
-5. `ConfigureForwardedHeaders(services, configuration)`: registers `ForwardedHeadersMiddleware` options, trusting `X-Forwarded-For`/`X-Forwarded-Proto` only from proxy addresses/networks listed in `ForwardedHeaders:KnownProxies`/`ForwardedHeaders:KnownNetworks` (both `string[]`, unset by default). With nothing configured, ASP.NET Core's own default (loopback only) applies, so this is inert until a real reverse proxy's address is supplied — deliberately, since trusting a forwarded header from an untrusted peer lets a client spoof its own IP and dodge IP-partitioned rate limits.
-6. `ConfigureRateLimiting(services)`: registers the global limiter and the four named policies described in Pattern 8 above.
+3. `services.AddSignalR()` and `services.AddSingleton<IUserIdProvider, AccountIdUserIdProvider>()`. `AccountIdUserIdProvider` (`infra/hub`) is an `infra` type registered directly by `api`'s `AddApi` rather than through `AddInfra` — a second exception, alongside `MapHub<NotificationHub>` below, to `infra` types normally only being named from inside `AddInfra`.
+4. JWT bearer authentication: `AddJwtBearer` reads `Jwt:Issuer`, `Jwt:Audience`, `Jwt:SecretKey` from `IConfiguration` and validates issuer, audience, lifetime, and signing key. `configuration["Jwt:SecretKey"]!` is null-forgiven — a missing key at startup throws a `NullReferenceException` from `Encoding.UTF8.GetBytes(null)` rather than failing with a configuration-specific error message. `MapInboundClaims = false` and `RoleClaimType = JwtService.RoleClaimType` are what make `[Authorize(Roles = nameof(Role.Admin))]` match the `role` claim `JwtService` writes (see Pattern 3 above). `options.Events.OnMessageReceived` additionally reads the token from an `access_token` query-string parameter — but only when the request path starts with `/hubs` — because a SignalR/WebSocket client generally cannot set an `Authorization` header on the handshake; every other request is still authenticated via the header only.
+5. `services.AddAuthorization()`.
+6. `ConfigureForwardedHeaders(services, configuration)`: registers `ForwardedHeadersMiddleware` options, trusting `X-Forwarded-For`/`X-Forwarded-Proto` only from proxy addresses/networks listed in `ForwardedHeaders:KnownProxies`/`ForwardedHeaders:KnownNetworks` (both `string[]`, unset by default). With nothing configured, ASP.NET Core's own default (loopback only) applies, so this is inert until a real reverse proxy's address is supplied — deliberately, since trusting a forwarded header from an untrusted peer lets a client spoof its own IP and dodge IP-partitioned rate limits.
+7. `ConfigureRateLimiting(services)`: registers the global limiter and the four named policies described in Pattern 8 above.
 
 None of the `Jwt:*`/`R2:*`/`Redis:*`/`ForwardedHeaders:*`/etc. keys `AddApi`/`AddInfra` read live in `appsettings.json`/`appsettings.Development.json` (both hold only a `Serilog` section and `AllowedHosts`) — they come from .NET User Secrets or host configuration per environment, consistent with `doc/infra-operation.md`.
 
 `Program.cs` calls `AddApi` and registers nothing of its own beyond the Serilog bootstrap described in Pattern 9; the middleware pipeline order is: `MapOpenApi()` (Development only) → `UseForwardedHeaders()` → `UseHttpsRedirection()` → `UseCorrelationId()` → `UsePerformance()` → `UseSerilogRequestLogging()` → `UseAuthentication()` → `UseRateLimiter()` → `UseAuthorization()` → `MapControllers()` → `MapHub<NotificationHub>("/hubs/notification")`. The ordering is load-bearing in three places: `UseForwardedHeaders()` must precede anything reading `Connection.RemoteIpAddress` (HTTPS redirection's scheme check, the rate limiter's partition key); `UseCorrelationId()` must precede `UsePerformance()`/`UseSerilogRequestLogging()` so their log lines are tagged with the correlation id (Pattern 9); `UseRateLimiter()` must follow `UseAuthentication()` so its partition-key resolution can read the `accountId` claim, and precede `UseAuthorization()` since a rejected request should never reach role enforcement.
 
-`MapHub<NotificationHub>` is the one place `Program.cs` names an `infra` type directly rather than going through `AddApi`/`AddInfra` — `NotificationHub` (`infra/hub`, see `doc/infra-operation.md`) is a SignalR `Hub`, and SignalR hubs are mapped on the endpoint-routing surface built by `MapControllers()`, not registered inside `AddInfra`'s `IServiceCollection` wiring like every other `infra` type. It runs `[Authorize]` and `UseAuthentication()`/`UseAuthorization()` already precede `MapControllers()` in the pipeline above, so a hub connection is authenticated the same way an HTTP request is; `ICurrentIdentityService`/the JWT bearer middleware are what the hub's `[Authorize]` relies on, same as any controller action.
+`MapHub<NotificationHub>` is the one place `Program.cs` names an `infra` type directly rather than going through `AddApi`/`AddInfra` — `NotificationHub` (`infra/hub`, see `doc/infra-operation.md`) is a SignalR `Hub`, and SignalR hubs are mapped on the endpoint-routing surface built by `MapControllers()`, not registered inside `AddInfra`'s `IServiceCollection` wiring like every other `infra` type. It runs `[Authorize]` and `UseAuthentication()`/`UseAuthorization()` already precede `MapControllers()` in the pipeline above, so a hub connection goes through the same JWT bearer middleware and `[Authorize]` enforcement as any controller action — but not via the same channel: a SignalR client can't set an `Authorization` header on its handshake, so the token instead arrives as an `access_token` query-string parameter, which `AddApi`'s `OnMessageReceived` event (see "Composition Root" above) accepts only for paths under `/hubs`. `ICurrentIdentityService`/the JWT bearer middleware are what the hub's `[Authorize]` relies on, same as any controller action.
 
 ## Controllers
 
 Each table lists every action's HTTP verb + route, who may call it, its rate-limit policy (beyond the global 200/min every action gets — see Pattern 8 above), the `app` message it dispatches, and its success response.
 
-### AccountController — `api/Account`
+### AccountController — `api/v1/Account`
 
 | Verb + route | Access | Rate limit | Dispatches | Success |
 |---|---|---|---|---|
@@ -162,7 +163,7 @@ Each table lists every action's HTTP verb + route, who may call it, its rate-lim
 | `GET /by-name` | Authenticated | Global | `GetAccountByNameQuery` (after `Name.Create`) | 200 `CursorPageResult<AccountSummaryDto>` |
 | `GET /search` | Authenticated | `Search` 20/min | `GetAccountByKeywordQuery` | 200 `CursorPageResult<AccountSummaryDto>` |
 
-### AuthController — `api/Auth`
+### AuthController — `api/v1/Auth`
 
 | Verb + route | Access | Rate limit | Dispatches | Success |
 |---|---|---|---|---|
@@ -171,7 +172,7 @@ Each table lists every action's HTTP verb + route, who may call it, its rate-lim
 | `GET /refresh-token` | Admin | Global | `GetAllRefreshTokenQuery` | 200 `CursorPageResult<RefreshTokenDto>` |
 | `GET /refresh-token/{refreshTokenId:guid}` | Admin | Global | `GetSpecificRefreshTokenQuery` | 200 `RefreshTokenDto` |
 
-### CommentController — `api/Comment`
+### CommentController — `api/v1/Comment`
 
 | Verb + route | Access | Rate limit | Dispatches | Success |
 |---|---|---|---|---|
@@ -182,7 +183,7 @@ Each table lists every action's HTTP verb + route, who may call it, its rate-lim
 | `GET /post/{postId:guid}` | Authenticated | Global | `GetCommentByPostQuery` | 200 `CursorPageResult<CommentSummaryDto>` |
 | `GET /mine` | Authenticated | Global | `GetMyCommentHistoryQuery` | 200 `CursorPageResult<CommentSummaryDto>` |
 
-### EmailController — `api/Email`
+### EmailController — `api/v1/Email`
 
 `[EnableRateLimiting(RateLimiterPolicy.Email)]` is applied at the class level — all three actions share it, since every one of them is anonymous and OTP-adjacent.
 
@@ -192,7 +193,7 @@ Each table lists every action's HTTP verb + route, who may call it, its rate-lim
 | `POST /send-for-verify` | Anonymous | `Email` 5/min | `SendEmailForVerifyCommand` (after `Email.Create`) | 204 |
 | `POST /verify` | Anonymous | `Email` 5/min | `VerifyEmailCommand` (after `Email.Create`) | 200 `string` (registration token) |
 
-### FollowController — `api/Follow`
+### FollowController — `api/v1/Follow`
 
 | Verb + route | Access | Rate limit | Dispatches | Success |
 |---|---|---|---|---|
@@ -203,7 +204,7 @@ Each table lists every action's HTTP verb + route, who may call it, its rate-lim
 | `GET /me/follower` | Authenticated | Global | `GetMyFollowerQuery` | 200 `CursorPageResult<FollowerDto>` |
 | `GET /me/following` | Authenticated | Global | `GetMyFollowingQuery` | 200 `CursorPageResult<FollowingDto>` |
 
-### NotificationController — `api/Notification`
+### NotificationController — `api/v1/Notification`
 
 | Verb + route | Access | Rate limit | Dispatches | Success |
 |---|---|---|---|---|
@@ -212,7 +213,7 @@ Each table lists every action's HTTP verb + route, who may call it, its rate-lim
 
 `NotificationController` has no `POST`/create action, for the same underlying reason `ShopController` has no create action but a different mechanism: a `Notification` is never created through this controller, or through any MediatR command — `infra`'s `NotificationService` constructs one directly whenever `FollowService`/`ReactionService`/`CommentService` decide a recipient needs telling (see `doc/infra-operation.md`, `doc/project-rules.md`). Real-time delivery for an online recipient goes over `NotificationHub` (SignalR, `/hubs/notification`), not through this controller either — these two `GET` actions exist only to read back a notification's history/current state.
 
-### PostController — `api/Post`
+### PostController — `api/v1/Post`
 
 | Verb + route | Access | Rate limit | Dispatches | Success |
 |---|---|---|---|---|
@@ -220,15 +221,15 @@ Each table lists every action's HTTP verb + route, who may call it, its rate-lim
 | `PUT /{postId:guid}/caption` | Authenticated | Global | `ChangeCaptionCommand` | 204 |
 | `PUT /{postId:guid}/rate` | Authenticated | Global | `ChangeRateCommand` (after `Amount.Create`) | 204 |
 | `DELETE /{postId:guid}` | Authenticated | Global | `DeletePostCommand` | 204 |
-| `GET /{postId:guid}` | Authenticated | Global | `GetSpecificPostQuery` | 200 `PostSummaryDto` |
+| `GET /{postId:guid}` | Authenticated | Global | `GetSpecificPostQuery` | 200 `PostFeedItemDto` |
 | `GET /mine` | Authenticated | Global | `GetMyPostQuery` | 200 `CursorPageResult<PostSummaryDto>` |
 | `GET /account/{accountId:guid}` | Authenticated | Global | `GetPostByAccountQuery` | 200 `CursorPageResult<PostSummaryDto>` |
 | `GET /shop/{shopId:guid}` | Authenticated | Global | `GetPostByShopQuery` | 200 `CursorPageResult<PostSummaryDto>` |
-| `GET /search` | Authenticated | `Search` 20/min | `GetPostByKeywordQuery` | 200 `CursorPageResult<PostSummaryDto>` |
-| `GET /latest` | Authenticated | Global | `GetLatestPostQuery` | 200 `CursorPageResult<PostSummaryDto>` |
-| `GET /most-reacted` | Authenticated | Global | `GetMostReactedPostQuery` | 200 `CursorPageResult<PostSummaryDto>` |
+| `GET /search` | Authenticated | `Search` 20/min | `GetPostByKeywordQuery` | 200 `CursorPageResult<PostFeedItemDto>` |
+| `GET /latest` | Authenticated | Global | `GetLatestPostQuery` | 200 `CursorPageResult<PostFeedItemDto>` |
+| `GET /most-reacted` | Authenticated | Global | `GetMostReactedPostQuery` | 200 `CursorPageResult<PostFeedItemDto>` |
 
-### ReactionController — `api/Reaction`
+### ReactionController — `api/v1/Reaction`
 
 | Verb + route | Access | Rate limit | Dispatches | Success |
 |---|---|---|---|---|
@@ -239,7 +240,7 @@ Each table lists every action's HTTP verb + route, who may call it, its rate-lim
 | `GET /post/{postId:guid}` | Authenticated | Global | `GetReactionByPostQuery` | 200 `CursorPageResult<ReactionDto>` |
 | `GET /comment/{commentId:guid}` | Authenticated | Global | `GetReactionByCommentQuery` | 200 `CursorPageResult<ReactionDto>` |
 
-### ReportController — `api/Report`
+### ReportController — `api/v1/Report`
 
 | Verb + route | Access | Rate limit | Dispatches | Success |
 |---|---|---|---|---|
@@ -248,12 +249,23 @@ Each table lists every action's HTTP verb + route, who may call it, its rate-lim
 | `GET /{reportId:guid}` | Admin | Global | `GetSpecificReportQuery` | 200 `ReportDto` |
 | `GET /target` | Admin | Global | `GetReportByTargetQuery` | 200 `CursorPageResult<ReportDto>` |
 
-### ShopController — `api/Shop`
+### SaveController — `api/v1/Save`
+
+| Verb + route | Access | Rate limit | Dispatches | Success |
+|---|---|---|---|---|
+| `POST /post/{postId:guid}` | Authenticated | Global | `SavePostCommand` (publishes to RabbitMQ) | 202 |
+| `DELETE /post/{postId:guid}` | Authenticated | Global | `UnsavePostCommand` (publishes to RabbitMQ) | 202 |
+| `POST /shop/{shopId:guid}` | Authenticated | Global | `SaveShopCommand` (publishes to RabbitMQ) | 202 |
+| `DELETE /shop/{shopId:guid}` | Authenticated | Global | `UnsaveShopCommand` (publishes to RabbitMQ) | 202 |
+| `GET /me/post` | Authenticated | Global | `GetMySavedPostsQuery` | 200 `CursorPageResult<PostSummaryDto>` |
+| `GET /me/shop` | Authenticated | Global | `GetMySavedShopsQuery` | 200 `CursorPageResult<ShopSummaryDto>` |
+
+### ShopController — `api/v1/Shop`
 
 | Verb + route | Access | Rate limit | Dispatches | Success |
 |---|---|---|---|---|
 | `DELETE /{shopId:guid}` | Admin | Global | `DeleteShopCommand` | 204 |
-| `GET /{shopId:guid}` | Authenticated | Global | `GetSpecificShopQuery` | 200 `ShopDto` |
+| `GET /{shopId:guid}` | Authenticated | Global | `GetSpecificShopQuery` | 200 `ShopDetailDto` |
 | `GET /` | Authenticated | Global | `GetAllShopQuery` | 200 `CursorPageResult<ShopSummaryDto>` |
 | `GET /search` | Authenticated | `Search` 20/min | `GetShopByKeywordQuery` | 200 `CursorPageResult<ShopSummaryDto>` |
 | `GET /by-name` | Authenticated | Global | `GetShopByNameQuery` | 200 `CursorPageResult<ShopSummaryDto>` |

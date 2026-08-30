@@ -70,6 +70,9 @@ internal sealed class ChangeContentHandler
                 cancellationToken),
             _redisService.RemoveAsync(
                 CacheKey.List(CollectionName.Comment, $"post:{comment.PostId}", new CursorPageRequest(null)),
+                cancellationToken),
+            _redisService.RemoveAsync(
+                CacheKey.List(CollectionName.Comment, $"account:{identity.Value}", new CursorPageRequest(null)),
                 cancellationToken));
 
         return Result.Ok();

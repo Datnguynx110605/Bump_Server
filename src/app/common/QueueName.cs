@@ -14,4 +14,6 @@ public sealed record QueueName
     public static string UnsavePost = "unsave-post";
     public static string SaveShop = "save-shop";
     public static string UnsaveShop = "unsave-shop";
+    public static string DeleteAccount = "delete-account";
+    public static string DeletePost = "delete-post";
 }

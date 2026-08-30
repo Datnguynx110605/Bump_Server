@@ -7,7 +7,7 @@ namespace api;
 
 [ApiController]
 [Authorize]
-[Route("api/[controller]")]
+[Route("api/v1/[controller]")]
 public sealed class FollowController : ControllerBase
 {
     private readonly ISender _sender;
