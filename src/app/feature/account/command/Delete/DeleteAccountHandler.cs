@@ -11,14 +11,17 @@ internal sealed class DeleteAccountHandler
     private readonly IMongoDbContext _dbContext;
     private readonly IRedisService _redisService;
     private readonly ICurrentIdentityService _identityService;
+    private readonly IRabbitMQService _rabbitMQService;
     public DeleteAccountHandler(
         IMongoDbContext dbContext,
         IRedisService redisService,
-        ICurrentIdentityService identityService)
+        ICurrentIdentityService identityService,
+        IRabbitMQService rabbitMQService)
     {
         _dbContext = dbContext;
         _redisService = redisService;
         _identityService = identityService;
+        _rabbitMQService = rabbitMQService;
     }
 
     public async Task<Result> Handle(
@@ -63,6 +66,15 @@ internal sealed class DeleteAccountHandler
 
         await _redisService.RemoveAsync(
             cacheKey,
+            cancellationToken);
+
+        var message = new AccountMessage(
+            Guid.NewGuid(),
+            account.Id);
+
+        await _rabbitMQService.PublishAsync(
+            QueueName.DeleteAccount,
+            message,
             cancellationToken);
 
         return Result.Ok();

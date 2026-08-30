@@ -1,8 +1,8 @@
 # App Operation
 
-This document explains how the `app` layer actually operates end to end: how a client request becomes a dispatched MediatR message, how a handler coordinates `domain` and `infra` to fulfill it, and how the cross-cutting mechanisms — validation, caching, pagination, domain event dispatch — fit into that flow. It does not cover layer boundaries or the dependency rule (see `doc/architecture.md`) or naming/folder conventions (see `doc/project-rules.md`). For what a handler is calling *into*, see `doc/domain-operation.md` (business rules) and `doc/infra-operation.md` (external systems).
+This document explains how the `app` layer actually operates end to end: how a client request becomes a dispatched MediatR message, how a handler coordinates `domain` and `infra` to fulfill it, and how the cross-cutting mechanisms — validation, caching, pagination — fit into that flow. It does not cover layer boundaries or the dependency rule (see `doc/architecture.md`) or naming/folder conventions (see `doc/project-rules.md`). For what a handler is calling *into*, see `doc/domain-operation.md` (business rules) and `doc/infra-operation.md` (external systems).
 
-`app` is the use-case layer: every feature is one or more CQRS messages — a `<UseCase>Command` or `<UseCase>Query` record — plus one handler, discovered and invoked by MediatR through assembly scanning. Nothing outside `app` ever calls a handler by name; a caller only ever knows the message type and the `Result`/`Result<T>` it gets back. `app` has 10 feature areas (`account`, `auth`, `comment`, `email`, `follow`, `notification`, `post`, `reaction`, `report`, `shop`), 64 handlers, and 28 validators. `notification` has no `command` folder and no validators — see "Feature Areas" below.
+`app` is the use-case layer: every feature is one or more CQRS messages — a `<UseCase>Command` or `<UseCase>Query` record — plus one handler, discovered and invoked by MediatR through assembly scanning. Nothing outside `app` ever calls a handler by name; a caller only ever knows the message type and the `Result`/`Result<T>` it gets back. `app` has 11 feature areas (`account`, `auth`, `comment`, `email`, `follow`, `notification`, `post`, `reaction`, `report`, `save`, `shop`), 70 handlers, and 32 validators. `notification` has no `command` folder and no validators — see "Feature Areas" below.
 
 ## Core Patterns
 
@@ -90,7 +90,7 @@ This is the one place `DomainResult` and `Result` meet; nothing upstream of the 
 
 Every entity has a `<Entity>Profile : Profile` (AutoMapper) mapping it to a `<Entity>Dto` and/or `<Entity>SummaryDto`, registered once via `AddAutoMapper` assembly scan — a handler never constructs a DTO field-by-field, it calls `_mapper.Map<TDto>(entity)`. `AccountProfile` is the one profile that needs `.ForCtorParam`: it maps `AccountSummaryDto.Avatar` from `Avatars.LastOrDefault()`, since the DTO exposes only the single current avatar while the entity holds the full history list — a constructor parameter AutoMapper can't infer by name alone.
 
-Query handlers that return a `*SummaryDto` reference a shared `<Entity>Projection.Summary` (`AccountProjection`, `PostProjection`, `CommentProjection`, `ShopProjection`) instead of repeating `.Include(...)` calls — a `sealed record` static holder, one per feature, listing exactly the fields that `SummaryDto` needs. Command handlers that mutate a narrow slice of an entity build their own inline, narrower projection instead (e.g. `ChangePasswordHandler` projects only `Password`+`IsDeleted`).
+Query handlers that return a `*SummaryDto` reference a shared `<Entity>Projection.Summary` (`AccountProjection`, `PostProjection`, `CommentProjection`, `ShopProjection`, `NotificationProjection`) instead of repeating `.Include(...)` calls — a `sealed record` static holder, one per feature, listing exactly the fields that `SummaryDto` needs. Command handlers that mutate a narrow slice of an entity build their own inline, narrower projection instead (e.g. `ChangePasswordHandler` projects only `Password`+`IsDeleted`).
 
 `AccountProjection.Summary` projects `.Include(x => x.Avatars)` — the full array, not just the current one — because `Builders<T>.Projection.Include` can only render a field-access expression, not a method call like `.Avatars.Last()`; the `.ForCtorParam` mapping above is what actually reduces the array down to the single current avatar in memory, on the `AccountSummaryDto` side.
 
@@ -122,7 +122,7 @@ sequenceDiagram
 ### 6. Create: write-through; Update: invalidate-on-write; Delete/Recover: invalidate-on-write
 
 - **Create**: insert into Mongo, map to DTO, `SetAsync` the cache directly with that DTO — the cache is populated alongside the write, not just invalidated.
-- **Update**: read → call the domain mutation method → write the changed fields back with a Mongo filter/update → `RemoveAsync` the single-entity cache key, letting the next read repopulate it via cache-aside.
+- **Update**: read → call the domain mutation method → write the changed fields back with a Mongo filter/update → `RemoveAsync` the affected cache key(s), letting the next read repopulate them via cache-aside. Most update handlers (e.g. `account`'s `ChangeName`/`ChangeBio`/`ChangePassword`/`ChangeEmail`) invalidate only the single-entity key. A few invalidate the single-entity key *plus* every list-cache key whose result set the mutated field can change: `post`'s `ChangeCaption`/`ChangeRate` invalidate 5 keys via `Task.WhenAll` — `CacheKey.Post(id)`, and four list caches (`CollectionName.Post` with partitions `null`/"all posts", `account:{identity}`, `shop:{shopId}`, `mostReacted`); `comment`'s `ChangeContent` invalidates 2 — `CacheKey.Comment(id)` and `CollectionName.Comment` partitioned `post:{postId}`.
 - **Delete / Recover**: same invalidate-on-write shape, but the domain call is `entity.DeleteX()`/`entity.RecoverAccount()` (a `BaseEntity` lifecycle wrapper), and the Mongo filter includes the *pre-mutation* `IsDeleted` value as a guard (`Eq(IsDeleted, false)` for delete, `Eq(IsDeleted, true)` for recover) — this doubles as an implicit optimistic-concurrency check: a second concurrent delete simply won't match once the first has landed.
 
 ```mermaid
@@ -197,7 +197,7 @@ The remove side mirrors this exactly: filter requires the item to currently be p
 
 ### 9. Fire-and-forget queue commands
 
-`follow`'s `Follow`/`Unfollow` and `reaction`'s `ReactPost`/`UnreactPost`/`ReactComment`/`UnreactComment` are the six commands that never touch MongoDB or Redis themselves: each handler resolves the caller's identity, applies one guard specific to that command, and publishes a message to RabbitMQ via `IRabbitMQService.PublishAsync` — the actual document mutation happens later, out-of-band, in `infra`'s `FollowService`/`ReactionService` consumers (see `doc/infra-operation.md`). All six share one shape:
+`follow`'s `Follow`/`Unfollow`, `reaction`'s `ReactPost`/`UnreactPost`/`ReactComment`/`UnreactComment`, and `save`'s `SavePost`/`UnsavePost`/`SaveShop`/`UnsaveShop` are the ten commands that never touch MongoDB or Redis themselves: each handler resolves the caller's identity, applies one guard specific to that command, and publishes a message to RabbitMQ via `IRabbitMQService.PublishAsync` — the actual document mutation happens later, out-of-band, in `infra`'s `FollowService`/`ReactionService`/`SaveService` consumers (see `doc/infra-operation.md`). All ten share one shape:
 
 ```csharp
 var identity = _identityService.GetAccountId();
@@ -210,11 +210,11 @@ await _rabbitMQService.PublishAsync(QueueName.Follow, message, cancellationToken
 return Result.Ok();
 ```
 
-- **Identity check**: every one of the six fails with `"Unauthorized"` if `ICurrentIdentityService.GetAccountId()` returns `null` — the same guard every other authenticated handler relies on `ICurrentIdentityService` for, made explicit here because there is no MongoDB read afterward that would otherwise fail first.
-- **Self-target guard (`follow` only)**: `Follow`/`Unfollow` additionally fail with `"Cannot follow yourself"`/`"Cannot unfollow yourself"` if `identity.Value == request.followingId`. `reaction`'s four commands have no equivalent self-target check.
-- **Message shape**: `Follow`/`Unfollow` both publish a `FollowMessage(MessageId, FollowerId, FollowingId)` (a fresh `Guid.NewGuid()` per publish, not reused across retries); all four `reaction` commands publish a `ReactionMessage(MessageId, AccountId, TargetId)`, where `TargetId` is a `postId` for `ReactPost`/`UnreactPost` and a `commentId` for `ReactComment`/`UnreactComment` — the message shape does not distinguish a post-target from a comment-target, that distinction lives entirely in which `QueueName` it was published to.
-- **Queue names**: `QueueName.Follow`, `.Unfollow`, `.ReactPost`, `.UnreactPost`, `.ReactComment`, `.UnreactComment` — six distinct queues, one per command, not one queue per feature. `doc/infra-operation.md`'s "Queue Consumers" section explains why: two operations on the same account pair produce the same idempotency key, so sharing a queue between e.g. `Follow` and `Unfollow` would make the second delivery collide with the first as an integrity conflict rather than being processed as a distinct operation. `QueueName` declares one more entry beyond these six, `.CreateComment` — it belongs to a different shape entirely, see the next pattern.
-- **Return value carries no confirmation**: `Result.Ok()` is returned the instant the publish succeeds, before `FollowService`/`ReactionService` has processed the message — a caller sees success as soon as the message is queued, not once the relationship/reaction actually exists in MongoDB. `api` reflects this by returning `202 Accepted` rather than `204 No Content` for these six actions (see `doc/api-operation.md`).
+- **Identity check**: every one of the ten fails with `"Unauthorized"` if `ICurrentIdentityService.GetAccountId()` returns `null` — the same guard every other authenticated handler relies on `ICurrentIdentityService` for, made explicit here because there is no MongoDB read afterward that would otherwise fail first.
+- **Self-target guard (`follow` only)**: `Follow`/`Unfollow` additionally fail with `"Cannot follow yourself"`/`"Cannot unfollow yourself"` if `identity.Value == request.followingId`. `reaction`'s four commands and `save`'s four commands have no equivalent self-target check — saving isn't a relationship between two accounts, so there's no "self" to guard against.
+- **Message shape**: `Follow`/`Unfollow` both publish a `FollowMessage(MessageId, FollowerId, FollowingId)` (a fresh `Guid.NewGuid()` per publish, not reused across retries); all four `reaction` commands publish a `ReactionMessage(MessageId, AccountId, TargetId)`, where `TargetId` is a `postId` for `ReactPost`/`UnreactPost` and a `commentId` for `ReactComment`/`UnreactComment`; all four `save` commands publish a `SaveMessage(MessageId, AccountId, TargetId)`, where `TargetId` is a `postId` for `SavePost`/`UnsavePost` and a `shopId` for `SaveShop`/`UnsaveShop` — in both cases the message shape does not distinguish which kind of target it is, that distinction lives entirely in which `QueueName` it was published to.
+- **Queue names**: `QueueName.Follow`, `.Unfollow`, `.ReactPost`, `.UnreactPost`, `.ReactComment`, `.UnreactComment`, `.SavePost`, `.UnsavePost`, `.SaveShop`, `.UnsaveShop` — ten distinct queues, one per command, not one queue per feature. `doc/infra-operation.md`'s "Queue Consumers" section explains why: two operations on the same account pair produce the same idempotency key, so sharing a queue between e.g. `Follow` and `Unfollow` would make the second delivery collide with the first as an integrity conflict rather than being processed as a distinct operation. `QueueName` declares 14 entries in total: these ten, plus `.CreateComment` (a different shape, see the next pattern) and `.RecalculateShopRate`/`.DeleteAccount`/`.DeletePost` (a third shape — a synchronous handler's own Mongo/Redis work, plus a fire-and-forget cascade publish tacked on at the end; see "Synchronous write + cascade publish" below).
+- **Return value carries no confirmation**: `Result.Ok()` is returned the instant the publish succeeds, before `FollowService`/`ReactionService`/`SaveService` has processed the message — a caller sees success as soon as the message is queued, not once the relationship/reaction/save actually exists in MongoDB. `api` reflects this by returning `202 Accepted` rather than `204 No Content` for these ten actions (see `doc/api-operation.md`).
 
 ### 10. Post-write notification publish (`comment`'s `Create`)
 
@@ -231,6 +231,16 @@ return Result.Ok(dto);
 
 The publish must come after the insert, never before — a consumer that received the message first could look up a `Comment` that doesn't exist yet. Unlike Pattern 9, the publish here is not the operation the client is waiting on: the `CommentDto` returned to the caller already reflects a fully committed write, and the queue exists only to drive a side effect out-of-band — `infra`'s `CommentService` reads the new comment's post, finds the post's owner, and calls `INotificationService.CreateAsync` to notify them (see `doc/infra-operation.md`). If `PublishAsync` itself throws, the exception propagates uncaught out of the handler (same as every other RabbitMQ publish in `app` — see Pattern 9's identity-check note), but by that point the comment already exists in MongoDB; a client that retries the request on that error would create a second, duplicate comment. This is a known, accepted property of persisting before publishing, not an oversight — publishing before the insert would be strictly worse, racing the consumer to a comment that may not exist yet.
 
+### 11. Synchronous write + cascade publish
+
+A third shape, distinct from both Pattern 9 (fire-and-forget-only, no Mongo/Redis touch) and Pattern 10 (`comment`'s post-write notify-the-owner publish): a handler does its entire ordinary synchronous job — the ordinary "Update"/"Delete: invalidate-on-write" shape from Pattern 6, including its own Mongo write and Redis invalidation — and only after that succeeds, publishes one more RabbitMQ message to trigger an out-of-band cascade in `infra`, unrelated to notifying anyone:
+
+- `post/command/Create/CreatePostHandler.cs` and `post/command/ChangeRate/ChangeRateHandler.cs`: after the post write and its cache invalidation, publish `RecalculateShopRateMessage(Guid.NewGuid(), shopId)` to `QueueName.RecalculateShopRate` — unconditionally, whether the post's `Shop` was reused or newly created — so `infra` can recompute the shop's average rate.
+- `post/command/Delete/DeletePostHandler.cs`: after the post's own delete/invalidation work, publishes **both** `RecalculateShopRateMessage(Guid.NewGuid(), shopId)` to `QueueName.RecalculateShopRate` and `PostMessage(Guid.NewGuid(), post.Id)` to `QueueName.DeletePost`.
+- `account/command/Delete/DeleteAccountHandler.cs`: after the account's own delete/invalidation work, publishes `AccountMessage(Guid.NewGuid(), account.Id)` to `QueueName.DeleteAccount`.
+
+Unlike Pattern 9, none of these five publish sites are the operation the client is waiting on — by the time the message is published, the handler's own write has already committed and the response already reflects it, exactly as in Pattern 10. Unlike Pattern 10, the consumer on the other end isn't `NotificationService` — it's a cascade/recalculation consumer (see `doc/infra-operation.md`'s Queue Consumers section for what each one does).
+
 ## Feature Areas
 
 | Feature | Commands | Queries | Notes |
@@ -244,6 +254,7 @@ The publish must come after the insert, never before — a consumer that receive
 | `notification` | — | GetMyNotification, GetSpecificNotification | Read-only: no command folder, no validators. A `Notification` is created directly by `infra`'s `NotificationService`, never dispatched as a MediatR command — see `doc/domain-operation.md`/`doc/infra-operation.md` |
 | `reaction` | ReactPost, UnreactPost, ReactComment, UnreactComment | GetReactionByPost, GetReactionByComment | Commands only publish to RabbitMQ (`QueueName.ReactPost`/`UnreactPost`/`ReactComment`/`UnreactComment`) — same fire-and-forget shape as `follow`, applied by `infra`'s `ReactionService`, which also notifies the reacted-to post's/comment's owner |
 | `report` | Create | GetAllReport, GetSpecificReport, GetReportByTarget | `GetReportByTarget` discriminates on the `ReportTarget` enum (declared in `app`, not `domain` — see `doc/project-rules.md`) |
+| `save` | SavePost, SaveShop, UnsavePost, UnsaveShop | GetMySavedPosts, GetMySavedShops | Commands only publish to RabbitMQ (`QueueName.SavePost`/`SaveShop`/`UnsavePost`/`UnsaveShop`) — same fire-and-forget shape as `follow`/`reaction`, applied by `infra`'s `SaveService` (see `doc/infra-operation.md`); queries paginate `Account.SavePosts`/`SaveShops` (an embedded array, like `Followers`/`Followings`) and then batch-fetch the referenced `Post`/`Shop` documents by id |
 | `shop` | Delete | GetAllShop, GetSpecificShop, GetShopByName, GetShopByAddress, GetShopByKeyword, GetMostRatedShop | No `Create` command — every `Shop` comes into existence as a side effect of `post/command/Create` |
 
 Every use case below has its own diagram, using its actual command/handler/entity names.
@@ -408,6 +419,7 @@ sequenceDiagram
     participant D as domain (Account.DeleteAccount)
     participant M as MongoDB
     participant R as Redis
+    participant Q as RabbitMQ (IRabbitMQService)
 
     C->>H: DeleteAccountCommand()
     H->>M: Find Account(Id=identity, IsDeleted=false), project IsDeleted
@@ -416,8 +428,11 @@ sequenceDiagram
     D-->>H: DomainResult
     H->>M: UpdateOneAsync(filter incl. IsDeleted=false, Set(IsDeleted=true, DeletedAt))
     H->>R: RemoveAsync(CacheKey.Account(id))
+    H->>Q: PublishAsync(QueueName.DeleteAccount, AccountMessage(Guid.NewGuid(), account.Id))
     H-->>C: Result.Ok() / Result.Fail(error)
 ```
+
+After the delete lands, `DeleteAccountHandler` publishes `AccountMessage(Guid.NewGuid(), account.Id)` to `QueueName.DeleteAccount` — see "Synchronous write + cascade publish" (Pattern 11) above for what this cascade does downstream.
 
 #### Recover
 
@@ -711,6 +726,8 @@ sequenceDiagram
     participant H as CreatePostHandler
     participant M as MongoDB
     participant D as domain (Shop.Create / Post.Create)
+    participant R as Redis
+    participant Q as RabbitMQ (IRabbitMQService)
 
     H->>M: Find Shop by Name+Address, not deleted
     alt Shop exists
@@ -720,12 +737,17 @@ sequenceDiagram
         D-->>H: Shop
         H->>M: InsertOneAsync(Shop)
         H->>H: cache Shop (write-through)
+        H->>R: RemoveAsync(2 Shop list-cache keys: all, mostRated)
     end
     H->>D: Post.Create(accountId, shopId, caption, rate, urls)
     D-->>H: Post
     H->>M: InsertOneAsync(Post)
     H->>H: cache PostSummaryDto (write-through)
+    H->>R: RemoveAsync(4 Post list-cache keys: all, account, shop, mostReacted)
+    H->>Q: PublishAsync(QueueName.RecalculateShopRate, RecalculateShopRateMessage(Guid.NewGuid(), shopId))
 ```
+
+`CreatePostHandler` invalidates its own Post list caches (and, when it created a new `Shop`, that `Shop`'s list caches too) via `Task.WhenAll` alongside the write-through cache set, then unconditionally publishes `RecalculateShopRateMessage(Guid.NewGuid(), shopId)` to `QueueName.RecalculateShopRate` at the end — whether the post used an existing or brand-new shop — so `infra` recomputes the shop's average rate; see "Synchronous write + cascade publish" (Pattern 11) above.
 
 #### ChangeCaption
 
@@ -743,7 +765,7 @@ sequenceDiagram
     H->>D: post.ChangeCaption(caption)
     D-->>H: DomainResult
     H->>M: UpdateOneAsync(filter incl. AccountId+IsDeleted, Set(Caption, UpdatedAt))
-    H->>R: RemoveAsync(CacheKey.Post(id))
+    H->>R: RemoveAsync(5 keys via Task.WhenAll: Post(id) + 4 Post list caches: all, account, shop, mostReacted)
     H-->>C: Result.Ok() / Result.Fail(error)
 ```
 
@@ -756,6 +778,7 @@ sequenceDiagram
     participant D as domain (Post.ChangeRate)
     participant M as MongoDB
     participant R as Redis
+    participant Q as RabbitMQ (IRabbitMQService)
 
     C->>H: ChangeRateCommand(postId, rate)
     H->>M: Find Post(Id + AccountId=identity + IsDeleted=false), project Rate+IsDeleted
@@ -763,9 +786,12 @@ sequenceDiagram
     H->>D: post.ChangeRate(rate)
     D-->>H: DomainResult
     H->>M: UpdateOneAsync(filter incl. AccountId+IsDeleted, Set(Rate, UpdatedAt))
-    H->>R: RemoveAsync(CacheKey.Post(id))
+    H->>R: RemoveAsync(5 keys via Task.WhenAll: Post(id) + 4 Post list caches: all, account, shop, mostReacted)
+    H->>Q: PublishAsync(QueueName.RecalculateShopRate, RecalculateShopRateMessage(Guid.NewGuid(), shopId))
     H-->>C: Result.Ok() / Result.Fail(error)
 ```
+
+After the rate change lands, `ChangeRateHandler` publishes `RecalculateShopRateMessage(Guid.NewGuid(), shopId)` to `QueueName.RecalculateShopRate`, same cascade as `Create` above — see Pattern 11.
 
 #### Delete
 
@@ -777,6 +803,7 @@ sequenceDiagram
     participant M as MongoDB
     participant R2 as IR2Service
     participant R as Redis
+    participant Q as RabbitMQ (IRabbitMQService)
 
     C->>H: DeletePostCommand(postId)
     H->>M: Find Post(Id + AccountId=identity + IsDeleted=false), project Images+IsDeleted
@@ -787,9 +814,13 @@ sequenceDiagram
     loop each image
         H->>R2: DeleteAsync(image.Url)
     end
-    H->>R: RemoveAsync(CacheKey.Post(id))
+    H->>R: RemoveAsync(5 keys via Task.WhenAll: Post(id) + 4 Post list caches: all, account, shop, mostReacted)
+    H->>Q: PublishAsync(QueueName.RecalculateShopRate, RecalculateShopRateMessage(Guid.NewGuid(), shopId))
+    H->>Q: PublishAsync(QueueName.DeletePost, PostMessage(Guid.NewGuid(), post.Id))
     H-->>C: Result.Ok() / Result.Fail(error)
 ```
+
+After the delete lands, `DeletePostHandler` publishes two messages: `RecalculateShopRateMessage(Guid.NewGuid(), shopId)` to `QueueName.RecalculateShopRate`, then `PostMessage(Guid.NewGuid(), post.Id)` to `QueueName.DeletePost` — see Pattern 11.
 
 #### GetSpecificPost
 
@@ -977,7 +1008,7 @@ sequenceDiagram
     H->>D: comment.ChangeContent(content)
     D-->>H: DomainResult
     H->>M: UpdateOneAsync(filter incl. AccountId+IsDeleted, Set(Content, UpdatedAt))
-    H->>R: RemoveAsync(CacheKey.Comment(id))
+    H->>R: RemoveAsync(2 keys: Comment(id) + Comment list cache partitioned post:{postId})
     H-->>C: Result.Ok() / Result.Fail(error)
 ```
 
@@ -1364,6 +1395,166 @@ sequenceDiagram
     end
     H-->>C: Result.Ok(CursorPageResult&lt;ReactionDto&gt;)
 ```
+
+### Save
+
+#### SavePost
+
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant H as SavePostHandler
+    participant I as ICurrentIdentityService
+    participant Q as RabbitMQ (IRabbitMQService)
+
+    C->>H: SavePostCommand(postId)
+    H->>I: GetAccountId()
+    I-->>H: identity or null
+    alt identity is null
+        H-->>C: Result.Fail("Unauthorized")
+    else
+        H->>Q: PublishAsync(QueueName.SavePost, SaveMessage(Guid.NewGuid(), identity, postId))
+        H-->>C: Result.Ok()
+    end
+```
+
+`SavePostValidator` requires `postId != Guid.Empty` ("PostId is required") — the only validation on this command; unlike `follow`, there's no self-target guard, since saving isn't a relationship between two accounts.
+
+#### SaveShop
+
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant H as SaveShopHandler
+    participant I as ICurrentIdentityService
+    participant Q as RabbitMQ (IRabbitMQService)
+
+    C->>H: SaveShopCommand(shopId)
+    H->>I: GetAccountId()
+    I-->>H: identity or null
+    alt identity is null
+        H-->>C: Result.Fail("Unauthorized")
+    else
+        H->>Q: PublishAsync(QueueName.SaveShop, SaveMessage(Guid.NewGuid(), identity, shopId))
+        H-->>C: Result.Ok()
+    end
+```
+
+`SaveShopValidator` requires `shopId != Guid.Empty` ("ShopId is required").
+
+#### UnsavePost
+
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant H as UnsavePostHandler
+    participant I as ICurrentIdentityService
+    participant Q as RabbitMQ (IRabbitMQService)
+
+    C->>H: UnsavePostCommand(postId)
+    H->>I: GetAccountId()
+    I-->>H: identity or null
+    alt identity is null
+        H-->>C: Result.Fail("Unauthorized")
+    else
+        H->>Q: PublishAsync(QueueName.UnsavePost, SaveMessage(Guid.NewGuid(), identity, postId))
+        H-->>C: Result.Ok()
+    end
+```
+
+`UnsavePostValidator` requires `postId != Guid.Empty` ("PostId is required").
+
+#### UnsaveShop
+
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant H as UnsaveShopHandler
+    participant I as ICurrentIdentityService
+    participant Q as RabbitMQ (IRabbitMQService)
+
+    C->>H: UnsaveShopCommand(shopId)
+    H->>I: GetAccountId()
+    I-->>H: identity or null
+    alt identity is null
+        H-->>C: Result.Fail("Unauthorized")
+    else
+        H->>Q: PublishAsync(QueueName.UnsaveShop, SaveMessage(Guid.NewGuid(), identity, shopId))
+        H-->>C: Result.Ok()
+    end
+```
+
+`UnsaveShopValidator` requires `shopId != Guid.Empty` ("ShopId is required").
+
+All four commands publish the same message shape, `SaveMessage(MessageId, AccountId, TargetId)` — `TargetId` is a `postId` for `SavePost`/`UnsavePost` and a `shopId` for `SaveShop`/`UnsaveShop`, same "the target kind is implied by which queue it was published to, not by the message shape" convention `reaction`'s `ReactionMessage` uses (see Pattern 9). The actual save/unsave mutation on `Account.SavePosts`/`SaveShops` happens later, out-of-band, in `infra`'s `SaveService` consumer (see `doc/infra-operation.md`).
+
+#### GetMySavedPosts
+
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant H as GetMySavedPostsHandler
+    participant I as ICurrentIdentityService
+    participant R as Redis
+    participant M as MongoDB
+
+    C->>H: GetMySavedPostsQuery(pageRequest)
+    H->>I: GetAccountId()
+    I-->>H: identity or null
+    alt identity is null
+        H-->>C: Result.Fail("Unauthorized")
+    else
+        H->>R: GetAsync(CacheKey.List("account:savepost", "account:{identity}", pageRequest))
+        R-->>H: hit: page / miss: null
+        opt miss
+            H->>M: EmbeddedArrayPaginator: $match Account(Id=identity, IsDeleted=false) -> $project SavePosts -> $unwind -> $match (keyset on SavedAt/PostId) -> $sort -> $limit -> $replaceRoot
+            M-->>H: SavedPost[] (id page, not yet mapped to Post)
+            H->>M: Post collection: Find(Id in postIds, IsDeleted=false)
+            M-->>H: Post[]
+            H->>H: map matched posts -> PostSummaryDto, preserving idPage order; posts missing/deleted are silently dropped
+            H->>R: SetAsync(cacheKey, dtoPage, DefaultListTTL)
+        end
+        H-->>C: Result.Ok(CursorPageResult&lt;PostSummaryDto&gt;)
+    end
+```
+
+Unlike every other paginated query in `app`, this one does a **second** collection lookup after paginating: `EmbeddedArrayPaginator` walks `Account.SavePosts` (an embedded array of `SavedPost{PostId, SavedAt}`, the same shape as `Followers`/`Followings`) to get a page of post-ids in save order, then a plain (non-paginated) `Post` collection `Find(Id in [...])` fetches the actual posts to map into `PostSummaryDto`. A post that's been hard-removed from the `Post` collection or soft-deleted since being saved is filtered out of the result (`postsById.ContainsKey`) rather than erroring, so `Items.Count` can be less than the requested `pageSize` even though `HasMore` was computed purely from the `SavePosts` array's own length — this is a real (if minor) inconsistency: the reported page can look "short" while `HasMore` still says there's more.
+
+#### GetMySavedShops
+
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant H as GetMySavedShopsHandler
+    participant I as ICurrentIdentityService
+    participant R as Redis
+    participant M as MongoDB
+
+    C->>H: GetMySavedShopsQuery(pageRequest)
+    H->>I: GetAccountId()
+    I-->>H: identity or null
+    alt identity is null
+        H-->>C: Result.Fail("Unauthorized")
+    else
+        H->>R: GetAsync(CacheKey.List("account:saveshop", "account:{identity}", pageRequest))
+        R-->>H: hit: page / miss: null
+        opt miss
+            H->>M: EmbeddedArrayPaginator: $match Account(Id=identity, IsDeleted=false) -> $project SaveShops -> $unwind -> $match (keyset on SavedAt/ShopId) -> $sort -> $limit -> $replaceRoot
+            M-->>H: SavedShop[] (id page)
+            H->>M: Shop collection: Find(Id in shopIds, IsDeleted=false)
+            M-->>H: Shop[]
+            H->>H: map matched shops -> ShopSummaryDto, preserving idPage order
+            H->>R: SetAsync(cacheKey, dtoPage, DefaultListTTL)
+        end
+        H-->>C: Result.Ok(CursorPageResult&lt;ShopSummaryDto&gt;)
+    end
+```
+
+Same two-step (paginate embedded array, then batch-fetch) shape and same "missing/deleted shop silently dropped, `HasMore` can understate a short page" caveat as `GetMySavedPosts` above.
+
+Both query handlers build their cache key as `CacheKey.List($"{CollectionName.Account}:savepost", $"account:{identity.Value}", request.pageRequest)` / `...:saveshop...` — i.e. the entity name in the cache key is `"account:savepost"`/`"account:saveshop"`, not `"save"`, since the source of truth is `Account`'s embedded array, not a standalone `Save`/`SavedPost` collection.
+
+Note: `ISaveService` (`common/interface/service/ISaveService.cs`) is a port declared in `app` (`ProcessSavePostAsync`/`ProcessUnsavePostAsync`/`ProcessSaveShopAsync`/`ProcessUnsaveShopAsync`) but is never called from within `app` itself — no handler injects it. It exists purely so `infra`'s queue consumer can be typed against an `app`-declared interface (same reason `app` has no direct `IFollowService`/`IReactionService` — see `doc/infra-operation.md`).
 
 ### Report
 

@@ -11,7 +11,7 @@ namespace api;
 [ApiController]
 [Authorize]
 [EnableRateLimiting(RateLimiterPolicy.Email)]
-[Route("api/[controller]")]
+[Route("api/v1/[controller]")]
 public sealed class EmailController : ControllerBase
 {
     private readonly ISender _sender;

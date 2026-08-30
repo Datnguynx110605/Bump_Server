@@ -37,7 +37,7 @@ public sealed class Email
 
 Because both constructors are `private`, it is a compile error to write `new Email("x")` or `new Account(...)` from `app` or anywhere else in the codebase. The only path to an instance is through `Create`, so an invalid `Account` or `Email` cannot exist in memory — the type system itself enforces the invariant, not caller discipline.
 
-This pattern applies to every aggregate root and every value object, with one exception: `Notification` has a `public` parameterized constructor and no `Create` factory at all — see "Aggregate Roots" below. It does **not** apply to the five plain child objects (`Avatar`, `Image`, `Follower`, `Following`, `Reaction`) — see "Child Objects" below for why they're the exception.
+This pattern applies to every aggregate root and every value object, with one exception: `Notification` has a `public` parameterized constructor and no `Create` factory at all — see "Aggregate Roots" below. It does **not** apply to the seven plain child objects (`Avatar`, `Image`, `Follower`, `Following`, `Reaction`, `SavedPost`, `SavedShop`) — see "Child Objects" below for why they're the exception.
 
 ### 2. Rich Domain Model
 
@@ -45,7 +45,7 @@ Aggregate roots are not data bags read and mutated by external handler code — 
 
 - Every mutable property is `{ get; private set; }`. There are no public setters anywhere in `domain`.
 - Every child collection is a `private List<T> _items = new()` field, exposed publicly only as `IReadOnlyCollection<T> Items => _items.AsReadOnly()`. Outside code can read the collection but cannot add, remove, or replace items in it directly.
-- The *only* way to change an aggregate's state is to call one of its own methods (`Account.ChangeName(...)`, `Post.ChangeRate(...)`, `Shop.AddPost(...)`). Each method contains the business rule for that specific change — the check that makes the change valid or invalid lives next to the state it protects, not in a handler in `app`.
+- The *only* way to change an aggregate's state is to call one of its own methods (`Account.ChangeName(...)`, `Post.ChangeRate(...)`, `Shop.ChangeRate(...)`). Each method contains the business rule for that specific change — the check that makes the change valid or invalid lives next to the state it protects, not in a handler in `app`. This is violated for three of `Account`'s owned collections — `Avatars`, `SavePosts`, `SaveShops` — which `app` mutates directly via raw MongoDB update operators with no domain method involved at all; see "Aggregate Roots" below.
 - Methods return `DomainResult`/`DomainResult<T>` rather than throwing, so a handler in `app` can react to an invalid operation (e.g. "new name must be different") as a normal control-flow value, not an exception.
 
 ```csharp
@@ -140,9 +140,9 @@ This no-identity, no-mutation shape is the DDD **Value Object** pattern in its o
 ### `Account`
 
 - **Identity/state**: `Email`, `Name`, `Password` (BCrypt hash), `Bio` (nullable, max 2000 chars), `Role` (defaults to `Role.User`), `FollowerAmount`/`FollowingAmount` (`Amount`, default 0).
-- **Owned collections**: `Avatars` (`List<Avatar>`), `Followers` (`List<Follower>`), `Followings` (`List<Following>`), `SavePosts` (`List<Post>`), `SaveShops` (`List<Shop>`).
+- **Owned collections**: `Avatars` (`List<Avatar>`), `Followers` (`List<Follower>`), `Followings` (`List<Following>`), `SavePosts` (`List<SavedPost>`), `SaveShops` (`List<SavedShop>`).
 - **`Create(email, name, password, bio)`**: fails if `password.Length != 60` (i.e. the caller must pass an already-BCrypt-hashed password, not plaintext); fails if `bio` exceeds 2000 characters.
-- **Business methods**: `SavePost`/`RemoveSavedPost`, `SaveShop`/`RemoveSavedShop` (all fail if the target is already present / not found, respectively); `ChangeEmail`/`ChangeName` (fail if the new value equals the current one); `ChangePassword` (fails if identical to current, or if the new hash isn't exactly 60 characters); `ChangeBio` (fails only on the 2000-character limit — unlike the others, a `null`/empty bio is allowed and re-settable); `ChangeAvatar` (fails on empty URL or a duplicate URL already present); `RemoveAvatar` (fails if the URL isn't found).
+- **Business methods**: `ChangeEmail`/`ChangeName` (fail if the new value equals the current one); `ChangePassword` (fails if identical to current, or if the new hash isn't exactly 60 characters); `ChangeBio` (fails only on the 2000-character limit — unlike the others, a `null`/empty bio is allowed and re-settable). `Account` has no method to add/remove an `Avatar`, `SavedPost`, or `SavedShop` — those three collections are mutated directly by MongoDB update operators in `app`'s `ChangeAvatarHandler`/`RemoveAvatarHandler`/save handlers (see `doc/app-operation.md`/`doc/infra-operation.md`), bypassing `domain` entirely, which is an exception to this document's own Pattern 2 claim that only an aggregate's own methods change its state.
 - **Lifecycle wrappers**: `DeleteAccount()`, `RecoverAccount()`.
 
 ### `Post`
@@ -166,7 +166,7 @@ This no-identity, no-mutation shape is the DDD **Value Object** pattern in its o
 - **Identity/state**: `Name`, `Address` (both required strings), `Rate` (`Amount`, default 0).
 - **Owned collections**: none — `Shop` holds no reference back to its `Post`s; `Post.ShopId` is the only link, and it points one way (`Post` → `Shop`).
 - **`Create(name, address)`**: fails if `name` or `address` is empty/whitespace. Raises no domain event.
-- **Business methods**: none beyond `Create`.
+- **Business methods**: `ChangeRate(rate)` — accepts any `Amount`, no bounds check beyond `Amount.Create`'s own non-negative rule, calls `Update()`.
 - **Lifecycle wrapper**: `DeleteShop()`, calling `Delete()`.
 
 ### `Report`
@@ -195,16 +195,18 @@ This no-identity, no-mutation shape is the DDD **Value Object** pattern in its o
 
 ## Child Objects (not aggregate roots)
 
-`Avatar`, `Image`, `Follower`, `Following`, and `Reaction` are the five entities in `domain/core/entity` that do **not** derive from `BaseEntity` and do **not** follow the static-factory pattern — each has a `public` constructor callable directly, with no `Create` method and no validation:
+`Avatar`, `Image`, `Follower`, `Following`, `Reaction`, `SavedPost`, and `SavedShop` are the seven entities in `domain/core/entity` that do **not** derive from `BaseEntity` and do **not** follow the static-factory pattern — each has a `public` constructor callable directly, with no `Create` method and no validation:
 
 | Type | Fields | Constructed by |
 |---|---|---|
-| `Avatar` | `Url`, `CreatedAt` (auto) | `Account.Create` / `Account.ChangeAvatar` |
+| `Avatar` | `Url`, `CreatedAt` (auto) | no domain method constructs one — `app`'s `ChangeAvatarHandler` calls `new Avatar(url)` directly and pushes it via a raw MongoDB update |
 | `Image` | `Url`, `UploadedAt` (auto) | `Post.Create` / `Comment.Create` (from a `urls` list) |
 | `Follower` | `AccountId`, `Name`, `Avatar?`, `FollowedAt` (auto) | no domain method constructs one |
 | `Following` | `AccountId`, `Name`, `Avatar?`, `FollowedAt` (auto) | no domain method constructs one |
 | `Reaction` | `AccountId`, `Name`, `Avatar?`, `ReactedAt` (auto) | no domain method constructs one |
+| `SavedPost` | `PostId`, `SavedAt` (auto) | no domain method constructs one — `app`'s save-feature handlers only publish to RabbitMQ; the write happens in `infra` outside `domain` |
+| `SavedShop` | `ShopId`, `SavedAt` (auto) | no domain method constructs one — same as `SavedPost` |
 
 These are intentionally lighter-weight than aggregate roots: they carry denormalized display data (`Name`, `Avatar`) rather than being looked up by reference, they have no independent identity or lifecycle, and they are only ever meant to be added to / removed from a parent aggregate's private collection — never persisted or queried on their own. Their public constructor is a smaller version of the same ownership rule the aggregate roots enforce with `private` constructors: nothing outside `domain` is expected to hold a bare `Avatar` or `Reaction` that isn't already attached to an aggregate, even though the compiler does not currently prevent it the way it prevents `new Account(...)`.
 
-`domain` has no domain-event mechanism: there is no `Event` base type, no `RaiseEvent` method on `BaseEntity`, and no `domain/core/event` folder — a prior version of this document described one, but it was removed from the codebase. An aggregate's `Create`/mutation methods only ever change state and return a `DomainResult`; nothing in `domain` records a side-channel fact about what happened for something else to react to later. Where `app`/`infra` need to react to a write today (e.g. notifying a post's owner when someone comments on it), that is built as an explicit call from the handler or a downstream RabbitMQ consumer — see `doc/app-operation.md` and `doc/infra-operation.md`.
+`domain` has no domain-event mechanism: there is no `Event` base type, no `RaiseEvent` method on `BaseEntity`, and no `domain/core/event` folder. An aggregate's `Create`/mutation methods only ever change state and return a `DomainResult`; nothing in `domain` records a side-channel fact about what happened for something else to react to later. Where `app`/`infra` need to react to a write today (e.g. notifying a post's owner when someone comments on it), that is built as an explicit call from the handler or a downstream RabbitMQ consumer — see `doc/app-operation.md` and `doc/infra-operation.md`.

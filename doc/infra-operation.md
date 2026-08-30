@@ -41,7 +41,7 @@ The simplest adapter in `infra`: two one-line methods wrapping the `BCrypt.Net-N
 
 - Constructed from `IMongoClient` + `IConfiguration` (`MongoDB:DatabaseName`) to obtain an `IMongoDatabase`.
 - `GetCollection<T>(name)` is a direct pass-through to `_database.GetCollection<T>(name)` — no repository abstraction, matching the convention already documented in `project-rules.md`.
-- `GetCollection<T>` is the entire surface of `IMongoDbContext` and of `DbContext`'s implementation — there is no event-dispatch method, no transaction/session helper, nothing beyond this one pass-through. A prior version of this document described a `DispatchEventAsync` method here, wrapping domain events in a MediatR notification; that mechanism was removed along with `domain`'s event system (see `doc/domain-operation.md`), and `DbContext` today is exactly as small as its interface suggests.
+- `GetCollection<T>` is the entire surface of `IMongoDbContext` and of `DbContext`'s implementation — there is no event-dispatch method, no transaction/session helper, nothing beyond this one pass-through.
 
 ### `EmailService` (`IEmailService`)
 
@@ -64,9 +64,9 @@ Persists a `Notification`, populates its cache entry, and pushes it live to the 
 - Depends on `IMongoDbContext`, `IHubContext<NotificationHub>`, `IConnectionMultiplexer` (read directly, not through `IRedisService`, purely to read the online-presence counter below), `IRedisService`, and `IMapper`.
 - `CreateAsync(toAccountId, title, content, ct)`: constructs `new Notification(toAccountId, title, content)` directly — `Notification` has no `Create` factory to call instead (see `doc/domain-operation.md`) — inserts it, maps it to `NotificationSummaryDto`, `SetAsync`s it at `CacheKey.Notification(id)` with `DefaultNotificationTTL` (7 days), and removes the recipient's cached first page of notifications (`CacheKey.List(Notification, "account:{toAccountId}", new CursorPageRequest(null))`) so their next `GetMyNotification` call sees it.
 - **Online check**: reads `NotificationHub.OnlineKey(toAccountId)` (`"notification:online:{accountId}"`) directly off `IConnectionMultiplexer`'s database as a Redis string counter, incremented/decremented by `NotificationHub.OnConnectedAsync`/`OnDisconnectedAsync` per SignalR connection — so a value `> 0` means at least one open connection, not exactly one. If the counter is absent or `0`, `CreateAsync` returns `Result.Ok()` immediately: the notification is persisted and cached, but never pushed and never marked sent.
-- **If online**: sends a `"ReceiveNotification"` SignalR message (`Id`, `Title`, `Content`, `CreatedAt`) to `Clients.User(toAccountId)` — SignalR's user-targeting groups every connection whose `UserIdentifier` matches, which is the ASP.NET Core `NameIdentifier` claim by default, so this depends on `AddApi`'s JWT configuration mapping that claim consistently with `ICurrentIdentityService`'s `accountId` claim. Then calls `notification.MarkAsSent()`, writes `IsSent`/`UpdatedAt` back with `UpdateOneAsync`, and removes the single-entity cache key (`CacheKey.Notification(id)`) that step 1 just populated — so a client reading it right after will miss the cache and re-fetch the now-`IsSent: true` row from MongoDB, rather than serving the stale pre-send snapshot.
+- **If online**: sends a `"ReceiveNotification"` SignalR message (`Id`, `Title`, `Content`, `CreatedAt`) to `Clients.User(toAccountId)`. SignalR's user-targeting groups every connection whose `UserIdentifier` matches; `Context.UserIdentifier` is resolved by `AccountIdUserIdProvider` (`infra/hub/AccountIdUserIdProvider.cs`, registered as the singleton `IUserIdProvider` in `api/DependencyInjection.cs`), which reads the `accountId` claim directly via `JwtService.AccountIdClaimType` — not ASP.NET Core's default `NameIdentifier` claim. This is what lets `Clients.User(toAccountId.ToString())` reach the right connection without any claim-mapping configuration in `AddApi`. Then calls `notification.MarkAsSent()`, writes `IsSent`/`UpdatedAt` back with `UpdateOneAsync`, and removes the single-entity cache key (`CacheKey.Notification(id)`) that step 1 just populated — so a client reading it right after will miss the cache and re-fetch the now-`IsSent: true` row from MongoDB, rather than serving the stale pre-send snapshot.
 - **Not transactional**: the Mongo insert, the two cache writes, the SignalR push, and the `MarkAsSent` update are five separate operations with no rollback if a later one fails — e.g. a `SignalR` push succeeding followed by the `MarkAsSent` write failing would leave `IsSent: false` in MongoDB for a notification the client already received.
-- `NotificationHub` (`infra/hub`) itself is a plain `[Authorize] Hub` with no methods callable from the client — its only job is maintaining the `notification:online:{accountId}` counter across `OnConnectedAsync`/`OnDisconnectedAsync`, and it is mapped by `api`'s `Program.cs` at `/hubs/notification`, not registered inside `AddInfra`.
+- `NotificationHub` (`infra/hub`) itself is a plain `[Authorize] Hub` with no methods callable from the client — its only job is maintaining the `notification:online:{accountId}` counter across `OnConnectedAsync`/`OnDisconnectedAsync`, and it is mapped by `api`'s `Program.cs` at `/hubs/notification`, not registered inside `AddInfra`. `AccountIdUserIdProvider` (also `infra/hub`) is the other exception to that: it's registered directly by `api`'s `AddApi` rather than through `AddInfra` — see `doc/api-operation.md`.
 
 ### `OtpService` (`IOtpService`)
 
@@ -122,7 +122,7 @@ Combines two `infra` mechanisms: ASP.NET Core's `IDataProtectionProvider` (to en
 
 1. **Guid representation** — registers `GuidSerializer(GuidRepresentation.Standard)`, so every `Guid` is written as BSON binary subtype 4 rather than the driver's legacy subtype 3. This must be explicit; it decides the on-disk layout of every `_id` in the database.
 2. **Value objects** — `Amount`, `Email` and `Name` each get a class map that maps the read-only `Value` property and supplies a creator delegate calling the domain factory (`map.MapCreator(new Func<string, Name>(value => Name.Create(value).Value!), nameof(Name.Value))`). A value object therefore round-trips **through its own validation**: nothing enters the domain from the database without passing `Name.Create`.
-3. **Entities** — `BaseEntity` is mapped first (so `Id` becomes `_id` once, for all six aggregates, and `IgnoreExtraElements` is inherited), then each aggregate auto-maps its own members and explicitly maps the private list behind each read-only collection: `map.MapField("_avatars").SetElementName(nameof(Account.Avatars))`. The element name is deliberately the *property* name, not the field name, because `EmbeddedArrayPaginator` builds its aggregation stages from raw member-name strings (`"Followers"`, `"Reactions"`) — the mapped element name and the C# property name have to agree or that pipeline silently matches nothing.
+3. **Entities** — `BaseEntity` is mapped first (so `Id` becomes `_id` once, for all seven aggregates, and `IgnoreExtraElements` is inherited), then each aggregate auto-maps its own members and explicitly maps the private list behind each read-only collection: `map.MapField("_avatars").SetElementName(nameof(Account.Avatars))`. The element name is deliberately the *property* name, not the field name, because `EmbeddedArrayPaginator` builds its aggregation stages from raw member-name strings (`"Followers"`, `"Reactions"`) — the mapped element name and the C# property name have to agree or that pipeline silently matches nothing.
 4. **Backing-field serializers** — see below.
 
 Consequences worth knowing before changing anything:
@@ -131,7 +131,7 @@ Consequences worth knowing before changing anything:
 - **`Events` never persists.** `BaseEntity.Events` is read-only and `_events` is private and unmapped, so raised-but-undispatched events are not written to MongoDB and do not survive a round trip.
 - **Timestamps lose sub-millisecond precision.** BSON dates are milliseconds since epoch, so a `CreatedAt` read back from MongoDB is a truncation of the `DateTime.UtcNow` that was written. Cursor pagination is unaffected: `CursorCodec` encodes a value that was itself read from a document, so the cursor and the stored value are truncated identically.
 - **`Role` is stored as its integer value** (`Role.User` → `0`), the driver's default enum representation. Reordering the `Role` enum would silently reinterpret existing rows.
-- **`Account.SavePosts`/`SaveShops` embed whole `Post`/`Shop` documents**, because that is what the domain model declares. They are mapped for fidelity — no use case reads or writes them yet.
+- **`Account.SavePosts`/`SaveShops` embed only a `SavedPost`(`PostId`, `SavedAt`)/`SavedShop`(`ShopId`, `SavedAt`) reference each**, not a whole `Post`/`Shop` document. They are actively read and written by the `save` queue feature — see "Queue Consumers" below.
 
 ### `BackingFieldBsonSerializer<TEntity>` — why a wrapper serializer exists
 
@@ -187,7 +187,7 @@ Three query shapes are deliberately left unindexed:
 
 ## Queue Consumers (`infra/queue`)
 
-`FollowService`, `ReactionService`, and `CommentService` implement the ports in `app/common/interface/queue` and are written to be driven by `RabbitMQService.ConsumeAsync`, not called directly from a request. Four consequences follow from that, none of which are obvious from reading the classes on their own.
+`app/common/interface/queue` declares six ports — `IFollowService`, `IReactionService`, `ICommentService`, `IDeleteAccountService`, `IDeletePostService`, `IShopRateService` — implemented respectively by `FollowService`, `ReactionService`, `CommentService`, `DeleteAccountService`, `DeletePostService`, `ShopRateService` in `infra/queue`. A seventh, `ISaveService` (implemented by `SaveService`), is declared in `app/common/interface/service/` instead — the only queue-driven port not declared alongside its six siblings. All seven are written to be driven by `RabbitMQService.ConsumeAsync`, not called directly from a request, via 14 registered `AddHostedService<...ConsumerHost>()` consumer hosts, one per `QueueName` entry. `FollowService`/`ReactionService`/`CommentService` are covered first, in depth; `DeleteAccountService`/`DeletePostService`/`ShopRateService`/`SaveService` follow afterward. Four consequences follow from the shared "driven by a consume loop, not a request" shape, none of which are obvious from reading the classes on their own.
 
 **They take every identifier as a parameter and depend on no ambient identity.** None of the three inject `ICurrentIdentityService`: it resolves the account from `HttpContext.User`, and a consume loop has no `HttpContext`, so it would return `null` for every message. The caller — a request handler, or the consumer wiring — resolves the acting account and passes it in explicitly (`ProcessFollowAsync(followerId, followingId, ct)`).
 
@@ -205,6 +205,72 @@ Three query shapes are deliberately left unindexed:
 **Follow, unfollow, react-post, react-comment, and create-comment must not share a queue with each other.** The idempotency entry is keyed `rabbitmq:idempotency:{queueName}:{idempotencyKey}`. Two operations on the same target naturally produce the same idempotency key, so if they also share a queue the second one arrives with a matching key but a different payload hash — which `RabbitMQService` treats as an integrity conflict and routes straight to the dead-letter queue without retrying. Separate queues namespace the key apart; sharing one requires folding the operation name into the idempotency key.
 
 **Consumers must open a scope per message.** `IMongoDbContext`, `IRedisService`, and `INotificationService` are registered `AddScoped`, while a consume loop lives for the lifetime of the process. Injecting these services directly into a long-running consumer captures a single scope forever; the consumer should take `IServiceScopeFactory` and resolve the queue service inside a fresh scope for each message.
+
+### `DeleteAccountService` (`IDeleteAccountService`)
+
+`DeleteAccountConsumerHost` consumes `AccountMessage` off `QueueName.DeleteAccount` (`"delete-account"`), keyed by `MessageId`, calling `IDeleteAccountService.ProcessAfterDeleteAsync(accountId, ct)` in a fresh per-message scope. `app`'s `DeleteAccountHandler` publishes this message after its own synchronous soft-delete (see `doc/app-operation.md`); this consumer does the fan-out cleanup that depends on the account already being gone:
+
+1. Loads the (already soft-deleted) `Account`, projected to `Avatars` only; fails `"Account not found"` if it's gone.
+2. Deletes every avatar from R2 via `IR2Service.DeleteAsync` (one call per avatar in `Account.Avatars`).
+3. Runs several `UpdateManyAsync` writes in parallel via `Task.WhenAll`: revokes all the account's non-revoked `RefreshToken`s; soft-deletes every `Comment` the account owns; pulls the account's `Reaction` out of every `Post`/`Comment` it reacted to (`PullFilter` + `Inc(ReactionAmount.Value, -1)`); pulls the account out of every other account's `Followers`/`Followings` array it appears in (`PullFilter` + `Inc(FollowerAmount.Value, -1)` / `Inc(FollowingAmount.Value, -1)`).
+4. Separately, decrements each affected `Post.CommentAmount.Value` by however many of the deleted account's comments belonged to it, via one `BulkWriteAsync` of `UpdateOneModel`s grouped by `PostId`.
+5. Invalidates a wide set of Redis cache entries: the account's own `CacheKey.Account(id)`, its comment-history list, every reacted post's/comment's single-entity + reaction-list cache keys, every owned comment's single-entity cache key, every affected post's single-entity + comment-list cache keys, and every follower's/following's `CacheKey.Account(id)`.
+
+Terminal failure: `"Account not found"`.
+
+### `DeletePostService` (`IDeletePostService`)
+
+`DeletePostConsumerHost` consumes `PostMessage` off `QueueName.DeletePost` (`"delete-post"`), keyed by `MessageId`, calling `IDeletePostService.ProcessAfterDeleteAsync(postId, ct)` in a fresh per-message scope. `app`'s `DeletePostHandler` publishes this after its own synchronous soft-delete (see `doc/app-operation.md`); this consumer cleans up the post's comments:
+
+1. Confirms the (already soft-deleted) `Post` exists, else `"Post not found"`.
+2. Loads every non-deleted `Comment` on that post, projected to `AccountId` + `Images`. If there are none, returns `Result.Ok()` immediately.
+3. Deletes every comment image from R2 (`IR2Service.DeleteAsync` per image).
+4. Soft-deletes every one of those comments in one `UpdateManyAsync`.
+5. Invalidates Redis: the post's comment-list cache key, each comment's own single-entity cache key, and each distinct comment author's comment-history-by-account cache key.
+
+Terminal failure: `"Post not found"`.
+
+### `ShopRateService` (`IShopRateService`)
+
+`RecalculateShopRateConsumerHost` consumes `RecalculateShopRateMessage` off `QueueName.RecalculateShopRate` (`"recalculate-shop-rate"`), keyed by `MessageId`, calling `IShopRateService.ProcessRecalculateShopRateAsync(shopId, ct)`. `app`'s `post` `Create`/`ChangeRate`/`Delete` handlers all publish this after their own synchronous work (see `doc/app-operation.md`), since any of the three can change a shop's average rate:
+
+1. Aggregates the `Post` collection: `Match(ShopId == shopId && !IsDeleted)` → `Group` by `ShopId`, averaging `Rate.Value`. No matching posts → average `0`.
+2. Rounds the average with `MidpointRounding.AwayFromZero` and re-validates it through `Amount.Create`, so a shop's rate is always a domain-valid `Amount`, never a raw average that bypassed the value object's invariants; a validation failure short-circuits with `Result.Fail`.
+3. Loads the (non-deleted) `Shop`, fails `"Shop not found"` if gone, then calls the domain method `shop.ChangeRate(rateResult.Value)` and persists `Rate`/`UpdatedAt` via `UpdateOneAsync` (filtered on `IsDeleted: false`).
+4. Invalidates three Redis keys: `CacheKey.Shop(shopId)`, the unfiltered shop list (`CacheKey.List(Shop, null, ...)`), and the "most rated" shop list (`CacheKey.List(Shop, "mostRated", ...)`).
+
+This is the mechanism behind `ShopSummaryDto.Rate` staying in sync whenever a post's `Rate` changes elsewhere in the system.
+
+### `SaveService` (`ISaveService`)
+
+Driven by four separate consumer hosts, one per queue, all consuming the same `SaveMessage` shape (`AccountId`, `TargetId`, `MessageId`) keyed by `MessageId`:
+
+| Consumer host | Queue | Calls |
+|---|---|---|
+| `SavePostConsumerHost` | `QueueName.SavePost` (`"save-post"`) | `ISaveService.ProcessSavePostAsync(accountId, postId, ct)` |
+| `UnsavePostConsumerHost` | `QueueName.UnsavePost` (`"unsave-post"`) | `ISaveService.ProcessUnsavePostAsync(accountId, postId, ct)` |
+| `SaveShopConsumerHost` | `QueueName.SaveShop` (`"save-shop"`) | `ISaveService.ProcessSaveShopAsync(accountId, shopId, ct)` |
+| `UnsaveShopConsumerHost` | `QueueName.UnsaveShop` (`"unsave-shop"`) | `ISaveService.ProcessUnsaveShopAsync(accountId, shopId, ct)` |
+
+`app`'s `save` feature commands publish these after resolving the caller's identity, with no other synchronous work (see `doc/app-operation.md`). `SaveService`'s four methods all follow the same guarded-push/guarded-pull shape `FollowService`/`ReactionService` use:
+
+- `ProcessSavePostAsync`: confirms the (non-deleted) `Post` exists (`"Post not found"` otherwise), then `UpdateOneAsync` on the caller's `Account` with a filter that requires `IsDeleted: false` **and** `Not(AnyEq(SavePosts.Select(PostId), postId))` (not already saved), pushing a new `SavedPost(postId)`. `MatchedCount != 1` → `"Already saved this post"`.
+- `ProcessUnsavePostAsync`: mirror — filter requires the `AnyEq` guard to be *true* (must currently be saved), `PullFilter`s it out. `MatchedCount != 1` → `"Not saved this post"`.
+- `ProcessSaveShopAsync` / `ProcessUnsaveShopAsync`: identical shape against `Shop`/`SaveShops`/`SavedShop`.
+
+Every one of the four is a single-document `UpdateOneAsync` against the caller's own `Account` — unlike `FollowService`'s two-document `BulkWriteAsync`, there is no "matched one side, not the other" partial-write case, so every failure here is terminal (`Result.Fail`, acked, not retried) — none of the four throws to trigger a redelivery.
+
+Each method invalidates one Redis list-cache key on success: `CacheKey.List("{account}:savepost", "account:{accountId}", ...)` for the post pair, `CacheKey.List("{account}:saveshop", "account:{accountId}", ...)` for the shop pair. No `INotificationService.CreateAsync` call anywhere in `SaveService` — saving a post/shop never generates a notification, unlike follow/react/comment.
+
+## Health Checks (`infra/health`)
+
+`AddInfra` registers three `IHealthCheck` implementations via `AddHealthChecks()`, each named after the tag `api`'s `MapHealthChecks("/health")` (see `doc/api-operation.md`) reports on:
+
+- **`MongoHealthCheck`** (`"mongodb"`) — runs `{ ping: 1 }` against the `admin` database through the singleton `IMongoClient`. Healthy if the command completes; an exception (e.g. connection failure) propagates and is treated as unhealthy by the health-check middleware.
+- **`RedisHealthCheck`** (`"redis"`) — calls `IConnectionMultiplexer.GetDatabase().PingAsync()` through the singleton multiplexer. Same propagate-on-exception behavior.
+- **`RabbitMQHealthCheck`** (`"rabbitmq"`) — checks `IConnection.IsOpen` first, explicitly returning `Unhealthy("RabbitMQ connection is closed")` if not; otherwise opens a channel (`CreateChannelAsync`) as a live round-trip check and returns healthy if that succeeds. The channel is disposed immediately (`using`) — this is a liveness probe, not a channel meant for reuse.
+
+There is no check for R2, SMTP/email, or any other external system `infra` talks to — `/health` reflects Mongo/Redis/RabbitMQ reachability only.
 
 ## Configuration Keys
 

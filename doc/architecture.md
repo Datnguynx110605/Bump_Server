@@ -13,9 +13,9 @@ This document is the authoritative source for layer boundaries, the dependency r
 
 ## Layer Boundaries
 
-- **`domain`** — the innermost layer. Pure business/domain model: entities, value objects, the `DomainResult` result type. No project or package references at all, and **must stay that way**: `domain` may never reference `app`, `infra`, `api`, or any NuGet package — not MongoDB, not MediatR, not FluentResults, nothing. This is the one dependency the project treats as non-negotiable; the `MongoDB.Driver` exception below applies only to `app`, never to `domain`. `domain` has no domain-event mechanism — an earlier version of the codebase raised events from aggregates and dispatched them via MediatR from `app`/`infra`; that mechanism was removed, and no `Event` type exists anywhere in the codebase today (see `doc/domain-operation.md`).
+- **`domain`** — the innermost layer. Pure business/domain model: entities, value objects, the `DomainResult` result type. No project or package references at all, and **must stay that way**: `domain` may never reference `app`, `infra`, `api`, or any NuGet package — not MongoDB, not MediatR, not FluentResults, nothing. This is the one dependency the project treats as non-negotiable; the `MongoDB.Driver` exception below applies only to `app`, never to `domain`. `domain` has no domain-event mechanism — no `Event` type exists anywhere in the codebase today (see `doc/domain-operation.md`).
 - **`app`** — the use-case layer. Contains CQRS commands/queries/handlers/validators, DTOs, mapping profiles, and the port interfaces that `infra` must implement. Knows nothing about Redis, ASP.NET Core, or any other concrete technology — with one exception: it references the `MongoDB.Driver` package directly (see "Clean Architecture Compliance" below).
-- **`infra`** — the implementation layer. Implements every port declared in `app` using concrete technology: MongoDB, Redis, Cloudflare R2, MailKit/SMTP, BCrypt, JWT, ASP.NET Core Data Protection.
+- **`infra`** — the implementation layer. Implements every port declared in `app` using concrete technology: MongoDB, Redis, RabbitMQ, Cloudflare R2, MailKit/SMTP, BCrypt, JWT, ASP.NET Core Data Protection.
 - **`api`** — the entry-point layer and composition root. Hosts the ASP.NET Core process, composes the other layers' service registrations into one container, authenticates and authorizes incoming requests, and exposes the application to clients as a RESTful API.
 
 ## Dependency Rule
@@ -36,14 +36,14 @@ graph TD
 - `domain` is referenced by `app` and `infra`, but references nothing itself.
 - `app` references only `domain`.
 - `infra` references both `domain` and `app` — it sits between the use-case layer and the entry point precisely so it can implement `app`'s ports.
-- `api` declares a `ProjectReference` to `infra` only, transitively pulling in `app` and `domain`. It does name `app` in one place — `AddApi` calls `AddApp()` — but never `domain`.
+- `api` declares a `ProjectReference` to `infra` only, transitively pulling in `app` and `domain`. It does name `app` in one place — `AddApi` calls `AddApp()` — and it also names `domain` directly in six controllers (`AccountController`, `AuthController`, `EmailController`, `PostController`, `ReportController`, `ShopController`, all `using domain;`) to call a value object's `Create` factory (`Name.Create`, `Email.Create`, `Amount.Create`) at the boundary — see "Domain value-object construction at the boundary" in `doc/api-operation.md`.
 
 A dependency can only point inward, toward `domain`. `domain` has zero package dependencies. `app` is free of ASP.NET Core and Redis, but does take a direct dependency on the `MongoDB.Driver` package (see "Clean Architecture Compliance" below).
 
 ## Clean Architecture Compliance
 
 - **Followed — domain independence**: `domain` referencing nothing is treated as a hard rule, not just a current fact — the project-reference dependency rule is enforced at compile time (`domain` cannot reference `app`/`infra`/`api`, and `app` cannot reference `infra`/`api`), and `domain.csproj` has zero `PackageReference`s. The `MongoDB.Driver` exception noted below is scoped to `app` only; it must never be allowed to reach `domain`. There is also no repository abstraction hiding behind `IMongoDbContext`; that is a separate, deliberate, documented convention (see `project-rules.md`), not an accident.
-- **Not followed — persistence is not abstracted out of the use-case layer**: `app.csproj` references the `MongoDB.Driver` package directly, `IMongoDbContext.GetCollection<T>` returns the driver's own `IMongoCollection<T>`, and handlers (`ChangeNameHandler`, `GetMyAccountHandler`, others) and `CursorPaginator` build queries with the driver's `Builders<T>.Filter`/`.Projection`/`.Update` API. In canonical Clean Architecture, the use-case layer should depend only on a technology-agnostic port (e.g. `Task<Account?> FindByIdAsync(Guid id)`), with all MongoDB-specific query construction confined to `infra`. Today, swapping the database would require rewriting `app`, not just `infra` — the Dependency Rule holds at the project-reference level, but persistence details are not fully inverted behind an abstraction the way the pattern intends.
+- **Not followed — persistence is not abstracted out of the use-case layer**: `app.csproj` references the `MongoDB.Driver` package directly, `IMongoDbContext.GetCollection<T>` returns the driver's own `IMongoCollection<T>`, and handlers (`ChangeNameHandler` uses `Builders<Account>.Filter`/`.Projection`/`.Update` directly, `GetMyAccountHandler` uses a LINQ `.Find(x => ...)` predicate plus a precomputed `.Project<Account>(AccountProjection.Summary)`) and `CursorPaginator` all build queries directly against the driver's `IMongoCollection<T>` API. In canonical Clean Architecture, the use-case layer should depend only on a technology-agnostic port (e.g. `Task<Account?> FindByIdAsync(Guid id)`), with all MongoDB-specific query construction confined to `infra`. Today, swapping the database would require rewriting `app`, not just `infra` — the Dependency Rule holds at the project-reference level, but persistence details are not fully inverted behind an abstraction the way the pattern intends.
 - **Third-party frameworks in `app`** (MediatR, AutoMapper, FluentValidation, FluentResults) are a common, pragmatic deviation from strict "use cases have zero framework dependencies" Clean Architecture and are treated as acceptable here, consistent with most real-world .NET Clean Architecture codebases — unlike the MongoDB driver dependency above, which couples `app` to a specific database technology rather than a cross-cutting library.
 
 ## How Layers Interact
@@ -56,7 +56,7 @@ Wiring is split across three `DependencyInjection` classes, one per outer layer,
 
 - `app.DependencyInjection.AddApp()` registers MediatR, AutoMapper and FluentValidation via assembly scan of `app` itself, so every new handler/validator/mapping profile is picked up automatically, and names each pipeline behavior explicitly via `AddOpenBehavior` (an open generic cannot be found by a scan).
 - `infra.DependencyInjection.AddInfra(configuration)` is the only place in the codebase that references an `app` interface and its `infra` implementation together — e.g. `services.AddScoped<IJwtService, JwtService>()`. It also registers the long-lived external clients, the ASP.NET Core services those implementations depend on, and the startup work described below. Everywhere else, `app` code depends on the interface only and never sees which `infra` type is behind it.
-- `api.DependencyInjection.AddApi(configuration)` calls `AddApp()` and `AddInfra(configuration)`, then adds what only the host needs: OpenAPI, JWT bearer authentication, and authorization.
+- `api.DependencyInjection.AddApi(configuration)` calls `AddApp()` and `AddInfra(configuration)`, then adds what only the host needs: OpenAPI, JWT bearer authentication, authorization, SignalR (plus its `IUserIdProvider`), forwarded-headers configuration, and rate limiting (the global limiter and the four named policies).
 
 `Program.cs` calls `AddApi(builder.Configuration)` and contains no registration of its own; after `builder.Build()` it holds only the middleware pipeline, in which `UseAuthentication()` precedes `UseAuthorization()`.
 
@@ -74,7 +74,7 @@ sequenceDiagram
     participant API as api layer<br/>RESTful endpoint · JWT auth
     participant App as app layer<br/>MediatR use case handler
     participant Domain as domain layer<br/>entity / value object
-    participant Infra as infra layer<br/>MongoDB · Redis · R2 · SMTP
+    participant Infra as infra layer<br/>MongoDB · Redis · RabbitMQ · R2 · SMTP
 
     Client->>API: request
     API->>App: dispatch use case (command/query)
