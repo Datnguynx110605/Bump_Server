@@ -159,6 +159,12 @@ public sealed class DeleteAccountService : IDeleteAccountService
             _redisService.RemoveAsync(CacheKey.Account(account.Id), cancellationToken),
             _redisService.RemoveAsync(
                 CacheKey.List(CollectionName.Comment, $"account:{account.Id}", new CursorPageRequest(null)),
+                cancellationToken),
+            _redisService.RemoveAsync(
+                CacheKey.List($"{CollectionName.Account}:follower", $"account:{account.Id}", new CursorPageRequest(null)),
+                cancellationToken),
+            _redisService.RemoveAsync(
+                CacheKey.List($"{CollectionName.Account}:following", $"account:{account.Id}", new CursorPageRequest(null)),
                 cancellationToken)
         };
 
@@ -194,11 +200,17 @@ public sealed class DeleteAccountService : IDeleteAccountService
         foreach(var follower in followerAccounts)
         {
             cacheInvalidations.Add(_redisService.RemoveAsync(CacheKey.Account(follower.Id), cancellationToken));
+            cacheInvalidations.Add(_redisService.RemoveAsync(
+                CacheKey.List($"{CollectionName.Account}:follower", $"account:{follower.Id}", new CursorPageRequest(null)),
+                cancellationToken));
         }
 
         foreach(var following in followingAccounts)
         {
             cacheInvalidations.Add(_redisService.RemoveAsync(CacheKey.Account(following.Id), cancellationToken));
+            cacheInvalidations.Add(_redisService.RemoveAsync(
+                CacheKey.List($"{CollectionName.Account}:following", $"account:{following.Id}", new CursorPageRequest(null)),
+                cancellationToken));
         }
 
         await Task.WhenAll(cacheInvalidations);
