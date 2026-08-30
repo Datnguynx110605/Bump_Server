@@ -1,69 +1,67 @@
 using System.Net;
+using System.Net.Http.Headers;
+using System.Net.Http.Json;
 using System.Text.RegularExpressions;
 using app;
-using MailKit.Net.Smtp;
-using MailKit.Security;
 using Microsoft.Extensions.Configuration;
-using MimeKit;
 
 namespace infra;
 
 public sealed class EmailService : IEmailService
 {
-    private const string Host = "smtp.gmail.com";
-    private const int Port = 465;
+    private const string SendEndpoint = "https://api.resend.com/emails";
 
+    private readonly HttpClient _httpClient;
     private readonly IConfiguration _configuration;
 
-    public EmailService(IConfiguration configuration)
+    public EmailService(HttpClient httpClient, IConfiguration configuration)
     {
+        _httpClient = httpClient;
         _configuration = configuration;
     }
 
     public async Task SendAsync(
-        string to, 
-        string subject, 
-        string htmlBody, 
+        string to,
+        string subject,
+        string htmlBody,
         CancellationToken cancellationToken)
     {
-        var address = _configuration["Email:Address"]!;
-
-        var message = new MimeMessage();
-        message.From.Add(MailboxAddress.Parse(address));
-        message.To.Add(MailboxAddress.Parse(to));
-        message.Subject = subject;
         var plainBody = Regex.Replace(htmlBody, "<.*?>", string.Empty);
-        message.Body = new BodyBuilder { HtmlBody = htmlBody, TextBody = plainBody }.ToMessageBody();
 
-        using var client = new SmtpClient();
-        client.CheckCertificateRevocation = false;
-        client.Timeout = 10000;
-        await client.ConnectAsync(
-            Host, 
-            Port, 
-            SecureSocketOptions.SslOnConnect,
-            cancellationToken);
-        await client.AuthenticateAsync(
-            address, 
-            _configuration["Email:AppPassword"], 
-            cancellationToken);
-        await client.SendAsync(
-            message, 
-            cancellationToken);
-        await client.DisconnectAsync(
-            true, 
-            cancellationToken);
+        using var request = new HttpRequestMessage(HttpMethod.Post, SendEndpoint)
+        {
+            Content = JsonContent.Create(new
+            {
+                from = _configuration["Email:Address"]!,
+                to = new[] { to },
+                subject,
+                html = htmlBody,
+                text = plainBody
+            })
+        };
+        request.Headers.Authorization = new AuthenticationHeaderValue(
+            "Bearer",
+            _configuration["Email:ApiKey"]);
+
+        using var response = await _httpClient.SendAsync(request, cancellationToken);
+
+        if(!response.IsSuccessStatusCode)
+        {
+            var body = await response.Content.ReadAsStringAsync(cancellationToken);
+            throw new InvalidOperationException(
+                $"Resend returned {(int)response.StatusCode}: {body}");
+        }
     }
 
     public Task SendOtpRegistrationEmailAsync(
-        string to, 
-        string code, 
+        string to,
+        string code,
         CancellationToken cancellationToken) =>
         SendAsync(to, "Verify your account", BuildOtpRegistrationBody(code), cancellationToken);
 
     public Task SendWelcomeEmailAsync(
-        string to, 
-        string name, 
+        string to,
+        string name,
         CancellationToken cancellationToken) =>
         SendAsync(to, "Welcome to Bump", BuildWelcomeBody(name), cancellationToken);
 

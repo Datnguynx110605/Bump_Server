@@ -64,7 +64,8 @@ public static class DependencyInjection
         services.AddScoped<ICurrentIdentityService, CurrentIdentityService>();
         services.AddScoped<IDeleteAccountService, DeleteAccountService>();
         services.AddScoped<IDeletePostService, DeletePostService>();
-        services.AddScoped<IEmailService, EmailService>();
+        services.AddHttpClient<IEmailService, EmailService>(
+            client => client.Timeout = TimeSpan.FromSeconds(10));
         services.AddScoped<IFollowService, FollowService>();
         services.AddScoped<IJwtService, JwtService>();
         services.AddScoped<IMongoDbContext, DbContext>();

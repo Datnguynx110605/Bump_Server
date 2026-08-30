@@ -2,7 +2,7 @@
 
 This document explains how the `infra` layer actually operates end to end: how each `app`-defined port gets a concrete implementation, how each implementation talks to its external system, and what its real runtime behavior and failure modes are. It does not re-explain the dependency rule or the composition root — see `doc/architecture.md` for that. For naming/DI-registration conventions, see `doc/project-rules.md`.
 
-`infra` implements every port `domain`-independent `app` declares, using MongoDB, Redis, Cloudflare R2, MailKit/SMTP, BCrypt, JWT, ASP.NET Core Data Protection, and RabbitMQ.
+`infra` implements every port `domain`-independent `app` declares, using MongoDB, Redis, Cloudflare R2, the Resend email API, BCrypt, JWT, ASP.NET Core Data Protection, and RabbitMQ.
 
 ## Core Patterns
 
@@ -45,9 +45,10 @@ The simplest adapter in `infra`: two one-line methods wrapping the `BCrypt.Net-N
 
 ### `EmailService` (`IEmailService`)
 
-- Wraps MailKit's `SmtpClient`, hard-coded to Gmail's SMTP endpoint via `private const string Host = "smtp.gmail.com"` and `private const int Port = 587` — unlike every other external endpoint in `infra` (Mongo, Redis, R2, RabbitMQ), the SMTP host/port are not read from configuration.
-- Reads `Email:Address` / `Email:AppPassword` from configuration for the sender address and SMTP credentials.
-- `SendAsync(to, subject, htmlBody, ct)`: builds a `MimeMessage`, derives a plain-text fallback body by stripping HTML tags with a regex (`Regex.Replace(htmlBody, "<.*?>", string.Empty)`), then does one full connect → `StartTls` → authenticate → send → disconnect cycle per call — no connection pooling or client reuse across calls.
+- Posts to Resend's HTTPS API, hard-coded via `private const string SendEndpoint = "https://api.resend.com/emails"` — unlike every other external endpoint in `infra` (Mongo, Redis, R2, RabbitMQ), the send endpoint is not read from configuration.
+- Reads `Email:Address` / `Email:ApiKey` from configuration for the sender address and the Resend bearer token.
+- `SendAsync(to, subject, htmlBody, ct)`: derives a plain-text fallback body by stripping HTML tags with a regex (`Regex.Replace(htmlBody, "<.*?>", string.Empty)`), then posts one JSON payload (`from`/`to`/`subject`/`html`/`text`) with an `Authorization: Bearer` header. A non-2xx response is read as a string and thrown as an `InvalidOperationException` carrying the status code and body — this is the one `infra` service that signals failure by throwing rather than returning, so a provider outage surfaces as an unhandled exception rather than a `Result` failure (see the `500` note in `doc/api-operation.md`).
+- Delivery previously went through MailKit's `SmtpClient` to `smtp.gmail.com`. Outbound SMTP from the Railway deployment never completed on either port 587 (STARTTLS) or 465 (implicit TLS) — connections hung rather than being refused, so registration blocked until the client timed out. HTTPS on 443 is not subject to that egress restriction. Do not reintroduce an SMTP transport here.
 - `SendOtpRegistrationEmailAsync`/`SendWelcomeEmailAsync` both delegate to `SendAsync` with a fixed subject and an HTML body built by a private static method using C# raw string literals. `SendWelcomeEmailAsync` HTML-encodes the caller-supplied `name` (`WebUtility.HtmlEncode`) before embedding it, since a name can contain arbitrary user input; `SendOtpRegistrationEmailAsync` does not encode `code`, because that value is always server-generated (see `OtpService` below), never user input.
 
 ### `JwtService` (`IJwtService`)
@@ -270,7 +271,7 @@ Each method invalidates one Redis list-cache key on success: `CacheKey.List("{ac
 - **`RedisHealthCheck`** (`"redis"`) — calls `IConnectionMultiplexer.GetDatabase().PingAsync()` through the singleton multiplexer. Same propagate-on-exception behavior.
 - **`RabbitMQHealthCheck`** (`"rabbitmq"`) — checks `IConnection.IsOpen` first, explicitly returning `Unhealthy("RabbitMQ connection is closed")` if not; otherwise opens a channel (`CreateChannelAsync`) as a live round-trip check and returns healthy if that succeeds. The channel is disposed immediately (`using`) — this is a liveness probe, not a channel meant for reuse.
 
-There is no check for R2, SMTP/email, or any other external system `infra` talks to — `/health` reflects Mongo/Redis/RabbitMQ reachability only.
+There is no check for R2, email, or any other external system `infra` talks to — `/health` reflects Mongo/Redis/RabbitMQ reachability only.
 
 ## Configuration Keys
 
@@ -280,7 +281,7 @@ There is no check for R2, SMTP/email, or any other external system `infra` talks
 | `CurrentIdentityService` | none (reads `HttpContext`, not configuration) |
 | `DbContext` | `MongoDB:DatabaseName` |
 | `IndexConfiguration` | `MongoDB:DatabaseName` (read directly, not via `DbContext`, since index creation runs before any scoped service exists) |
-| `EmailService` | `Email:Address`, `Email:AppPassword` (SMTP host/port are hard-coded, not configured) |
+| `EmailService` | `Email:Address`, `Email:ApiKey` (the Resend send endpoint is hard-coded, not configured) |
 | `JwtService` | `Jwt:SecretKey`, `Jwt:Issuer`, `Jwt:Audience`, `Jwt:ExpiryMinutes` |
 | `NotificationService` | none directly (delegates to `IMongoDbContext`, `IRedisService`, `IHubContext<NotificationHub>`, and reads `IConnectionMultiplexer` directly for the online-presence counter) |
 | `OtpService` | none directly (delegates to `IRedisService`) |
