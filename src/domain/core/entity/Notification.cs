@@ -11,7 +11,7 @@ public sealed class Notification : BaseEntity
     public Guid? ActorAccountId { get; private set; }
     public Avatar? ActorAvatar { get; private set; }
     private Notification() {}
-    public Notification(
+    private Notification(
         Guid toAccountId,
         string title,
         string content,
@@ -27,6 +27,42 @@ public sealed class Notification : BaseEntity
         TargetId = targetId;
         ActorAccountId = actorAccountId;
         ActorAvatar = actorAvatar;
+    }
+
+    public static DomainResult<Notification> Create(
+        Guid toAccountId,
+        string title,
+        string content,
+        NotificationType type,
+        Guid targetId,
+        Guid actorAccountId,
+        Avatar? actorAvatar)
+    {
+        if(toAccountId == Guid.Empty)
+            return DomainResult<Notification>.Failure("ToAccountId is required");
+
+        if(string.IsNullOrWhiteSpace(title))
+            return DomainResult<Notification>.Failure("Title is required");
+
+        if(string.IsNullOrWhiteSpace(content))
+            return DomainResult<Notification>.Failure("Content is required");
+
+        if(targetId == Guid.Empty)
+            return DomainResult<Notification>.Failure("TargetId is required");
+
+        if(actorAccountId == Guid.Empty)
+            return DomainResult<Notification>.Failure("ActorAccountId is required");
+
+        Notification notification = new Notification(
+            toAccountId,
+            title,
+            content,
+            type,
+            targetId,
+            actorAccountId,
+            actorAvatar);
+
+        return DomainResult<Notification>.Success(notification);
     }
 
     public DomainResult MarkAsSent()
