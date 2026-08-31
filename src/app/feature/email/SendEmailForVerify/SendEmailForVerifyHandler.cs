@@ -28,7 +28,7 @@ internal sealed class SendEmailForVerifyHandler
         var accountCollection = _dbContext.GetCollection<Account>(CollectionName.Account);
 
         bool checkEmail = await accountCollection
-            .Find(x => x.Email == request.email && !x.IsDeleted)
+            .Find(x => x.Email == request.email)
             .AnyAsync(cancellationToken);
         
         if(!checkEmail)

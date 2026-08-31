@@ -3,5 +3,5 @@ using MediatR;
 
 namespace app;
 
-public sealed record RecoverAccountCommand
+public sealed record RecoverAccountCommand(string registrationToken)
     : IRequest<Result>;

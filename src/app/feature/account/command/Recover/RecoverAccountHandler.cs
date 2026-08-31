@@ -10,24 +10,32 @@ internal sealed class RecoverAccountHandler
 {
     private readonly IMongoDbContext _dbContext;
     private readonly IRedisService _redisService;
-    private readonly ICurrentIdentityService _identityService;
+    private readonly IRegistrationService _registrationService;
     public RecoverAccountHandler(
         IMongoDbContext dbContext,
         IRedisService redisService,
-        ICurrentIdentityService identityService)
+        IRegistrationService registrationService)
     {
         _dbContext = dbContext;
         _redisService = redisService;
-        _identityService = identityService;
+        _registrationService = registrationService;
     }
 
     public async Task<Result> Handle(
         RecoverAccountCommand request,
         CancellationToken cancellationToken)
     {
-        var identity = _identityService.GetAccountId();
-        if(identity is null)
-            return Result.Fail("Unauthorized");
+        var rawEmail = await _registrationService.ExtractEmailAsync(
+            request.registrationToken,
+            cancellationToken);
+        if(rawEmail is null)
+            return Result.Fail("Unauthenticated");
+
+        var emailResult = Email.Create(rawEmail);
+        if(!emailResult.IsSuccess)
+            return Result.Fail(emailResult.Error);
+
+        Email email = emailResult.Value;
 
         var accountCollection = _dbContext.GetCollection<Account>(CollectionName.Account);
 
@@ -35,7 +43,7 @@ internal sealed class RecoverAccountHandler
             .Include(x => x.IsDeleted);
 
         var account = await accountCollection
-            .Find(x => x.Id == identity.Value && x.IsDeleted)
+            .Find(x => x.Email == email && x.IsDeleted)
             .Project<Account>(projection)
             .FirstOrDefaultAsync(cancellationToken);
 

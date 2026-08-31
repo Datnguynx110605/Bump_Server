@@ -108,10 +108,25 @@ public sealed class AccountController : ControllerBase
         return result.ToActionResult();
     }
 
-    [HttpPost("me/recover")]
-    public async Task<ActionResult> RecoverAccount(CancellationToken cancellationToken)
+    [AllowAnonymous]
+    [EnableRateLimiting(RateLimiterPolicy.Auth)]
+    [HttpPost("recover")]
+    public async Task<ActionResult> RecoverAccount(
+        RecoverAccountRequest request,
+        CancellationToken cancellationToken)
     {
-        var result = await _sender.Send(new RecoverAccountCommand(), cancellationToken);
+        var result = await _sender.Send(new RecoverAccountCommand(request.RegistrationToken), cancellationToken);
+        return result.ToActionResult();
+    }
+
+    [AllowAnonymous]
+    [EnableRateLimiting(RateLimiterPolicy.Auth)]
+    [HttpPut("reset-password")]
+    public async Task<ActionResult> ResetPassword(
+        ResetPasswordRequest request,
+        CancellationToken cancellationToken)
+    {
+        var result = await _sender.Send(new ResetPasswordCommand(request.RegistrationToken, request.NewPassword), cancellationToken);
         return result.ToActionResult();
     }
 
