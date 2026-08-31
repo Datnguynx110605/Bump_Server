@@ -64,6 +64,13 @@ public sealed class DeleteAccountService : IDeleteAccountService
             .PullFilter(x => x.Reactions, f => f.AccountId == account.Id)
             .Inc(x => x.ReactionAmount.Value, -1);
 
+        var ownerPostFilter = Builders<Post>.Filter.And(
+            Builders<Post>.Filter.Eq(x => x.AccountId,accountId),
+            Builders<Post>.Filter.Eq(x => x.IsDeleted, false));
+
+        var ownerPostUpdate = Builders<Post>.Update
+            .Set(x => x.IsDeleted, true);
+
         var commentFilter = Builders<Comment>.Filter.ElemMatch(x => x.Reactions, r => r.AccountId == account.Id);
 
         var commentUpdate = Builders<Comment>.Update
@@ -91,6 +98,11 @@ public sealed class DeleteAccountService : IDeleteAccountService
         var ownerComments = await commentCollection
             .Find(ownerCommentFilter)
             .Project<Comment>(Builders<Comment>.Projection.Include(x => x.Id).Include(x => x.PostId))
+            .ToListAsync(cancellationToken);
+
+        var ownerPosts = await postCollection
+            .Find(ownerPostFilter)
+            .Project<Post>(Builders<Post>.Projection.Include(x => x.Id))
             .ToListAsync(cancellationToken);
 
         var reactedPosts = await postCollection
@@ -121,6 +133,10 @@ public sealed class DeleteAccountService : IDeleteAccountService
             postCollection.UpdateManyAsync(
                 postFilter,
                 postUpdate,
+                cancellationToken : cancellationToken),
+            postCollection.UpdateManyAsync(
+                ownerPostFilter,
+                ownerPostUpdate,
                 cancellationToken : cancellationToken),
             commentCollection.UpdateManyAsync(
                 commentFilter,
@@ -161,6 +177,9 @@ public sealed class DeleteAccountService : IDeleteAccountService
                 CacheKey.List(CollectionName.Comment, $"account:{account.Id}", new CursorPageRequest(null)),
                 cancellationToken),
             _redisService.RemoveAsync(
+                CacheKey.List(CollectionName.Post, $"account:{account.Id}", new CursorPageRequest(null)),
+                cancellationToken),
+            _redisService.RemoveAsync(
                 CacheKey.List($"{CollectionName.Account}:follower", $"account:{account.Id}", new CursorPageRequest(null)),
                 cancellationToken),
             _redisService.RemoveAsync(
@@ -187,6 +206,11 @@ public sealed class DeleteAccountService : IDeleteAccountService
         foreach(var comment in ownerComments)
         {
             cacheInvalidations.Add(_redisService.RemoveAsync(CacheKey.Comment(comment.Id), cancellationToken));
+        }
+
+        foreach(var post in ownerPosts)
+        {
+            cacheInvalidations.Add(_redisService.RemoveAsync(CacheKey.Post(post.Id), cancellationToken));
         }
 
         foreach(var group in commentCountByPost)
