@@ -54,7 +54,8 @@ public sealed class CommentService : ICommentService
         var accountCollection = _dbContext.GetCollection<Account>(CollectionName.Account);
 
         var accountProjection = Builders<Account>.Projection
-            .Include(x => x.Name);
+            .Include(x => x.Name)
+            .Include(x => x.Avatars);
 
         var account = await accountCollection
             .Find(x => x.Id == accountId && !x.IsDeleted)
@@ -68,6 +69,10 @@ public sealed class CommentService : ICommentService
             post.AccountId,
             "New comment",
             $"{account.Name.Value} commented on your post",
+            NotificationType.Comment,
+            comment.PostId,
+            accountId,
+            account.Avatars.LastOrDefault(),
             cancellationToken);
     }
 }

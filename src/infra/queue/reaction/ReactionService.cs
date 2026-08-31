@@ -87,6 +87,10 @@ public sealed class ReactionService : IReactionService
             post.AccountId,
             "New reaction",
             $"{account.Name.Value} reacted your post",
+            NotificationType.PostReaction,
+            postId,
+            accountId,
+            account.Avatars.LastOrDefault(),
             cancellationToken);
     }
 
@@ -204,6 +208,10 @@ public sealed class ReactionService : IReactionService
             comment.AccountId,
             "New reaction",
             $"{account.Name.Value} reacted your comment",
+            NotificationType.CommentReaction,
+            comment.PostId,
+            accountId,
+            account.Avatars.LastOrDefault(),
             cancellationToken);
     }
 

@@ -33,12 +33,20 @@ public sealed class NotificationService : INotificationService
         Guid toAccountId,
         string title,
         string content,
+        NotificationType type,
+        Guid targetId,
+        Guid actorAccountId,
+        Avatar? actorAvatar,
         CancellationToken cancellationToken)
     {
         Notification notification = new Notification(
             toAccountId,
             title,
-            content);
+            content,
+            type,
+            targetId,
+            actorAccountId,
+            actorAvatar);
 
         var notificationCollection = _dbContext.GetCollection<Notification>(CollectionName.Notification);
 
@@ -78,7 +86,11 @@ public sealed class NotificationService : INotificationService
                     notification.Id,
                     notification.Title,
                     notification.Content,
-                    notification.CreatedAt
+                    notification.CreatedAt,
+                    notification.Type,
+                    notification.TargetId,
+                    notification.ActorAccountId,
+                    notification.ActorAvatar
                 },
                 cancellationToken);
 

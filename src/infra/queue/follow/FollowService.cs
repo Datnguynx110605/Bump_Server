@@ -100,6 +100,10 @@ public sealed class FollowService : IFollowService
             following.Id,
             "New follower",
             $"{follower.Name.Value} followed you",
+            NotificationType.Follow,
+            follower.Id,
+            follower.Id,
+            follower.Avatars.LastOrDefault(),
             cancellationToken);
     }
 
