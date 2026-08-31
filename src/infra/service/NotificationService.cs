@@ -39,7 +39,7 @@ public sealed class NotificationService : INotificationService
         Avatar? actorAvatar,
         CancellationToken cancellationToken)
     {
-        Notification notification = new Notification(
+        var notificationResult = Notification.Create(
             toAccountId,
             title,
             content,
@@ -47,6 +47,11 @@ public sealed class NotificationService : INotificationService
             targetId,
             actorAccountId,
             actorAvatar);
+
+        if(!notificationResult.IsSuccess)
+            return Result.Fail(notificationResult.Error);
+
+        Notification notification = notificationResult.Value!;
 
         var notificationCollection = _dbContext.GetCollection<Notification>(CollectionName.Notification);
 
