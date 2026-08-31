@@ -1,3 +1,4 @@
+using domain;
 using FluentResults;
 
 namespace app;
@@ -8,5 +9,9 @@ public interface INotificationService
         Guid toAccountId,
         string title,
         string content,
+        NotificationType type,
+        Guid targetId,
+        Guid actorAccountId,
+        Avatar? actorAvatar,
         CancellationToken cancellationToken);
 }

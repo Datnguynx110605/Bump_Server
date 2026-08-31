@@ -1,3 +1,5 @@
+using domain;
+
 namespace app;
 
 public sealed record NotificationSummaryDto(
@@ -6,4 +8,8 @@ public sealed record NotificationSummaryDto(
     string Title,
     string Content,
     bool IsSent,
-    DateTime CreatedAt);
+    DateTime CreatedAt,
+    NotificationType? Type,
+    Guid? TargetId,
+    Guid? ActorAccountId,
+    AvatarDto? ActorAvatar);
