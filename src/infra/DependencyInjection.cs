@@ -80,6 +80,7 @@ public static class DependencyInjection
         services.AddScoped<IShopRateService, ShopRateService>();
 
         services.AddHostedService<IndexInitializer>();
+        services.AddHostedService<NormalizedFieldBackfillInitializer>();
         services.AddHostedService<FollowConsumerHost>();
         services.AddHostedService<UnfollowConsumerHost>();
         services.AddHostedService<ReactPostConsumerHost>();

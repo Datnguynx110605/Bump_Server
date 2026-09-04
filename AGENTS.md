@@ -2,13 +2,10 @@
 
 ## Session Initialization
 
-- ALWAYS read `CLAUDE.md` first then read `AGENTS.md` before performing any work in every session.
 - ALWAYS begin every session in this order:
-  1. Read `CLAUDE.md` in /Users/datnguynx/.claude/
-  2. Read `AGENTS.md`
-  3. Inspect the codebase and repository state.
-  4. Read project documentation.
-  5. Understand the project before proposing or implementing changes.
+  1. Inspect the codebase and repository state.
+  2. Read project documentation.
+  3. Understand the project before proposing or implementing changes.
 - NEVER commit or push without explicit user approval.
 
 ## Repository Understanding and Documentation
@@ -24,14 +21,12 @@
 
 ## Refactoring
 
-- NEVER refactor the codebase without explicit user approval.
-- Before requesting refactor approval, MUST explain:
+- Before requesting refactor, MUST explain:
   - why the refactor is needed;
   - the proposed solution;
   - expected benefits and optimizations;
   - affected areas;
   - risks and migration impact.
-- MUST wait for explicit approval before applying any refactor.
 - Small changes required strictly for the requested implementation are allowed only when they preserve the existing design and are not broader refactoring.
 
 ## Git Restrictions
@@ -58,6 +53,5 @@
 ## Communication and Completion
 
 - MUST state assumptions when repository evidence is incomplete.
-- MUST ask for approval before refactoring or running the project.
 - MUST report files changed, checks performed, test results, and unresolved risks.
 - NEVER claim that a build or test passed unless it was actually executed successfully.

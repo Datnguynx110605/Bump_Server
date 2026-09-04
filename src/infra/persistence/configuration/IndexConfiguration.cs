@@ -74,6 +74,11 @@ public static class IndexConfiguration
                     keys.Ascending(x => x.IsDeleted)
                         .Descending(x => x.ReactionAmount.Value)
                         .Descending(x => x.CreatedAt)
+                        .Descending(x => x.Id)),
+                new CreateIndexModel<Post>(
+                    keys.Ascending(x => x.CaptionNormalized)
+                        .Ascending(x => x.IsDeleted)
+                        .Descending(x => x.CreatedAt)
                         .Descending(x => x.Id))
             },
             cancellationToken);
@@ -121,6 +126,16 @@ public static class IndexConfiguration
                         .Descending(x => x.Id)),
                 new CreateIndexModel<Shop>(
                     keys.Ascending(x => x.Address)
+                        .Ascending(x => x.IsDeleted)
+                        .Descending(x => x.CreatedAt)
+                        .Descending(x => x.Id)),
+                new CreateIndexModel<Shop>(
+                    keys.Ascending(x => x.NameNormalized)
+                        .Ascending(x => x.IsDeleted)
+                        .Descending(x => x.CreatedAt)
+                        .Descending(x => x.Id)),
+                new CreateIndexModel<Shop>(
+                    keys.Ascending(x => x.AddressNormalized)
                         .Ascending(x => x.IsDeleted)
                         .Descending(x => x.CreatedAt)
                         .Descending(x => x.Id)),

@@ -7,6 +7,7 @@ public sealed class Post : BaseEntity
     private List<Image> _images = new();
     public IReadOnlyCollection<Image> Images => _images.AsReadOnly();
     public string? Caption { get; private set; }
+    public string? CaptionNormalized { get; private set; }
     public Amount Rate { get; private set; }
     private List<Reaction> _reactions = new();
     public IReadOnlyCollection<Reaction> Reactions => _reactions.AsReadOnly();
@@ -22,6 +23,7 @@ public sealed class Post : BaseEntity
         AccountId = accountId;
         ShopId = shopId;
         Caption = caption;
+        CaptionNormalized = caption is null ? null : TextNormalizer.RemoveDiacriticsAndLower(caption);
         Rate = rate;
     }
 
@@ -53,6 +55,7 @@ public sealed class Post : BaseEntity
     public DomainResult ChangeCaption(string caption)
     {
         Caption = caption;
+        CaptionNormalized = TextNormalizer.RemoveDiacriticsAndLower(caption);
 
         return Update();
     }

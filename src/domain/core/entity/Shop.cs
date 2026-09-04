@@ -4,6 +4,8 @@ public sealed class Shop : BaseEntity
 {
     public string Name { get; private set; }
     public string Address { get; private set; }
+    public string NameNormalized { get; private set; }
+    public string AddressNormalized { get; private set; }
     public Amount Rate { get; private set; } = Amount.Create(0).Value;
     private Shop() {}
     private Shop(
@@ -12,6 +14,8 @@ public sealed class Shop : BaseEntity
     {
         Name = name;
         Address = address;
+        NameNormalized = TextNormalizer.RemoveDiacriticsAndLower(name);
+        AddressNormalized = TextNormalizer.RemoveDiacriticsAndLower(address);
     }
 
     public static DomainResult<Shop> Create(string name, string address)

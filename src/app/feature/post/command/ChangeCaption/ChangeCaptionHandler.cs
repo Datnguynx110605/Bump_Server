@@ -55,6 +55,7 @@ internal sealed class ChangeCaptionHandler
 
         var update = Builders<Post>.Update
             .Set(x => x.Caption, post.Caption)
+            .Set(x => x.CaptionNormalized, post.CaptionNormalized)
             .Set(x => x.UpdatedAt, post.UpdatedAt);
 
         await postCollection.UpdateOneAsync(

@@ -40,11 +40,12 @@ internal sealed class GetPostByKeywordHandler
 
         var postCollection = _dbContext.GetCollection<Post>(CollectionName.Post);
 
-        var escapedKeyword = Regex.Escape(request.keyword);
+        var normalizedKeyword = TextNormalizer.RemoveDiacriticsAndLower(request.keyword);
+        var escapedKeyword = Regex.Escape(normalizedKeyword);
 
         var filter = Builders<Post>.Filter.And(
             Builders<Post>.Filter.Eq(x => x.IsDeleted, false),
-            Builders<Post>.Filter.Regex(x => x.Caption, new BsonRegularExpression(escapedKeyword, "i")));
+            Builders<Post>.Filter.Regex(x => x.CaptionNormalized, new BsonRegularExpression(escapedKeyword, "i")));
 
         var dtoPage = await CachedCursorPaginator.PaginateAsync<Post, PostSummaryDto>(
             _redisService,

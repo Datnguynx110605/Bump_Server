@@ -33,11 +33,14 @@ internal sealed class GetShopByKeywordHandler
 
         var shopCollection = _dbContext.GetCollection<Shop>(CollectionName.Shop);
 
-        var escapedKeyword = Regex.Escape(request.keyword);
+        var normalizedKeyword = TextNormalizer.RemoveDiacriticsAndLower(request.keyword);
+        var escapedKeyword = Regex.Escape(normalizedKeyword);
 
         var filter = Builders<Shop>.Filter.And(
             Builders<Shop>.Filter.Eq(x => x.IsDeleted, false),
-            Builders<Shop>.Filter.Regex(x => x.Name, new BsonRegularExpression(escapedKeyword, "i")));
+            Builders<Shop>.Filter.Or(
+                Builders<Shop>.Filter.Regex(x => x.NameNormalized, new BsonRegularExpression(escapedKeyword, "i")),
+                Builders<Shop>.Filter.Regex(x => x.AddressNormalized, new BsonRegularExpression(escapedKeyword, "i"))));
 
         var dtoPage = await CachedCursorPaginator.PaginateAsync<Shop, ShopSummaryDto>(
             _redisService,
