@@ -44,7 +44,7 @@ Bump_Server/
     │   │   ├── membership/         [3]  per-viewer flags: ReactionMembership, SaveMembership, PostFeedEnricher
     │   │   ├── message/            [7]  queue payload records; every one carries a MessageId
     │   │   └── pagination/         [7]  cursor codec, paginators, and their cached wrappers
-    │   └── feature/                     72 use cases — one folder each, listed in full below
+    │   └── feature/                     78 use cases — one folder each, listed in full below
     │       ├── account/            [1]  AccountProjection.cs — area-shared
     │       │   ├── command/
     │       │   │   ├── ChangeAvatar/     ChangeAvatar{Command, Handler, Validator}
@@ -52,6 +52,7 @@ Bump_Server/
     │       │   │   ├── ChangeEmail/      ChangeEmail{Command, Handler, Validator}
     │       │   │   ├── ChangeName/       ChangeName{Command, Handler, Validator}
     │       │   │   ├── ChangePassword/   ChangePassword{Command, Handler, Validator}
+    │       │   │   ├── AdminDelete/      AdminDeleteAccount{Command, Handler}  ⚠ no validator
     │       │   │   ├── Create/           CreateAccount{Command, Handler, Validator}
     │       │   │   ├── Delete/           DeleteAccount{Command, Handler}  ⚠ no validator
     │       │   │   ├── Recover/          RecoverAccount{Command, Handler, Validator}
@@ -67,21 +68,25 @@ Bump_Server/
     │       ├── auth/               [1]  AuthResult.cs — area-shared
     │       │   ├── command/
     │       │   │   ├── Login/                    Login{Command, Handler, Validator}
-    │       │   │   └── RequestNewAccessToken/    RequestNewAccessToken{Command, Handler, Validator}
+    │       │   │   ├── RequestNewAccessToken/    RequestNewAccessToken{Command, Handler, Validator}
+    │       │   │   └── RevokeRefreshToken/       RevokeRefreshToken{Command, Handler}  ⚠ no validator
     │       │   └── query/
     │       │       ├── GetAllRefreshToken/       GetAllRefreshToken{Query, Handler}
     │       │       └── GetSpecificRefreshToken/  GetSpecificRefreshToken{Query, Handler}
     │       ├── comment/            [1]  CommentProjection.cs — area-shared
     │       │   ├── command/
+    │       │   │   ├── AdminDelete/      AdminDeleteComment{Command, Handler}  ⚠ no validator
     │       │   │   ├── ChangeContent/    ChangeContent{Command, Handler, Validator}
     │       │   │   ├── Create/           CreateComment{Command, Handler, Validator}
     │       │   │   └── Delete/           DeleteComment{Command, Handler, Validator}
     │       │   └── query/
+    │       │       ├── GetAllComment/        GetAllComment{Query, Handler}
     │       │       ├── GetCommentByPost/     GetCommentByPost{Query, Handler}
     │       │       ├── GetMyCommentHistory/  GetMyCommentHistory{Query, Handler}
     │       │       └── GetSpecificComment/   GetSpecificComment{Query, Handler}
     │       ├── dashboard/
     │       │   └── query/
+    │       │       ├── GetDashboardActivity/ GetDashboardActivity{Query, Handler}
     │       │       └── GetDashboardStats/    GetDashboardStats{Query, Handler}
     │       ├── email/                   ⚠ no command/query level — use cases sit directly here
     │       │   ├── SendEmailForRegister/ SendEmailForRegister{Command, Handler, Validator}
@@ -102,6 +107,7 @@ Bump_Server/
     │       │       └── GetSpecificNotification/ GetSpecificNotification{Query, Handler}
     │       ├── post/               [1]  PostProjection.cs — area-shared
     │       │   ├── command/
+    │       │   │   ├── AdminDelete/      AdminDeletePost{Command, Handler}  ⚠ no validator
     │       │   │   ├── ChangeCaption/    ChangeCaption{Command, Handler, Validator}
     │       │   │   ├── ChangeRate/       ChangeRate{Command, Handler, Validator}
     │       │   │   ├── Create/           CreatePost{Command, Handler, Validator}

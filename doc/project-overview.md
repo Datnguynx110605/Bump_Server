@@ -23,18 +23,39 @@ Shops are not created directly by any endpoint. `CreatePostHandler`
   `/hubs/notification`. All 12 controllers carry a class-level `[Authorize]`; 8 endpoints opt out
   with `[AllowAnonymous]` (registration, login, refresh, recovery, password reset, and the three
   email/OTP endpoints).
-- **Administrators**, through 9 endpoints gated by `[Authorize(Roles = nameof(Role.Admin))]`:
-  account listing and lookup-by-email (`AccountController`), refresh-token inspection
-  (`AuthController`), shop deletion (`ShopController`), report listing and lookup
-  (`ReportController`), and the whole of `DashboardController` (class-level attribute).
+- **Administrators**, through 15 endpoints gated by `[Authorize(Roles = nameof(Role.Admin))]`:
+  account listing, lookup-by-email and deletion (`AccountController`), refresh-token
+  inspection and revocation (`AuthController`), comment listing and deletion
+  (`CommentController`), post deletion (`PostController`), shop deletion
+  (`ShopController`), report listing and lookup (`ReportController`), and the whole of
+  `DashboardController` (class-level attribute).
+
+  The six administrator-only mutations — `AdminDeleteAccount`, `AdminDeletePost`,
+  `AdminDeleteComment`, `RevokeRefreshToken` — sit in their own use-case folders rather
+  than adding an ownership bypass to the existing self-service handlers, which the client
+  depends on. Each mirrors its self-service counterpart's side effects in full (R2 image
+  cleanup, cache invalidation, and the RabbitMQ cascade), because a delete that only flips
+  `IsDeleted` would leave shop rates and comment counters stale.
 - **No first-party client application exists in this repository.** The server is the only artifact
-  here. `src/api/api.http` still contains the `dotnet new` template's `GET /weatherforecast/`
+  here; the iOS client lives in `Bump_Client` and the operations panel in `Bump_Admin`, both
+  separate repositories. `src/api/api.http` still contains the `dotnet new` template's `GET /weatherforecast/`
   request, which matches no route in the codebase.
 
 `Role` (`src/domain/core/enum/Role.cs`) has exactly two values, `User` and `Admin`. `Role.User` is
 the hardcoded default on `Account`, and **no endpoint or handler assigns `Role.Admin`** — promotion
-must happen directly in the database. *Not found in codebase — needs confirmation* on the intended
-admin-provisioning process.
+must happen directly in the database. No custom enum serializer is registered, so the driver stores
+the value as an Int32 (`User` = 0, `Admin` = 1) and promotion is:
+
+```js
+db.account.updateOne(
+  { 'Email.Value': '<address>', IsDeleted: false },
+  { $set: { Role: 1 } }
+);
+```
+
+The role is a claim in the access token, so an existing session keeps its old role until the token
+expires and is renewed. *Not found in codebase — needs confirmation* on whether a guarded
+provisioning path is wanted instead of the manual update.
 
 ## Tech stack
 
@@ -61,9 +82,9 @@ than the reverse. `api` references only `infra` and reaches `app` and `domain` t
 
 ```mermaid
 graph LR
-    api["<b>api</b><br/>12 controllers · 72 endpoints<br/>2 middleware · JWT · rate limiting"]
+    api["<b>api</b><br/>12 controllers · 78 endpoints<br/>2 middleware · JWT · rate limiting"]
     infra["<b>infra</b><br/>10 services · 7 queue services<br/>1 generic consumer host · SignalR hub"]
-    app["<b>app</b><br/>72 MediatR handlers<br/>34 commands · 38 queries · 34 validators"]
+    app["<b>app</b><br/>78 MediatR handlers<br/>38 commands · 40 queries · 34 validators"]
     domain["<b>domain</b><br/>13 entities · 3 value objects<br/>2 enums · DomainResult"]
 
     api --> infra

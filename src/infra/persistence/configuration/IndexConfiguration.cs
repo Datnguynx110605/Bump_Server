@@ -111,6 +111,13 @@ public static class IndexConfiguration
                         .Ascending(x => x.IsDeleted)
                         .Descending(x => x.CreatedAt)
                         .Descending(x => x.Id)),
+                // Backs the unfiltered admin listing in GetAllCommentHandler, which
+                // would otherwise collection-scan — account and post already have
+                // the equivalent index for their own all-rows queries.
+                new CreateIndexModel<Comment>(
+                    keys.Ascending(x => x.IsDeleted)
+                        .Descending(x => x.CreatedAt)
+                        .Descending(x => x.Id)),
                 // Backs the ElemMatch reaction cleanup in DeleteAccountService.
                 new CreateIndexModel<Comment>(keys.Ascending("Reactions.AccountId"))
             },

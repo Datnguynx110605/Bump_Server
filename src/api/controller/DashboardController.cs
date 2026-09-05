@@ -24,4 +24,13 @@ public sealed class DashboardController : ControllerBase
         var result = await _sender.Send(new GetDashboardStatsQuery(), cancellationToken);
         return result.ToActionResult();
     }
+
+    [HttpGet("activity")]
+    public async Task<ActionResult<DashboardActivityDto>> GetActivity(
+        [FromQuery] int windowHours = 24,
+        CancellationToken cancellationToken = default)
+    {
+        var result = await _sender.Send(new GetDashboardActivityQuery(windowHours), cancellationToken);
+        return result.ToActionResult();
+    }
 }

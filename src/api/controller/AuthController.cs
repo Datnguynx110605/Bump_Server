@@ -66,4 +66,14 @@ public sealed class AuthController : ControllerBase
         var result = await _sender.Send(new GetSpecificRefreshTokenQuery(refreshTokenId), cancellationToken);
         return result.ToActionResult();
     }
+
+    [Authorize(Roles = nameof(Role.Admin))]
+    [HttpPost("refresh-token/{refreshTokenId:guid}/revoke")]
+    public async Task<ActionResult> RevokeRefreshToken(
+        Guid refreshTokenId,
+        CancellationToken cancellationToken)
+    {
+        var result = await _sender.Send(new RevokeRefreshTokenCommand(refreshTokenId), cancellationToken);
+        return result.ToActionResult();
+    }
 }

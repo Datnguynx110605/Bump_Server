@@ -20,7 +20,7 @@ How the running components fit together and what happens at runtime. Layering ru
 
 ### `app` — use cases
 
-72 MediatR handlers under `src/app/feature/<area>/<command|query>/<Name>/`, each a
+78 MediatR handlers under `src/app/feature/<area>/<command|query>/<Name>/`, each a
 `Command`/`Query` record + `Handler` + optional `Validator` (34 of 72 have one). Three pipeline
 behaviours run in registration order (`src/app/DependencyInjection.cs`):
 
@@ -97,7 +97,7 @@ graph TB
 
 The three flows below are chosen to show **cross-component mechanics** — cache versioning, queue
 idempotency and retry, and the token handoff between calls. They are not endpoint documentation:
-every one of the 72 endpoints has its own diagram and rules in [`features.md`](./features.md).
+every one of the 78 endpoints has its own diagram and rules in [`features.md`](./features.md).
 
 ## Flow 1 — Cached list read
 

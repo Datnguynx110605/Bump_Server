@@ -71,7 +71,7 @@ Indexes are declared in `src/infra/persistence/configuration/IndexConfiguration.
 
 - **account** — unique `Email` partial on `IsDeleted: false`; `(Name, IsDeleted, CreatedAt desc, Id desc)`; `(IsDeleted, CreatedAt desc, Id desc)`; multikey `Followers.AccountId`, `Followings.AccountId`, `SavePosts.PostId`, `SaveShops.ShopId`
 - **post** — by `AccountId`, by `ShopId`, by `IsDeleted`, by `ReactionAmount.Value desc`, by `CaptionNormalized`; multikey `Reactions.AccountId`
-- **comment** — by `PostId`, by `AccountId`; multikey `Reactions.AccountId`
+- **comment** — `(PostId, IsDeleted, CreatedAt desc, Id desc)`; `(AccountId, IsDeleted, CreatedAt desc, Id desc)`; `(IsDeleted, CreatedAt desc, Id desc)` backing the unfiltered administrator listing; multikey `Reactions.AccountId`
 - **shop** — unique `(Name, Address)` partial on `IsDeleted: false`; by `Name`, `Address`, `NameNormalized`, `AddressNormalized`, `IsDeleted`, `Rate.Value desc`
 - **report** — by `IsDeleted`, `PostId`, `CommentId`, `AccountId`, `ReporterId`
 - **refreshtoken** — unique `Token`; **TTL index on `ExpiryDate` with `ExpireAfter = TimeSpan.Zero`**; by `IsDeleted`
@@ -106,11 +106,26 @@ without either forcing it open during composition.
 | `registration:{token}` | 10 minutes | Data-Protection-wrapped email |
 | `rabbitmq:idempotency:{queue}:{messageId}` | 24 hours | SHA-256 of the processed payload |
 | `bump:dataprotection-keys` | none | ASP.NET Data Protection key ring (see *Deployment topology*) |
+| `admin:v1:series:{metric}` | 24 hours | Metric history written by **Bump_Admin**, not by this server |
 
 The backplane is required for correctness, not scale: without it a replica can only push to hub
 connections it holds itself, so notifications for users connected to another replica are dropped.
 
+The `admin:v1:` prefix is written by the separate `Bump_Admin` operations panel, which reuses this
+Redis instance rather than provisioning its own to hold the metric history no provider retains for
+us — self-measured uptime and latency in particular. Nothing in this repository reads or writes those
+keys, and the distinct prefix is what keeps the two uses from ever colliding. They are sorted sets
+trimmed to a 24-hour window with an expiry, so they cannot grow without bound.
+
 ### RabbitMQ — asynchronous work
+
+The client library is `RabbitMQ.Client` 7.2.2, but **the deployed broker is
+LavinMQ** (CloudAMQP serves both; the `lmq` in the instance hostname identifies
+it). LavinMQ speaks AMQP 0-9-1, so the client is unaffected — but anything
+reading the management HTTP API is: LavinMQ reports `product_name` /
+`lavinmq_version` where RabbitMQ reports `cluster_name` / `rabbitmq_version`, and
+counts deliveries under `deliver` rather than `deliver_get`. Verified against the
+live instance: LavinMQ 2.9.1.
 
 One `IConnection` singleton built with `RequestedHeartbeat = 30s`,
 `AutomaticRecoveryEnabled = true`, `NetworkRecoveryInterval = 5s`. The factory blocks on

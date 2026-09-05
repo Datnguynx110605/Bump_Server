@@ -154,4 +154,14 @@ public sealed class PostController : ControllerBase
         var result = await _sender.Send(new GetMostReactedPostQuery(new CursorPageRequest(cursor, pageSize)), cancellationToken);
         return result.ToActionResult();
     }
+
+    [Authorize(Roles = nameof(Role.Admin))]
+    [HttpDelete("admin/{postId:guid}")]
+    public async Task<ActionResult> AdminDeletePost(
+        Guid postId,
+        CancellationToken cancellationToken)
+    {
+        var result = await _sender.Send(new AdminDeletePostCommand(postId), cancellationToken);
+        return result.ToActionResult();
+    }
 }

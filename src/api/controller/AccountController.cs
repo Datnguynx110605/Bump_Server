@@ -194,4 +194,14 @@ public sealed class AccountController : ControllerBase
         var result = await _sender.Send(new GetAccountByKeywordQuery(keyword, new CursorPageRequest(cursor, pageSize)), cancellationToken);
         return result.ToActionResult();
     }
+
+    [Authorize(Roles = nameof(Role.Admin))]
+    [HttpDelete("admin/{accountId:guid}")]
+    public async Task<ActionResult> AdminDeleteAccount(
+        Guid accountId,
+        CancellationToken cancellationToken)
+    {
+        var result = await _sender.Send(new AdminDeleteAccountCommand(accountId), cancellationToken);
+        return result.ToActionResult();
+    }
 }

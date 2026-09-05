@@ -1,4 +1,5 @@
 using app;
+using domain;
 using MediatR;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -80,6 +81,27 @@ public sealed class CommentController : ControllerBase
         CancellationToken cancellationToken = default)
     {
         var result = await _sender.Send(new GetMyCommentHistoryQuery(new CursorPageRequest(cursor, pageSize)), cancellationToken);
+        return result.ToActionResult();
+    }
+
+    [Authorize(Roles = nameof(Role.Admin))]
+    [HttpGet]
+    public async Task<ActionResult<CursorPageResult<CommentSummaryDto>>> GetAllComment(
+        [FromQuery] string? cursor,
+        [FromQuery] int pageSize = 20,
+        CancellationToken cancellationToken = default)
+    {
+        var result = await _sender.Send(new GetAllCommentQuery(new CursorPageRequest(cursor, pageSize)), cancellationToken);
+        return result.ToActionResult();
+    }
+
+    [Authorize(Roles = nameof(Role.Admin))]
+    [HttpDelete("admin/{commentId:guid}")]
+    public async Task<ActionResult> AdminDeleteComment(
+        Guid commentId,
+        CancellationToken cancellationToken)
+    {
+        var result = await _sender.Send(new AdminDeleteCommentCommand(commentId), cancellationToken);
         return result.ToActionResult();
     }
 }

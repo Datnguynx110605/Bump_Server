@@ -4,8 +4,8 @@ Every capability implemented in the codebase — **all 72 use cases, each with a
 diagram** running from the HTTP client, through the controller, the MediatR pipeline and the handler,
 out to MongoDB / Redis / RabbitMQ / R2, and back to the HTTP response.
 
-Endpoint count equals handler count: 12 controllers → 72 actions → 72 handlers (34 commands,
-38 queries). All routes are prefixed `api/v1/[controller]`.
+Endpoint count equals handler count: 12 controllers → 78 actions → 78 handlers (38 commands,
+40 queries). All routes are prefixed `api/v1/[controller]`.
 
 ## How to read these diagrams
 
@@ -23,7 +23,8 @@ Each diagram then covers four stages:
    `Amount.Create` before the request is sent. A failure here short-circuits to a `ProblemDetails`
    response without ever reaching MediatR.
 3. **MediatR pipeline** — `LoggingBehavior` → `PerformanceBehavior` → `ValidationBehavior`, then the
-   handler. The validator is named where one exists: 33 of 34 commands have one (`DeleteAccount` does
+   handler. The validator is named where one exists: 33 of 38 commands have one (`DeleteAccount`, the
+   three administrator deletes and `RevokeRefreshToken` do
    not), and among queries only `GetReportByTarget` does.
 4. **Handler → infrastructure → response** — the work itself, then
    `ResultExtensions.ToActionResult()` (200 with a body, or 204) or `ToAcceptedResult()` (202).
@@ -50,7 +51,8 @@ behind cache versioning, queue idempotency and retry, see [`system-design.md`](.
 | [Email](#email) | 3 | [Save](#save) | 6 |
 | [Post](#post) | 11 | [Report](#report) | 4 |
 | [Comment](#comment) | 6 | [Notification](#notification) | 2 |
-| [Shop](#shop) | 7 | [Dashboard](#dashboard) | 1 |
+| [Shop](#shop) | 7 | [Dashboard](#dashboard) | 2 |
+| [Administrator additions](#administrator-additions) | 6 | | |
 
 ---
 
@@ -1257,6 +1259,118 @@ Uncached; three counts run on every call.
 ---
 
 ## Cross-cutting observations
+
+---
+
+## Administrator additions
+
+Six endpoints added for the `Bump_Admin` operations panel. They are numbered from 73 so the
+existing entries keep their numbers; each is gated by `[Authorize(Roles = nameof(Role.Admin))]`.
+
+The three deletes are **separate use cases rather than a flag on the existing handlers**. The
+self-service handlers (#9, #27, #37) fold ownership into their Mongo filter, which is what the
+client depends on; adding a bypass would put an administrator-only branch inside the path every
+user takes. Each admin handler instead mirrors its counterpart's side effects in full — the
+image cleanup, every cache invalidation, and the RabbitMQ cascade — because a delete that only
+flips `IsDeleted` leaves shop rates and comment counters stale.
+
+### 73. List all comments — `GET /Comment` · **admin**
+
+```mermaid
+flowchart TD
+    A["Client<br/>GET /api/v1/Comment?cursor&pageSize"] --> B["CommentController.GetAllComment<br/>[Authorize(Roles=Admin)]"]
+    B --> C["MediatR → GetAllCommentHandler"]
+    C --> D["filter: IsDeleted = false · sig = null"]
+    D --> E["CachedCursorPaginator<br/>Redis GET list-version:comment:all"]
+    E --> F["Redis GET list:v1:comment:all:{cursor}:{size}:v{N}"]
+    F -->|hit| Z["200 CursorPageResult&lt;CommentSummaryDto&gt;"]
+    F -->|miss| G["Mongo find sort CreatedAt,Id desc<br/>limit size+1 · project Summary"]
+    G --> H["Redis SET page 2 min"] --> Z
+```
+The only unfiltered read of `comment`; it is backed by the `(IsDeleted, CreatedAt desc, Id desc)`
+index added alongside it, which `account` and `post` already had for their own all-rows queries.
+
+### 74. Admin delete account — `DELETE /Account/admin/{accountId}` · **admin**
+
+```mermaid
+flowchart TD
+    A["Client<br/>DELETE /api/v1/Account/admin/{accountId}"] --> B["AccountController.AdminDeleteAccount<br/>[Authorize(Roles=Admin)]"]
+    B --> C["MediatR → AdminDeleteAccountHandler"]
+    C --> D{"caller id == target id?"}
+    D -->|yes| D1["400 'Use the self-service endpoint…'"]
+    D -->|no| E["Mongo find Id, !IsDeleted · project Email, IsDeleted"]
+    E -->|null| E1["404 'Account not found'"]
+    E --> F["account.DeleteAccount() → set IsDeleted, DeletedAt"]
+    F --> G["Redis DEL account:v1:id · account:v1:email<br/>ListCache invalidate account:all"]
+    G --> H["RabbitMQ publish delete-account"] --> Z["200"]
+    H --> I["DeleteAccountService cascade<br/>posts · comments · reactions · follow edges · saves"]
+```
+Self-deletion is refused because it would revoke the credentials the caller is using; #9 is the
+deliberate route for that.
+
+### 75. Admin delete post — `DELETE /Post/admin/{postId}` · **admin**
+
+```mermaid
+flowchart TD
+    A["Client<br/>DELETE /api/v1/Post/admin/{postId}"] --> B["PostController.AdminDeletePost<br/>[Authorize(Roles=Admin)]"]
+    B --> C["MediatR → AdminDeletePostHandler"]
+    C --> D["Mongo find Id, !IsDeleted<br/>project AccountId, ShopId, Images"]
+    D -->|null| D1["404 'Post not found'"]
+    D --> E["post.DeletePost() → set IsDeleted, DeletedAt"]
+    E --> F["R2 delete each image"]
+    F --> G["Redis DEL post:v1:id<br/>ListCache invalidate all · account:{post.AccountId} · shop:{ShopId} · mostReacted"]
+    G --> H["RabbitMQ publish recalculate-shop-rate + delete-post"] --> Z["200"]
+```
+The per-account list signature is the **post author's** id, not the acting administrator's —
+invalidating the admin's own list would leave the author's cached page serving a deleted post.
+
+### 76. Admin delete comment — `DELETE /Comment/admin/{commentId}` · **admin**
+
+```mermaid
+flowchart TD
+    A["Client<br/>DELETE /api/v1/Comment/admin/{commentId}"] --> B["CommentController.AdminDeleteComment<br/>[Authorize(Roles=Admin)]"]
+    B --> C["MediatR → AdminDeleteCommentHandler"]
+    C --> D["Mongo find Id, !IsDeleted<br/>project AccountId, PostId, Images"]
+    D -->|null| D1["404 'Comment not found'"]
+    D --> E["comment.DeleteComment() → set IsDeleted, DeletedAt"]
+    E --> F["R2 delete each image"]
+    F --> G["Mongo post.CommentAmount.Value −1"]
+    G --> H["Redis DEL comment:v1:id · post:v1:id<br/>ListCache invalidate all · post:{PostId} · account:{comment.AccountId}"] --> Z["200"]
+```
+
+### 77. Revoke refresh token — `POST /Auth/refresh-token/{id}/revoke` · **admin**
+
+```mermaid
+flowchart TD
+    A["Client<br/>POST /api/v1/Auth/refresh-token/{id}/revoke"] --> B["AuthController.RevokeRefreshToken<br/>[Authorize(Roles=Admin)]"]
+    B --> C["MediatR → RevokeRefreshTokenHandler"]
+    C --> D["Mongo find Id, !IsDeleted"]
+    D -->|null| D1["404 'Refresh token not found'"]
+    D --> E["refreshToken.Revoke()"]
+    E -->|already revoked| E1["409 'Refresh token has been revoked'"]
+    E --> F["Mongo set IsRevoked = true<br/>filter IsRevoked = false"] --> Z["200"]
+```
+Revocation rather than deletion: rows are removed on their own by the TTL index on `ExpiryDate`, so
+deleting is never necessary, while revoking stops #18 from issuing a new access token. The holder
+keeps their current access token until it expires.
+
+### 78. Dashboard activity — `GET /Dashboard/activity?windowHours=` · **admin**
+
+```mermaid
+flowchart TD
+    A["Client<br/>GET /api/v1/Dashboard/activity?windowHours=24"] --> B["DashboardController.GetActivity<br/>[Authorize(Roles=Admin)] class-level"]
+    B --> C["MediatR → GetDashboardActivityHandler"]
+    C --> D{"1 ≤ windowHours ≤ 720?"}
+    D -->|no| D1["400 'WindowHours must be between 1 and 720'"]
+    D -->|yes| E["3 parallel aggregations<br/>account · post · comment"]
+    E --> F["$match IsDeleted=false, CreatedAt ≥ since<br/>$group by $dateTrunc CreatedAt to hour"]
+    F --> G["union bucket keys · zero-fill missing"] --> Z["200 DashboardActivityDto"]
+```
+Where #72 answers *how many exist now*, this answers *how fast they are arriving* — which a running
+total cannot show, and which no client-side sampling loop can reconstruct for time already past.
+Bucketing happens in MongoDB via `$dateTrunc` rather than pulling documents back to count in process.
+
+---
 
 **Four handlers build their cache key by hand** rather than delegating to a cached paginator — #34,
 #47, #64, #65. Two of them (#34, #47) consequently return a single page with `HasMore = false`.
