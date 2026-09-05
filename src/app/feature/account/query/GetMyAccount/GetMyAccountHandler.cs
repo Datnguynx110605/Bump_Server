@@ -31,7 +31,7 @@ internal sealed class GetMyAccountHandler
     {
         var identity = _identityService.GetAccountId();
         if(identity is null)
-            return Result.Fail("Unauthorized");
+            return Result.Fail(AppError.Unauthorized("Unauthorized"));
 
         string cacheKey = CacheKey.Account(identity.Value);
 
@@ -52,7 +52,7 @@ internal sealed class GetMyAccountHandler
             .FirstOrDefaultAsync(cancellationToken);
             
         if(dbAccount is null)
-            return Result.Fail("Unauthorized");
+            return Result.Fail(AppError.Unauthorized("Unauthorized"));
 
         var dto = _mapper.Map<AccountSummaryDto>(dbAccount);
 

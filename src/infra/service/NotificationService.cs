@@ -1,10 +1,8 @@
 using app;
-using AutoMapper;
 using domain;
 using FluentResults;
 using Microsoft.AspNetCore.SignalR;
 using MongoDB.Driver;
-using StackExchange.Redis;
 
 namespace infra;
 
@@ -12,21 +10,15 @@ public sealed class NotificationService : INotificationService
 {
     private readonly IMongoDbContext _dbContext;
     private readonly IHubContext<NotificationHub> _hubContext;
-    private readonly IConnectionMultiplexer _redis;
     private readonly IRedisService _redisService;
-    private readonly IMapper _mapper;
     public NotificationService(
         IMongoDbContext dbContext,
         IHubContext<NotificationHub> hubContext,
-        IConnectionMultiplexer redis,
-        IRedisService redisService,
-        IMapper mapper)
+        IRedisService redisService)
     {
         _dbContext = dbContext;
         _hubContext = hubContext;
-        _redis = redis;
         _redisService = redisService;
-        _mapper = mapper;
     }
 
     public async Task<Result> CreateAsync(
@@ -59,29 +51,18 @@ public sealed class NotificationService : INotificationService
             notification,
             cancellationToken : cancellationToken);
 
-        var summaryDto = _mapper.Map<NotificationSummaryDto>(notification);
-
-        string listCacheKey = CacheKey.List(
+        // Nothing caches the notification here: delivery is now unconditional, so the
+        // MarkAsSent write below always invalidates the entry again. Reads populate it.
+        await ListCache.InvalidateAsync(
+            _redisService,
             CollectionName.Notification,
             $"account:{toAccountId}",
-            new CursorPageRequest(null));
+            cancellationToken);
 
-        await Task.WhenAll(
-            _redisService.SetAsync(
-                CacheKey.Notification(notification.Id),
-                summaryDto,
-                CacheKey.DefaultNotificationTTL,
-                cancellationToken),
-            _redisService.RemoveAsync(
-                listCacheKey,
-                cancellationToken));
-
-        var onlineCount = await _redis.GetDatabase().StringGetAsync(NotificationHub.OnlineKey(toAccountId.ToString()));
-        bool isOnline = onlineCount.HasValue && (long)onlineCount > 0;
-
-        if(!isOnline)
-            return Result.Ok();
-
+        // No online check: with the Redis backplane the hub routes to whichever replica
+        // holds the connection, and sending to a disconnected user is a no-op. The old
+        // check read a global counter but sent only to locally-held connections, so any
+        // multi-replica deploy dropped the notification and still marked it sent.
         await _hubContext.Clients
             .User(toAccountId.ToString())
             .SendAsync(

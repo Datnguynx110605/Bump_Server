@@ -27,7 +27,6 @@ internal sealed class GetFollowerByAccountHandler
         CancellationToken cancellationToken)
     {
         string filterSignature = $"account:{request.accountId}";
-        string cacheKey = CacheKey.List($"{CollectionName.Account}:follower", filterSignature, request.pageRequest);
 
         var accountCollection = _dbContext.GetCollection<Account>(CollectionName.Account);
 
@@ -44,7 +43,8 @@ internal sealed class GetFollowerByAccountHandler
             x => x.FollowedAt,
             x => x.AccountId,
             request.pageRequest,
-            cacheKey,
+            $"{CollectionName.Account}:follower",
+            filterSignature,
             cancellationToken);
 
         return Result.Ok(dtoPage);

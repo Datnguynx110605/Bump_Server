@@ -29,7 +29,7 @@ public sealed class SaveService : ISaveService
             .FirstOrDefaultAsync(cancellationToken);
 
         if(post is null)
-            return Result.Fail("Post not found");
+            return Result.Fail(AppError.NotFound("Post not found"));
 
         var accountCollection = _dbContext.GetCollection<Account>(CollectionName.Account);
 
@@ -46,7 +46,7 @@ public sealed class SaveService : ISaveService
             cancellationToken : cancellationToken);
 
         if(result.MatchedCount != 1)
-            return Result.Fail("Already saved this post");
+            return Result.Fail(AppError.Conflict("Already saved this post"));
 
         await InvalidateSavedPostListAsync(accountId, cancellationToken);
 
@@ -92,7 +92,7 @@ public sealed class SaveService : ISaveService
             .FirstOrDefaultAsync(cancellationToken);
 
         if(shop is null)
-            return Result.Fail("Shop not found");
+            return Result.Fail(AppError.NotFound("Shop not found"));
 
         var accountCollection = _dbContext.GetCollection<Account>(CollectionName.Account);
 
@@ -109,7 +109,7 @@ public sealed class SaveService : ISaveService
             cancellationToken : cancellationToken);
 
         if(result.MatchedCount != 1)
-            return Result.Fail("Already saved this shop");
+            return Result.Fail(AppError.Conflict("Already saved this shop"));
 
         await InvalidateSavedShopListAsync(accountId, cancellationToken);
 
@@ -145,15 +145,19 @@ public sealed class SaveService : ISaveService
 
     private Task InvalidateSavedPostListAsync(Guid accountId, CancellationToken cancellationToken)
     {
-        return _redisService.RemoveAsync(
-            CacheKey.List($"{CollectionName.Account}:savepost", $"account:{accountId}", new CursorPageRequest(null)),
-            cancellationToken);
+        return ListCache.InvalidateAsync(
+     _redisService,
+     $"{CollectionName.Account}:savepost",
+     $"account:{accountId}",
+     cancellationToken);
     }
 
     private Task InvalidateSavedShopListAsync(Guid accountId, CancellationToken cancellationToken)
     {
-        return _redisService.RemoveAsync(
-            CacheKey.List($"{CollectionName.Account}:saveshop", $"account:{accountId}", new CursorPageRequest(null)),
-            cancellationToken);
+        return ListCache.InvalidateAsync(
+     _redisService,
+     $"{CollectionName.Account}:saveshop",
+     $"account:{accountId}",
+     cancellationToken);
     }
 }

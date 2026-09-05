@@ -88,6 +88,10 @@ public sealed class AccountController : ControllerBase
         IFormFile avatar,
         CancellationToken cancellationToken)
     {
+        var validationResult = ImageUpload.Validate(avatar);
+        if(validationResult.IsFailed)
+            return validationResult.ToActionResult();
+
         var result = await _sender.Send(new ChangeAvatarCommand(avatar.OpenReadStream(), avatar.FileName), cancellationToken);
         return result.ToActionResult();
     }

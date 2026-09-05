@@ -29,7 +29,6 @@ internal sealed class GetAccountByKeywordHandler
         CancellationToken cancellationToken)
     {
         string filterSignature = $"keyword:{request.keyword}";
-        string cacheKey = CacheKey.List(CollectionName.Account, filterSignature, request.pageRequest);
 
         var accountCollection = _dbContext.GetCollection<Account>(CollectionName.Account);
 
@@ -46,7 +45,8 @@ internal sealed class GetAccountByKeywordHandler
             filter,
             AccountProjection.Summary,
             request.pageRequest,
-            cacheKey,
+            CollectionName.Account,
+            filterSignature,
             cancellationToken);
 
         return Result.Ok(dtoPage);

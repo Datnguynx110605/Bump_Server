@@ -31,10 +31,9 @@ internal sealed class GetMyNotificationHandler
     {
         var identity = _identityService.GetAccountId();
         if(identity is null)
-            return Result.Fail("Unauthorized");
+            return Result.Fail(AppError.Unauthorized("Unauthorized"));
 
         string filterSignature = $"account:{identity.Value}";
-        string cacheKey = CacheKey.List(CollectionName.Notification, filterSignature, request.pageRequest);
 
         var notificationCollection = _dbContext.GetCollection<Notification>(CollectionName.Notification);
 
@@ -49,7 +48,8 @@ internal sealed class GetMyNotificationHandler
             filter,
             NotificationProjection.Summary,
             request.pageRequest,
-            cacheKey,
+            CollectionName.Notification,
+            filterSignature,
             cancellationToken);
 
         return Result.Ok(dtoPage);

@@ -32,7 +32,7 @@ internal sealed class SendEmailForRegisterHandler
             .AnyAsync(cancellationToken);
         
         if(checkEmail)
-            return Result.Fail("Email already exists");
+            return Result.Fail(AppError.Conflict("Email already exists"));
 
         var otp = await _otpService.GenerateAsync(
             request.email.Value, 

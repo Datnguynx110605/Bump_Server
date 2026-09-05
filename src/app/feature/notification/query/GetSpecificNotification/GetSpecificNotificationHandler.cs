@@ -31,7 +31,7 @@ internal sealed class GetSpecificNotificationHandler
     {
         var identity = _identityService.GetAccountId();
         if(identity is null)
-            return Result.Fail("Unauthorized");
+            return Result.Fail(AppError.Unauthorized("Unauthorized"));
 
         string cacheKey = CacheKey.Notification(request.notificationId);
 
@@ -42,7 +42,7 @@ internal sealed class GetSpecificNotificationHandler
         if(cacheNotification is not null)
             return cacheNotification.ToAccountId == identity.Value
                 ? Result.Ok(cacheNotification)
-                : Result.Fail("Notification not found");
+                : Result.Fail(AppError.NotFound("Notification not found"));
 
         var notificationCollection = _dbContext.GetCollection<Notification>(CollectionName.Notification);
 
@@ -52,7 +52,7 @@ internal sealed class GetSpecificNotificationHandler
             .FirstOrDefaultAsync(cancellationToken);
 
         if(dbNotification is null)
-            return Result.Fail("Notification not found");
+            return Result.Fail(AppError.NotFound("Notification not found"));
 
         var dto = _mapper.Map<NotificationSummaryDto>(dbNotification);
 

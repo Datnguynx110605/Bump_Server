@@ -43,7 +43,7 @@ internal sealed class GetSpecificCommentHandler
             .FirstOrDefaultAsync(cancellationToken);
 
         if(dbComment is null)
-            return Result.Fail("Comment not found");
+            return Result.Fail(AppError.NotFound("Comment not found"));
 
         var dto = _mapper.Map<CommentSummaryDto>(dbComment);
 

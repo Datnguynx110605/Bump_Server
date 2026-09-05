@@ -31,7 +31,7 @@ internal sealed class GetSpecificPostHandler
     {
         var identity = _identityService.GetAccountId();
         if(identity is null)
-            return Result.Fail("Unauthorized");
+            return Result.Fail(AppError.Unauthorized("Unauthorized"));
 
         string cacheKey = CacheKey.Post(request.postId);
 
@@ -50,7 +50,7 @@ internal sealed class GetSpecificPostHandler
             .FirstOrDefaultAsync(cancellationToken);
 
         if(dbPost is null)
-            return Result.Fail("Post not found");
+            return Result.Fail(AppError.NotFound("Post not found"));
 
         var dto = _mapper.Map<PostSummaryDto>(dbPost);
 

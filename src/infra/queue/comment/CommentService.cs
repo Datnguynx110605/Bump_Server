@@ -33,7 +33,7 @@ public sealed class CommentService : ICommentService
             .FirstOrDefaultAsync(cancellationToken);
 
         if(comment is null)
-            return Result.Fail("Comment not found");
+            return Result.Fail(AppError.NotFound("Comment not found"));
 
         var postCollection = _dbContext.GetCollection<Post>(CollectionName.Post);
 
@@ -46,7 +46,7 @@ public sealed class CommentService : ICommentService
             .FirstOrDefaultAsync(cancellationToken);
 
         if(post is null)
-            return Result.Fail("Post not found");
+            return Result.Fail(AppError.NotFound("Post not found"));
 
         if(post.AccountId == accountId)
             return Result.Ok();
@@ -63,7 +63,7 @@ public sealed class CommentService : ICommentService
             .FirstOrDefaultAsync(cancellationToken);
 
         if(account is null)
-            return Result.Fail("Account not found");
+            return Result.Fail(AppError.NotFound("Account not found"));
 
         return await _notificationService.CreateAsync(
             post.AccountId,

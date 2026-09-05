@@ -27,7 +27,6 @@ internal sealed class GetShopByAddressHandler
         CancellationToken cancellationToken)
     {
         string filterSignature = $"address:{request.address}";
-        string cacheKey = CacheKey.List(CollectionName.Shop, filterSignature, request.pageRequest);
 
         var shopCollection = _dbContext.GetCollection<Shop>(CollectionName.Shop);
 
@@ -42,7 +41,8 @@ internal sealed class GetShopByAddressHandler
             filter,
             ShopProjection.Summary,
             request.pageRequest,
-            cacheKey,
+            CollectionName.Shop,
+            filterSignature,
             cancellationToken);
 
         return Result.Ok(dtoPage);

@@ -15,9 +15,22 @@ public static class CachedEmbeddedArrayPaginator
         Expression<Func<TItem, DateTime>> orderKey,
         Expression<Func<TItem, Guid>> tieBreaker,
         CursorPageRequest request,
-        string cacheKey,
+        string entity,
+        string? filterSignature,
         CancellationToken cancellationToken)
     {
+        var version = await ListCache.VersionAsync(
+            redisService,
+            entity,
+            filterSignature,
+            cancellationToken);
+
+        var cacheKey = CacheKey.List(
+            entity,
+            filterSignature,
+            request,
+            version);
+
         var cachedPage = await redisService.GetAsync<CursorPageResult<TDto>>(
             cacheKey,
             cancellationToken);

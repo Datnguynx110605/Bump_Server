@@ -27,7 +27,7 @@ internal sealed class ChangeNameHandler
     {
         var identity = _identityService.GetAccountId();
         if(identity is null)
-            return Result.Fail("Unauthorized");
+            return Result.Fail(AppError.Unauthorized("Unauthorized"));
 
         var accountCollection = _dbContext.GetCollection<Account>(CollectionName.Account);
 
@@ -41,11 +41,11 @@ internal sealed class ChangeNameHandler
             .FirstOrDefaultAsync(cancellationToken);
         
         if(account is null)
-            return Result.Fail("Unauthenticated");
+            return Result.Fail(AppError.Unauthorized("Unauthenticated"));
 
         var result = account.ChangeName(request.name);
         if(!result.IsSuccess)
-            return Result.Fail(result.Error);
+            return Result.Fail(AppError.Conflict(result.Error!));
 
         var filter = Builders<Account>.Filter.And(
             Builders<Account>.Filter.Eq(x => x.Id, account.Id),

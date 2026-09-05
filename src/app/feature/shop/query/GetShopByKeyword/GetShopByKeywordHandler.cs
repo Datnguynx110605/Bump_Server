@@ -29,7 +29,6 @@ internal sealed class GetShopByKeywordHandler
         CancellationToken cancellationToken)
     {
         string filterSignature = $"keyword:{request.keyword}";
-        string cacheKey = CacheKey.List(CollectionName.Shop, filterSignature, request.pageRequest);
 
         var shopCollection = _dbContext.GetCollection<Shop>(CollectionName.Shop);
 
@@ -49,7 +48,8 @@ internal sealed class GetShopByKeywordHandler
             filter,
             ShopProjection.Summary,
             request.pageRequest,
-            cacheKey,
+            CollectionName.Shop,
+            filterSignature,
             cancellationToken);
 
         return Result.Ok(dtoPage);

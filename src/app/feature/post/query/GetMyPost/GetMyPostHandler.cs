@@ -31,10 +31,9 @@ internal sealed class GetMyPostHandler
     {
         var identity = _identityService.GetAccountId();
         if(identity is null)
-            return Result.Fail("Unauthorized");
+            return Result.Fail(AppError.Unauthorized("Unauthorized"));
 
         string filterSignature = $"account:{identity.Value}";
-        string cacheKey = CacheKey.List(CollectionName.Post, filterSignature, request.pageRequest);
 
         var postCollection = _dbContext.GetCollection<Post>(CollectionName.Post);
 
@@ -49,7 +48,8 @@ internal sealed class GetMyPostHandler
             filter,
             PostProjection.Summary,
             request.pageRequest,
-            cacheKey,
+            CollectionName.Post,
+            filterSignature,
             cancellationToken);
 
         return Result.Ok(dtoPage);

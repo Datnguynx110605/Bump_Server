@@ -27,7 +27,6 @@ internal sealed class GetAccountByNameHandler
         CancellationToken cancellationToken)
     {
         string filterSignature = $"name:{request.name.Value}";
-        string cacheKey = CacheKey.List(CollectionName.Account, filterSignature, request.pageRequest);
 
         var accountCollection = _dbContext.GetCollection<Account>(CollectionName.Account);
 
@@ -42,7 +41,8 @@ internal sealed class GetAccountByNameHandler
             filter,
             AccountProjection.Summary,
             request.pageRequest,
-            cacheKey,
+            CollectionName.Account,
+            filterSignature,
             cancellationToken);
 
         return Result.Ok(dtoPage);

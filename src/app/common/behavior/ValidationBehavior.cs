@@ -29,7 +29,7 @@ public sealed class ValidationBehavior<TRequest, TResponse>
 
         var errors = validationResults
             .SelectMany(x => x.Errors)
-            .Select(x => new Error(x.ErrorMessage))
+            .Select(x => AppError.BadRequest(x.ErrorMessage))
             .ToList();
 
         if(errors.Count == 0)

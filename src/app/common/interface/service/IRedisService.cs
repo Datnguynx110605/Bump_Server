@@ -9,4 +9,8 @@ public interface IRedisService
     Task<T?> GetAndRemoveAsync<T>(string key, CancellationToken cancellationToken);
 
     Task RemoveAsync(string key, CancellationToken cancellationToken);
+
+    Task<long> IncrementAsync(string key, TimeSpan? ttl, CancellationToken cancellationToken);
+
+    Task<long> GetCounterAsync(string key, CancellationToken cancellationToken);
 }

@@ -36,7 +36,7 @@ public static class ResultExtensions
             return ToValidationProblemResult(errors);
 
         string message = errors[0].Message;
-        int statusCode = ResultStatusMapper.Resolve(message);
+        int statusCode = ResultStatusMapper.Resolve(errors[0]);
 
         var problem = new ProblemDetails
         {

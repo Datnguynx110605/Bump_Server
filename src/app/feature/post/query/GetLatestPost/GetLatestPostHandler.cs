@@ -31,9 +31,7 @@ internal sealed class GetLatestPostHandler
     {
         var identity = _identityService.GetAccountId();
         if(identity is null)
-            return Result.Fail("Unauthorized");
-
-        string cacheKey = CacheKey.List(CollectionName.Post, filterSignature: null, request.pageRequest);
+            return Result.Fail(AppError.Unauthorized("Unauthorized"));
 
         var postCollection = _dbContext.GetCollection<Post>(CollectionName.Post);
 
@@ -46,7 +44,8 @@ internal sealed class GetLatestPostHandler
             filter,
             PostProjection.Summary,
             request.pageRequest,
-            cacheKey,
+            CollectionName.Post,
+            filterSignature: null,
             cancellationToken);
 
         return Result.Ok(await PostFeedEnricher.EnrichAsync(_dbContext, dtoPage, identity.Value, cancellationToken));

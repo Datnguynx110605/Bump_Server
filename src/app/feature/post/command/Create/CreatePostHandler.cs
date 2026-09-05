@@ -37,7 +37,7 @@ internal sealed class CreatePostHandler
     {
         var identity = _identityService.GetAccountId();
         if(identity is null)
-            return Result.Fail("Unauthorized");
+            return Result.Fail(AppError.Unauthorized("Unauthorized"));
 
         List<string>? urls = null;
         if(request.images?.Any() == true)
@@ -90,11 +90,15 @@ internal sealed class CreatePostHandler
                     shopSummaryDto,
                     CacheKey.DefaultShopTTL,
                     cancellationToken),
-                _redisService.RemoveAsync(
-                    CacheKey.List(CollectionName.Shop, filterSignature: null, new CursorPageRequest(null)),
+                ListCache.InvalidateAsync(
+                    _redisService,
+                    CollectionName.Shop,
+                    filterSignature: null,
                     cancellationToken),
-                _redisService.RemoveAsync(
-                    CacheKey.List(CollectionName.Shop, "mostRated", new CursorPageRequest(null)),
+                ListCache.InvalidateAsync(
+                    _redisService,
+                    CollectionName.Shop,
+                    "mostRated",
                     cancellationToken));
 
             shopId = shop.Id;
@@ -128,17 +132,25 @@ internal sealed class CreatePostHandler
                 summaryDto,
                 CacheKey.DefaultPostTTL,
                 cancellationToken),
-            _redisService.RemoveAsync(
-                CacheKey.List(CollectionName.Post, filterSignature: null, new CursorPageRequest(null)),
+            ListCache.InvalidateAsync(
+                _redisService,
+                CollectionName.Post,
+                filterSignature: null,
                 cancellationToken),
-            _redisService.RemoveAsync(
-                CacheKey.List(CollectionName.Post, $"account:{identity.Value}", new CursorPageRequest(null)),
+            ListCache.InvalidateAsync(
+                _redisService,
+                CollectionName.Post,
+                $"account:{identity.Value}",
                 cancellationToken),
-            _redisService.RemoveAsync(
-                CacheKey.List(CollectionName.Post, $"shop:{shopId}", new CursorPageRequest(null)),
+            ListCache.InvalidateAsync(
+                _redisService,
+                CollectionName.Post,
+                $"shop:{shopId}",
                 cancellationToken),
-            _redisService.RemoveAsync(
-                CacheKey.List(CollectionName.Post, "mostReacted", new CursorPageRequest(null)),
+            ListCache.InvalidateAsync(
+                _redisService,
+                CollectionName.Post,
+                "mostReacted",
                 cancellationToken));
 
         var recalculateMessage = new RecalculateShopRateMessage(

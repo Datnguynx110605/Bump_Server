@@ -23,7 +23,7 @@ internal sealed class SavePostHandler
     {
         var identity = _identityService.GetAccountId();
         if(identity is null)
-            return Result.Fail("Unauthorized");
+            return Result.Fail(AppError.Unauthorized("Unauthorized"));
 
         var message = new SaveMessage(
             Guid.NewGuid(),

@@ -37,7 +37,7 @@ public sealed class ReactionService : IReactionService
             .FirstOrDefaultAsync(cancellationToken);
 
         if(account is null)
-            return Result.Fail("Account not found");
+            return Result.Fail(AppError.NotFound("Account not found"));
 
         var postCollection = _dbContext.GetCollection<Post>(CollectionName.Post);
 
@@ -56,14 +56,16 @@ public sealed class ReactionService : IReactionService
             cancellationToken : cancellationToken);
 
         if(result.MatchedCount != 1)
-            return Result.Fail("Already reacted to this post");
+            return Result.Fail(AppError.Conflict("Already reacted to this post"));
 
         await Task.WhenAll(
             _redisService.RemoveAsync(
                 CacheKey.Post(postId),
                 cancellationToken),
-            _redisService.RemoveAsync(
-                CacheKey.List($"{CollectionName.Post}:reaction", $"post:{postId}", new CursorPageRequest(null)),
+            ListCache.InvalidateAsync(
+                _redisService,
+                $"{CollectionName.Post}:reaction",
+                $"post:{postId}",
                 cancellationToken));
 
         var postOwnerProjection = Builders<Post>.Projection
@@ -76,7 +78,7 @@ public sealed class ReactionService : IReactionService
             .FirstOrDefaultAsync(cancellationToken);
 
         if(post is null)
-            return Result.Fail("Post not found");
+            return Result.Fail(AppError.NotFound("Post not found"));
 
         await InvalidatePostListsAsync(post.AccountId, post.ShopId, cancellationToken);
 
@@ -122,8 +124,10 @@ public sealed class ReactionService : IReactionService
             _redisService.RemoveAsync(
                 CacheKey.Post(postId),
                 cancellationToken),
-            _redisService.RemoveAsync(
-                CacheKey.List($"{CollectionName.Post}:reaction", $"post:{postId}", new CursorPageRequest(null)),
+            ListCache.InvalidateAsync(
+                _redisService,
+                $"{CollectionName.Post}:reaction",
+                $"post:{postId}",
                 cancellationToken));
 
         var postOwnerProjection = Builders<Post>.Projection
@@ -158,7 +162,7 @@ public sealed class ReactionService : IReactionService
             .FirstOrDefaultAsync(cancellationToken);
 
         if(account is null)
-            return Result.Fail("Account not found");
+            return Result.Fail(AppError.NotFound("Account not found"));
 
         var commentCollection = _dbContext.GetCollection<Comment>(CollectionName.Comment);
 
@@ -177,14 +181,16 @@ public sealed class ReactionService : IReactionService
             cancellationToken : cancellationToken);
 
         if(result.MatchedCount != 1)
-            return Result.Fail("Already reacted to this comment");
+            return Result.Fail(AppError.Conflict("Already reacted to this comment"));
 
         await Task.WhenAll(
             _redisService.RemoveAsync(
                 CacheKey.Comment(commentId),
                 cancellationToken),
-            _redisService.RemoveAsync(
-                CacheKey.List($"{CollectionName.Comment}:reaction", $"comment:{commentId}", new CursorPageRequest(null)),
+            ListCache.InvalidateAsync(
+                _redisService,
+                $"{CollectionName.Comment}:reaction",
+                $"comment:{commentId}",
                 cancellationToken));
 
         var commentOwnerProjection = Builders<Comment>.Projection
@@ -197,7 +203,7 @@ public sealed class ReactionService : IReactionService
             .FirstOrDefaultAsync(cancellationToken);
 
         if(comment is null)
-            return Result.Fail("Comment not found");
+            return Result.Fail(AppError.NotFound("Comment not found"));
 
         await InvalidateCommentListsAsync(comment.PostId, comment.AccountId, cancellationToken);
 
@@ -243,8 +249,10 @@ public sealed class ReactionService : IReactionService
             _redisService.RemoveAsync(
                 CacheKey.Comment(commentId),
                 cancellationToken),
-            _redisService.RemoveAsync(
-                CacheKey.List($"{CollectionName.Comment}:reaction", $"comment:{commentId}", new CursorPageRequest(null)),
+            ListCache.InvalidateAsync(
+                _redisService,
+                $"{CollectionName.Comment}:reaction",
+                $"comment:{commentId}",
                 cancellationToken));
 
         var commentOwnerProjection = Builders<Comment>.Projection
@@ -265,28 +273,40 @@ public sealed class ReactionService : IReactionService
     private Task InvalidatePostListsAsync(Guid postAccountId, Guid shopId, CancellationToken cancellationToken)
     {
         return Task.WhenAll(
-            _redisService.RemoveAsync(
-                CacheKey.List(CollectionName.Post, filterSignature: null, new CursorPageRequest(null)),
+            ListCache.InvalidateAsync(
+                _redisService,
+                CollectionName.Post,
+                filterSignature: null,
                 cancellationToken),
-            _redisService.RemoveAsync(
-                CacheKey.List(CollectionName.Post, $"account:{postAccountId}", new CursorPageRequest(null)),
+            ListCache.InvalidateAsync(
+                _redisService,
+                CollectionName.Post,
+                $"account:{postAccountId}",
                 cancellationToken),
-            _redisService.RemoveAsync(
-                CacheKey.List(CollectionName.Post, $"shop:{shopId}", new CursorPageRequest(null)),
+            ListCache.InvalidateAsync(
+                _redisService,
+                CollectionName.Post,
+                $"shop:{shopId}",
                 cancellationToken),
-            _redisService.RemoveAsync(
-                CacheKey.List(CollectionName.Post, "mostReacted", new CursorPageRequest(null)),
+            ListCache.InvalidateAsync(
+                _redisService,
+                CollectionName.Post,
+                "mostReacted",
                 cancellationToken));
     }
 
     private Task InvalidateCommentListsAsync(Guid postId, Guid commentAccountId, CancellationToken cancellationToken)
     {
         return Task.WhenAll(
-            _redisService.RemoveAsync(
-                CacheKey.List(CollectionName.Comment, $"post:{postId}", new CursorPageRequest(null)),
+            ListCache.InvalidateAsync(
+                _redisService,
+                CollectionName.Comment,
+                $"post:{postId}",
                 cancellationToken),
-            _redisService.RemoveAsync(
-                CacheKey.List(CollectionName.Comment, $"account:{commentAccountId}", new CursorPageRequest(null)),
+            ListCache.InvalidateAsync(
+                _redisService,
+                CollectionName.Comment,
+                $"account:{commentAccountId}",
                 cancellationToken));
     }
 }

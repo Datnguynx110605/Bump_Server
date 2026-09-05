@@ -29,7 +29,7 @@ internal sealed class RecoverAccountHandler
             request.registrationToken,
             cancellationToken);
         if(rawEmail is null)
-            return Result.Fail("Unauthenticated");
+            return Result.Fail(AppError.Unauthorized("Unauthenticated"));
 
         var emailResult = Email.Create(rawEmail);
         if(!emailResult.IsSuccess)
@@ -48,7 +48,7 @@ internal sealed class RecoverAccountHandler
             .FirstOrDefaultAsync(cancellationToken);
 
         if(account is null)
-            return Result.Fail("Account not found");
+            return Result.Fail(AppError.NotFound("Account not found"));
 
         var result = account.RecoverAccount();
         if(!result.IsSuccess)

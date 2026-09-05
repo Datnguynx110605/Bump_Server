@@ -9,7 +9,7 @@ COPY ["src/domain/domain.csproj", "domain/"]
 COPY ["src/app/app.csproj", "app/"]
 COPY ["src/infra/infra.csproj", "infra/"]
 COPY ["src/api/api.csproj", "api/"]
-RUN dotnet restore "Bump.sln"
+RUN dotnet restore "api/api.csproj"
 
 COPY ["src/domain/", "domain/"]
 COPY ["src/app/", "app/"]
@@ -25,9 +25,10 @@ FROM mcr.microsoft.com/dotnet/aspnet:9.0 AS final
 WORKDIR /app
 USER $APP_UID
 
-ENV ASPNETCORE_HTTP_PORTS=8080
 EXPOSE 8080
 
 COPY --from=build /app/publish .
 
-ENTRYPOINT ["dotnet", "api.dll"]
+# Railway injects PORT at runtime; 8080 is the fallback for a plain `docker run`.
+# `exec` keeps dotnet as PID 1 so SIGTERM still reaches it for graceful shutdown.
+ENTRYPOINT ["sh", "-c", "exec dotnet api.dll --urls \"http://0.0.0.0:${PORT:-8080}\""]

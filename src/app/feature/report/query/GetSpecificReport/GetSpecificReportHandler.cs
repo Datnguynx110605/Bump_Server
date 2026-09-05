@@ -42,7 +42,7 @@ internal sealed class GetSpecificReportHandler
             .FirstOrDefaultAsync(cancellationToken);
 
         if(dbReport is null)
-            return Result.Fail("Report not found");
+            return Result.Fail(AppError.NotFound("Report not found"));
 
         var dto = _mapper.Map<ReportDto>(dbReport);
 

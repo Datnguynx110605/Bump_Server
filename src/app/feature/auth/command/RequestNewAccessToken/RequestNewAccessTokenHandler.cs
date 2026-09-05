@@ -29,15 +29,15 @@ internal sealed class RequestNewAccessTokenHandler
             .FirstOrDefaultAsync(cancellationToken);
 
         if(currentToken is null)
-            return Result.Fail("Invalid refresh token");
+            return Result.Fail(AppError.Unauthorized("Invalid refresh token"));
 
         var validateResult = currentToken.Validate();
         if(!validateResult.IsSuccess)
-            return Result.Fail(validateResult.Error);
+            return Result.Fail(AppError.Unauthorized(validateResult.Error!));
 
         var revokeResult = currentToken.Revoke();
         if(!revokeResult.IsSuccess)
-            return Result.Fail(revokeResult.Error);
+            return Result.Fail(AppError.Unauthorized(revokeResult.Error!));
 
         var revokeFilter = Builders<RefreshToken>.Filter.And(
             Builders<RefreshToken>.Filter.Eq(x => x.Id, currentToken.Id),
@@ -63,7 +63,7 @@ internal sealed class RequestNewAccessTokenHandler
             .FirstOrDefaultAsync(cancellationToken);
 
         if(account is null)
-            return Result.Fail("Account not found");
+            return Result.Fail(AppError.NotFound("Account not found"));
 
         var accessToken = _jwtService.GenerateAccessToken(account.Id, account.Role);
 

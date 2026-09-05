@@ -27,7 +27,6 @@ internal sealed class GetPostByAccountHandler
         CancellationToken cancellationToken)
     {
         string filterSignature = $"account:{request.accountId}";
-        string cacheKey = CacheKey.List(CollectionName.Post, filterSignature, request.pageRequest);
 
         var postCollection = _dbContext.GetCollection<Post>(CollectionName.Post);
 
@@ -42,7 +41,8 @@ internal sealed class GetPostByAccountHandler
             filter,
             PostProjection.Summary,
             request.pageRequest,
-            cacheKey,
+            CollectionName.Post,
+            filterSignature,
             cancellationToken);
 
         return Result.Ok(dtoPage);

@@ -31,7 +31,7 @@ internal sealed class GetSpecificShopHandler
     {
         var identity = _identityService.GetAccountId();
         if(identity is null)
-            return Result.Fail("Unauthorized");
+            return Result.Fail(AppError.Unauthorized("Unauthorized"));
 
         string cacheKey = CacheKey.Shop(request.shopId);
 
@@ -53,7 +53,7 @@ internal sealed class GetSpecificShopHandler
                 .FirstOrDefaultAsync(cancellationToken);
 
             if(dbShop is null)
-                return Result.Fail("Shop not found");
+                return Result.Fail(AppError.NotFound("Shop not found"));
 
             dto = _mapper.Map<ShopDto>(dbShop);
 

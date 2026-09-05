@@ -44,7 +44,14 @@ public static class IndexConfiguration
                 new CreateIndexModel<Account>(
                     keys.Ascending(x => x.IsDeleted)
                         .Descending(x => x.CreatedAt)
-                        .Descending(x => x.Id))
+                        .Descending(x => x.Id)),
+                // Multikey indexes backing the ElemMatch/AnyEq membership lookups in
+                // SaveMembership and DeleteAccountService, which otherwise scan the
+                // whole collection on every feed request.
+                new CreateIndexModel<Account>(keys.Ascending("Followers.AccountId")),
+                new CreateIndexModel<Account>(keys.Ascending("Followings.AccountId")),
+                new CreateIndexModel<Account>(keys.Ascending("SavePosts.PostId")),
+                new CreateIndexModel<Account>(keys.Ascending("SaveShops.ShopId"))
             },
             cancellationToken);
     }
@@ -79,7 +86,10 @@ public static class IndexConfiguration
                     keys.Ascending(x => x.CaptionNormalized)
                         .Ascending(x => x.IsDeleted)
                         .Descending(x => x.CreatedAt)
-                        .Descending(x => x.Id))
+                        .Descending(x => x.Id)),
+                // Backs ReactionMembership's per-request membership lookups and the
+                // ElemMatch reaction cleanup in DeleteAccountService.
+                new CreateIndexModel<Post>(keys.Ascending("Reactions.AccountId"))
             },
             cancellationToken);
     }
@@ -100,7 +110,9 @@ public static class IndexConfiguration
                     keys.Ascending(x => x.AccountId)
                         .Ascending(x => x.IsDeleted)
                         .Descending(x => x.CreatedAt)
-                        .Descending(x => x.Id))
+                        .Descending(x => x.Id)),
+                // Backs the ElemMatch reaction cleanup in DeleteAccountService.
+                new CreateIndexModel<Comment>(keys.Ascending("Reactions.AccountId"))
             },
             cancellationToken);
     }

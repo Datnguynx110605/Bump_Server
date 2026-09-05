@@ -27,7 +27,6 @@ internal sealed class GetReportByTargetHandler
         CancellationToken cancellationToken)
     {
         string filterSignature = $"{request.target.ToString().ToLowerInvariant()}:{request.targetId}";
-        string cacheKey = CacheKey.List(CollectionName.Report, filterSignature, request.pageRequest);
 
         var reportCollection = _dbContext.GetCollection<Report>(CollectionName.Report);
 
@@ -42,7 +41,8 @@ internal sealed class GetReportByTargetHandler
             filter,
             projection : null,
             request.pageRequest,
-            cacheKey,
+            CollectionName.Report,
+            filterSignature,
             cancellationToken);
 
         return Result.Ok(dtoPage);

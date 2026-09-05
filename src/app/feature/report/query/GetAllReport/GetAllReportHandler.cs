@@ -26,7 +26,6 @@ internal sealed class GetAllReportHandler
         GetAllReportQuery request,
         CancellationToken cancellationToken)
     {
-        string cacheKey = CacheKey.List(CollectionName.Report, filterSignature: null, request.pageRequest);
 
         var reportCollection = _dbContext.GetCollection<Report>(CollectionName.Report);
 
@@ -39,7 +38,8 @@ internal sealed class GetAllReportHandler
             filter,
             projection : null,
             request.pageRequest,
-            cacheKey,
+            CollectionName.Report,
+            filterSignature: null,
             cancellationToken);
 
         return Result.Ok(dtoPage);

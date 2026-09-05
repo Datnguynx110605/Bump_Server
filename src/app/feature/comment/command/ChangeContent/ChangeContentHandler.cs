@@ -27,7 +27,7 @@ internal sealed class ChangeContentHandler
     {
         var identity = _identityService.GetAccountId();
         if(identity is null)
-            return Result.Fail("Unauthorized");
+            return Result.Fail(AppError.Unauthorized("Unauthorized"));
 
         var commentCollection = _dbContext.GetCollection<Comment>(CollectionName.Comment);
 
@@ -42,7 +42,7 @@ internal sealed class ChangeContentHandler
             .FirstOrDefaultAsync(cancellationToken);
 
         if(comment is null)
-            return Result.Fail("Comment not found");
+            return Result.Fail(AppError.NotFound("Comment not found"));
 
         var result = comment.ChangeContent(request.content);
         if(!result.IsSuccess)
@@ -68,11 +68,15 @@ internal sealed class ChangeContentHandler
             _redisService.RemoveAsync(
                 cacheKey,
                 cancellationToken),
-            _redisService.RemoveAsync(
-                CacheKey.List(CollectionName.Comment, $"post:{comment.PostId}", new CursorPageRequest(null)),
+            ListCache.InvalidateAsync(
+                _redisService,
+                CollectionName.Comment,
+                $"post:{comment.PostId}",
                 cancellationToken),
-            _redisService.RemoveAsync(
-                CacheKey.List(CollectionName.Comment, $"account:{identity.Value}", new CursorPageRequest(null)),
+            ListCache.InvalidateAsync(
+                _redisService,
+                CollectionName.Comment,
+                $"account:{identity.Value}",
                 cancellationToken));
 
         return Result.Ok();

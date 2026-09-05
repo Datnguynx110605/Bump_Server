@@ -30,7 +30,7 @@ internal sealed class GetSpecificRefreshTokenHandler
             .FirstOrDefaultAsync(cancellationToken);
 
         if(dbRefreshToken is null)
-            return Result.Fail("RefreshToken not found");
+            return Result.Fail(AppError.NotFound("RefreshToken not found"));
 
         var dto = _mapper.Map<RefreshTokenDto>(dbRefreshToken);
 

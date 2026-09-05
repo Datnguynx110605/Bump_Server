@@ -27,7 +27,6 @@ internal sealed class GetCommentByPostHandler
         CancellationToken cancellationToken)
     {
         string filterSignature = $"post:{request.postId}";
-        string cacheKey = CacheKey.List(CollectionName.Comment, filterSignature, request.pageRequest);
 
         var commentCollection = _dbContext.GetCollection<Comment>(CollectionName.Comment);
 
@@ -42,7 +41,8 @@ internal sealed class GetCommentByPostHandler
             filter,
             CommentProjection.Summary,
             request.pageRequest,
-            cacheKey,
+            CollectionName.Comment,
+            filterSignature,
             cancellationToken);
 
         return Result.Ok(dtoPage);

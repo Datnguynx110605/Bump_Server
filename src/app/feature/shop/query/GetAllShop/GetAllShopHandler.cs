@@ -26,7 +26,6 @@ internal sealed class GetAllShopHandler
         GetAllShopQuery request,
         CancellationToken cancellationToken)
     {
-        string cacheKey = CacheKey.List(CollectionName.Shop, filterSignature: null, request.pageRequest);
 
         var shopCollection = _dbContext.GetCollection<Shop>(CollectionName.Shop);
 
@@ -39,7 +38,8 @@ internal sealed class GetAllShopHandler
             filter,
             ShopProjection.Summary,
             request.pageRequest,
-            cacheKey,
+            CollectionName.Shop,
+            filterSignature: null,
             cancellationToken);
 
         return Result.Ok(dtoPage);

@@ -33,10 +33,9 @@ internal sealed class GetPostByKeywordHandler
     {
         var identity = _identityService.GetAccountId();
         if(identity is null)
-            return Result.Fail("Unauthorized");
+            return Result.Fail(AppError.Unauthorized("Unauthorized"));
 
         string filterSignature = $"keyword:{request.keyword}";
-        string cacheKey = CacheKey.List(CollectionName.Post, filterSignature, request.pageRequest);
 
         var postCollection = _dbContext.GetCollection<Post>(CollectionName.Post);
 
@@ -54,7 +53,8 @@ internal sealed class GetPostByKeywordHandler
             filter,
             PostProjection.Summary,
             request.pageRequest,
-            cacheKey,
+            CollectionName.Post,
+            filterSignature,
             cancellationToken);
 
         return Result.Ok(await PostFeedEnricher.EnrichAsync(_dbContext, dtoPage, identity.Value, cancellationToken));

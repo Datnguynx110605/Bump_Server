@@ -30,7 +30,7 @@ internal sealed class RemoveAvatarHandler
     {
         var identity = _identityService.GetAccountId();
         if(identity is null)
-            return Result.Fail("Unauthorized");
+            return Result.Fail(AppError.Unauthorized("Unauthorized"));
 
         var accountCollection = _dbContext.GetCollection<Account>(CollectionName.Account);
 
@@ -39,7 +39,7 @@ internal sealed class RemoveAvatarHandler
             .AnyAsync(cancellationToken);
 
         if(!exists)
-            return Result.Fail("Unauthenticated");
+            return Result.Fail(AppError.Unauthorized("Unauthenticated"));
 
         var filter = Builders<Account>.Filter.And(
             Builders<Account>.Filter.Eq(x => x.Id, identity.Value),
@@ -56,7 +56,7 @@ internal sealed class RemoveAvatarHandler
             cancellationToken : cancellationToken);
 
         if(updateResult.MatchedCount != 1)
-            return Result.Fail("Avatar not found");
+            return Result.Fail(AppError.NotFound("Avatar not found"));
 
         await _r2Service.DeleteAsync(
             request.url,

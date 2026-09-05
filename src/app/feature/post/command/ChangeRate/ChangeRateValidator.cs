@@ -10,6 +10,6 @@ internal sealed class ChangeRateValidator
         RuleFor(x => x.postId)
             .NotEqual(Guid.Empty).WithMessage("PostId is required");
         RuleFor(x => x.rate.Value)
-            .GreaterThanOrEqualTo(0).WithMessage("Rate must be a non-negative integer");
+            .InclusiveBetween(1, 5).WithMessage("Rate must be between 1 and 5");
     }
 }

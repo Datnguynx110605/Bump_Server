@@ -27,7 +27,6 @@ internal sealed class GetPostByShopHandler
         CancellationToken cancellationToken)
     {
         string filterSignature = $"shop:{request.shopId}";
-        string cacheKey = CacheKey.List(CollectionName.Post, filterSignature, request.pageRequest);
 
         var postCollection = _dbContext.GetCollection<Post>(CollectionName.Post);
 
@@ -42,7 +41,8 @@ internal sealed class GetPostByShopHandler
             filter,
             PostProjection.Summary,
             request.pageRequest,
-            cacheKey,
+            CollectionName.Post,
+            filterSignature,
             cancellationToken);
 
         return Result.Ok(dtoPage);

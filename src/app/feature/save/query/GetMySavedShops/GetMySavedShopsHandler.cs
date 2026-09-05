@@ -31,9 +31,19 @@ internal sealed class GetMySavedShopsHandler
     {
         var identity = _identityService.GetAccountId();
         if(identity is null)
-            return Result.Fail("Unauthorized");
+            return Result.Fail(AppError.Unauthorized("Unauthorized"));
 
-        string cacheKey = CacheKey.List($"{CollectionName.Account}:saveshop", $"account:{identity.Value}", request.pageRequest);
+        var version = await ListCache.VersionAsync(
+            _redisService,
+            $"{CollectionName.Account}:saveshop",
+            $"account:{identity.Value}",
+            cancellationToken);
+
+        string cacheKey = CacheKey.List(
+            $"{CollectionName.Account}:saveshop",
+            $"account:{identity.Value}",
+            request.pageRequest,
+            version);
 
         var cachedPage = await _redisService.GetAsync<CursorPageResult<ShopSummaryDto>>(
             cacheKey,

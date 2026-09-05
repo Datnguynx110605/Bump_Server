@@ -27,7 +27,7 @@ internal sealed class DeleteShopHandler
     {
         var identity = _identityService.GetAccountId();
         if(identity is null)
-            return Result.Fail("Unauthorized");
+            return Result.Fail(AppError.Unauthorized("Unauthorized"));
 
         var shopCollection = _dbContext.GetCollection<Shop>(CollectionName.Shop);
 
@@ -40,7 +40,7 @@ internal sealed class DeleteShopHandler
             .FirstOrDefaultAsync(cancellationToken);
 
         if(shop is null)
-            return Result.Fail("Shop not found");
+            return Result.Fail(AppError.NotFound("Shop not found"));
 
         var result = shop.DeleteShop();
         if(!result.IsSuccess)
@@ -65,11 +65,15 @@ internal sealed class DeleteShopHandler
             _redisService.RemoveAsync(
                 cacheKey,
                 cancellationToken),
-            _redisService.RemoveAsync(
-                CacheKey.List(CollectionName.Shop, filterSignature: null, new CursorPageRequest(null)),
+            ListCache.InvalidateAsync(
+                _redisService,
+                CollectionName.Shop,
+                filterSignature: null,
                 cancellationToken),
-            _redisService.RemoveAsync(
-                CacheKey.List(CollectionName.Shop, "mostRated", new CursorPageRequest(null)),
+            ListCache.InvalidateAsync(
+                _redisService,
+                CollectionName.Shop,
+                "mostRated",
                 cancellationToken));
 
         return Result.Ok();

@@ -35,7 +35,7 @@ public sealed class DeletePostService : IDeletePostService
             .FirstOrDefaultAsync(cancellationToken);
 
         if(post is null)
-            return Result.Fail("Post not found");
+            return Result.Fail(AppError.NotFound("Post not found"));
 
         var commentCollection = _dbContext.GetCollection<Comment>(CollectionName.Comment);
 
@@ -75,8 +75,10 @@ public sealed class DeletePostService : IDeletePostService
 
         var cacheInvalidations = new List<Task>
         {
-            _redisService.RemoveAsync(
-                CacheKey.List(CollectionName.Comment, $"post:{post.Id}", new CursorPageRequest(null)),
+            ListCache.InvalidateAsync(
+                _redisService,
+                CollectionName.Comment,
+                $"post:{post.Id}",
                 cancellationToken)
         };
 
@@ -87,9 +89,11 @@ public sealed class DeletePostService : IDeletePostService
 
         foreach(var authorId in comments.Select(x => x.AccountId).Distinct())
         {
-            cacheInvalidations.Add(_redisService.RemoveAsync(
-                CacheKey.List(CollectionName.Comment, $"account:{authorId}", new CursorPageRequest(null)),
-                cancellationToken));
+            cacheInvalidations.Add(ListCache.InvalidateAsync(
+    _redisService,
+    CollectionName.Comment,
+    $"account:{authorId}",
+    cancellationToken));
         }
 
         await Task.WhenAll(cacheInvalidations);

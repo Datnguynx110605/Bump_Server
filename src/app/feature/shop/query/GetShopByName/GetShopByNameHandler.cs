@@ -27,7 +27,6 @@ internal sealed class GetShopByNameHandler
         CancellationToken cancellationToken)
     {
         string filterSignature = $"name:{request.name}";
-        string cacheKey = CacheKey.List(CollectionName.Shop, filterSignature, request.pageRequest);
 
         var shopCollection = _dbContext.GetCollection<Shop>(CollectionName.Shop);
 
@@ -42,7 +41,8 @@ internal sealed class GetShopByNameHandler
             filter,
             ShopProjection.Summary,
             request.pageRequest,
-            cacheKey,
+            CollectionName.Shop,
+            filterSignature,
             cancellationToken);
 
         return Result.Ok(dtoPage);

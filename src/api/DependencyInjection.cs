@@ -21,8 +21,12 @@ public static class DependencyInjection
 
         services.AddControllers();
         services.AddOpenApi();
+        services.AddProblemDetails();
 
-        services.AddSignalR();
+        // Without a backplane, a replica only reaches hub connections it holds itself,
+        // so notifications for users connected elsewhere are silently dropped.
+        services.AddSignalR()
+            .AddStackExchangeRedis(configuration["Redis:ConnectionString"]!);
         services.AddSingleton<IUserIdProvider, AccountIdUserIdProvider>();
 
         services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
@@ -66,6 +70,14 @@ public static class DependencyInjection
         services.Configure<ForwardedHeadersOptions>(options =>
         {
             options.ForwardedHeaders = ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto;
+
+            // The defaults trust loopback only, so a platform edge proxy (Railway) is never
+            // recognised: the original scheme is lost — leaving UseHttpsRedirection to act on a
+            // plain-HTTP request — and every IP-partitioned rate limit sees the proxy's address
+            // instead of the caller's. Clearing both lists honours the headers from whatever
+            // fronts the container; the loops below re-pin them when the deployment can name them.
+            options.KnownNetworks.Clear();
+            options.KnownProxies.Clear();
 
             foreach(string proxy in configuration.GetSection("ForwardedHeaders:KnownProxies").Get<string[]>() ?? [])
                 if(IPAddress.TryParse(proxy, out var address))

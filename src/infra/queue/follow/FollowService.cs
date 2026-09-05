@@ -1,6 +1,7 @@
 using app;
 using domain;
 using FluentResults;
+using Microsoft.Extensions.Logging;
 using MongoDB.Driver;
 
 namespace infra;
@@ -10,14 +11,17 @@ public sealed class FollowService : IFollowService
     private readonly IMongoDbContext _dbContext;
     private readonly IRedisService _redisService;
     private readonly INotificationService _notificationSerivce;
+    private readonly ILogger<FollowService> _logger;
     public FollowService(
         IMongoDbContext dbContext,
         IRedisService redisService,
-        INotificationService notificationService)
+        INotificationService notificationService,
+        ILogger<FollowService> logger)
     {
         _dbContext = dbContext;
         _redisService = redisService;
         _notificationSerivce = notificationService;
+        _logger = logger;
     }
 
     public async Task<Result> ProcessFollowAsync(
@@ -40,7 +44,7 @@ public sealed class FollowService : IFollowService
             .FirstOrDefaultAsync(cancellationToken);
 
         if(follower is null)
-            return Result.Fail("Follower account not found");
+            return Result.Fail(AppError.NotFound("Follower account not found"));
 
         var following = await accountCollection
             .Find(x => x.Id == followingId && !x.IsDeleted)
@@ -48,7 +52,7 @@ public sealed class FollowService : IFollowService
             .FirstOrDefaultAsync(cancellationToken);
 
         if(following is null)
-            return Result.Fail("Following account not found");
+            return Result.Fail(AppError.NotFound("Following account not found"));
 
         var followerFilter = Builders<Account>.Filter.And(
             Builders<Account>.Filter.Eq(x => x.Id, followerId),
@@ -76,11 +80,18 @@ public sealed class FollowService : IFollowService
             },
             cancellationToken : cancellationToken);
 
-        if(bulkResult.MatchedCount == 1)
-            throw new InvalidOperationException("Follow partially applied: only one side of the relationship was written");
+        // Each side's filter excludes the state it writes, so a match count of 1 means the
+        // other side was already correct and this write repaired a previously half-applied
+        // follow. Throwing here used to guarantee the drift instead of healing it: every
+        // retry rethrew, the message hit the DLQ, and the counters stayed inconsistent.
+        if(bulkResult.MatchedCount == 0)
+            return Result.Fail(AppError.Conflict("Already following"));
 
-        if(bulkResult.MatchedCount != 2)
-            return Result.Fail("Already following");
+        if(bulkResult.MatchedCount == 1)
+            _logger.LogWarning(
+                "Follow {FollowerId} -> {FollowingId} was half-applied and has been repaired",
+                followerId,
+                followingId);
 
         await Task.WhenAll(
             _redisService.RemoveAsync(
@@ -89,11 +100,15 @@ public sealed class FollowService : IFollowService
             _redisService.RemoveAsync(
                 CacheKey.Account(followingId),
                 cancellationToken),
-            _redisService.RemoveAsync(
-                CacheKey.List($"{CollectionName.Account}:following", $"account:{followerId}", new CursorPageRequest(null)),
+            ListCache.InvalidateAsync(
+                _redisService,
+                $"{CollectionName.Account}:following",
+                $"account:{followerId}",
                 cancellationToken),
-            _redisService.RemoveAsync(
-                CacheKey.List($"{CollectionName.Account}:follower", $"account:{followingId}", new CursorPageRequest(null)),
+            ListCache.InvalidateAsync(
+                _redisService,
+                $"{CollectionName.Account}:follower",
+                $"account:{followingId}",
                 cancellationToken));
 
         return await _notificationSerivce.CreateAsync(
@@ -143,11 +158,16 @@ public sealed class FollowService : IFollowService
             },
             cancellationToken : cancellationToken);
 
-        if(bulkResult.MatchedCount == 1)
-            throw new InvalidOperationException("Unfollow partially applied: only one side of the relationship was removed");
-
-        if(bulkResult.MatchedCount != 2)
+        // Same reasoning as ProcessFollowAsync: 1 means the other side was already removed
+        // and this write repaired the drift.
+        if(bulkResult.MatchedCount == 0)
             return Result.Fail("Not following this account");
+
+        if(bulkResult.MatchedCount == 1)
+            _logger.LogWarning(
+                "Unfollow {FollowerId} -> {FollowingId} was half-applied and has been repaired",
+                followerId,
+                followingId);
 
         await Task.WhenAll(
             _redisService.RemoveAsync(
@@ -156,11 +176,15 @@ public sealed class FollowService : IFollowService
             _redisService.RemoveAsync(
                 CacheKey.Account(followingId),
                 cancellationToken),
-            _redisService.RemoveAsync(
-                CacheKey.List($"{CollectionName.Account}:following", $"account:{followerId}", new CursorPageRequest(null)),
+            ListCache.InvalidateAsync(
+                _redisService,
+                $"{CollectionName.Account}:following",
+                $"account:{followerId}",
                 cancellationToken),
-            _redisService.RemoveAsync(
-                CacheKey.List($"{CollectionName.Account}:follower", $"account:{followingId}", new CursorPageRequest(null)),
+            ListCache.InvalidateAsync(
+                _redisService,
+                $"{CollectionName.Account}:follower",
+                $"account:{followingId}",
                 cancellationToken));
 
         return Result.Ok();

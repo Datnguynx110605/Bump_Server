@@ -30,7 +30,7 @@ internal sealed class CreateReportHandler
     {
         var identity = _identityService.GetAccountId();
         if(identity is null)
-            return Result.Fail("Unauthorized");
+            return Result.Fail(AppError.Unauthorized("Unauthorized"));
 
         var reportResult = Report.Create(
             identity.Value,

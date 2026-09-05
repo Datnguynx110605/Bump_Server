@@ -48,7 +48,7 @@ public sealed class ShopRateService : IShopRateService
             .FirstOrDefaultAsync(cancellationToken);
 
         if(shop is null)
-            return Result.Fail("Shop not found");
+            return Result.Fail(AppError.NotFound("Shop not found"));
 
         var result = shop.ChangeRate(rateResult.Value);
         if(!result.IsSuccess)
@@ -71,11 +71,15 @@ public sealed class ShopRateService : IShopRateService
             _redisService.RemoveAsync(
                 CacheKey.Shop(shop.Id),
                 cancellationToken),
-            _redisService.RemoveAsync(
-                CacheKey.List(CollectionName.Shop, filterSignature: null, new CursorPageRequest(null)),
+            ListCache.InvalidateAsync(
+                _redisService,
+                CollectionName.Shop,
+                filterSignature: null,
                 cancellationToken),
-            _redisService.RemoveAsync(
-                CacheKey.List(CollectionName.Shop, "mostRated", new CursorPageRequest(null)),
+            ListCache.InvalidateAsync(
+                _redisService,
+                CollectionName.Shop,
+                "mostRated",
                 cancellationToken));
 
         return Result.Ok();

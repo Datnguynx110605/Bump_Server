@@ -23,7 +23,7 @@ internal sealed class FollowHandler
     {
         var identity = _identityService.GetAccountId();
         if(identity is null)
-            return Result.Fail("Unauthorized");
+            return Result.Fail(AppError.Unauthorized("Unauthorized"));
 
         if(identity.Value == request.followingId)
             return Result.Fail("Cannot follow yourself");

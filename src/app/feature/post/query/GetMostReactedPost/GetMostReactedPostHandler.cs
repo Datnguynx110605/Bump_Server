@@ -33,10 +33,21 @@ internal sealed class GetMostReactedPostHandler
     {
         var identity = _identityService.GetAccountId();
         if(identity is null)
-            return Result.Fail("Unauthorized");
+            return Result.Fail(AppError.Unauthorized("Unauthorized"));
 
         string filterSignature = "mostReacted";
-        string cacheKey = CacheKey.List(CollectionName.Post, filterSignature, request.pageRequest);
+
+        var version = await ListCache.VersionAsync(
+            _redisService,
+            CollectionName.Post,
+            filterSignature,
+            cancellationToken);
+
+        string cacheKey = CacheKey.List(
+            CollectionName.Post,
+            filterSignature,
+            request.pageRequest,
+            version);
 
         var cachedPage = await _redisService.GetAsync<CursorPageResult<PostSummaryDto>>(
             cacheKey,

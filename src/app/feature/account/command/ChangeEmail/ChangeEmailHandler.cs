@@ -30,13 +30,13 @@ internal sealed class ChangeEmailHandler
     {
         var identity = _identityService.GetAccountId();
         if(identity is null)
-            return Result.Fail("Unauthorized");
+            return Result.Fail(AppError.Unauthorized("Unauthorized"));
 
         var rawEmail = await _registrationService.ExtractEmailAsync(
             request.registrationToken,
             cancellationToken);
         if(rawEmail is null)
-            return Result.Fail("Unauthenticated");
+            return Result.Fail(AppError.Unauthorized("Unauthenticated"));
 
         var emailResult = Email.Create(rawEmail);
         if(!emailResult.IsSuccess)
@@ -56,13 +56,13 @@ internal sealed class ChangeEmailHandler
             .FirstOrDefaultAsync(cancellationToken);
 
         if(account is null)
-            return Result.Fail("Unauthenticated");
+            return Result.Fail(AppError.Unauthorized("Unauthenticated"));
 
         Email oldEmail = account.Email;
 
         var result = account.ChangeEmail(email);
         if(!result.IsSuccess)
-            return Result.Fail(result.Error);
+            return Result.Fail(AppError.Conflict(result.Error!));
 
         var filter = Builders<Account>.Filter.And(
             Builders<Account>.Filter.Eq(x => x.Id, account.Id),

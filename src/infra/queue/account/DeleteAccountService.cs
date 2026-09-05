@@ -35,7 +35,7 @@ public sealed class DeleteAccountService : IDeleteAccountService
             .FirstOrDefaultAsync(cancellationToken);
 
         if(account is null)
-            return Result.Fail("Account not found");
+            return Result.Fail(AppError.NotFound("Account not found"));
 
         foreach(var avatar in account.Avatars)
         {
@@ -173,34 +173,46 @@ public sealed class DeleteAccountService : IDeleteAccountService
         var cacheInvalidations = new List<Task>
         {
             _redisService.RemoveAsync(CacheKey.Account(account.Id), cancellationToken),
-            _redisService.RemoveAsync(
-                CacheKey.List(CollectionName.Comment, $"account:{account.Id}", new CursorPageRequest(null)),
+            ListCache.InvalidateAsync(
+                _redisService,
+                CollectionName.Comment,
+                $"account:{account.Id}",
                 cancellationToken),
-            _redisService.RemoveAsync(
-                CacheKey.List(CollectionName.Post, $"account:{account.Id}", new CursorPageRequest(null)),
+            ListCache.InvalidateAsync(
+                _redisService,
+                CollectionName.Post,
+                $"account:{account.Id}",
                 cancellationToken),
-            _redisService.RemoveAsync(
-                CacheKey.List($"{CollectionName.Account}:follower", $"account:{account.Id}", new CursorPageRequest(null)),
+            ListCache.InvalidateAsync(
+                _redisService,
+                $"{CollectionName.Account}:follower",
+                $"account:{account.Id}",
                 cancellationToken),
-            _redisService.RemoveAsync(
-                CacheKey.List($"{CollectionName.Account}:following", $"account:{account.Id}", new CursorPageRequest(null)),
+            ListCache.InvalidateAsync(
+                _redisService,
+                $"{CollectionName.Account}:following",
+                $"account:{account.Id}",
                 cancellationToken)
         };
 
         foreach(var post in reactedPosts)
         {
             cacheInvalidations.Add(_redisService.RemoveAsync(CacheKey.Post(post.Id), cancellationToken));
-            cacheInvalidations.Add(_redisService.RemoveAsync(
-                CacheKey.List($"{CollectionName.Post}:reaction", $"post:{post.Id}", new CursorPageRequest(null)),
-                cancellationToken));
+            cacheInvalidations.Add(ListCache.InvalidateAsync(
+    _redisService,
+    $"{CollectionName.Post}:reaction",
+    $"post:{post.Id}",
+    cancellationToken));
         }
 
         foreach(var comment in reactedComments)
         {
             cacheInvalidations.Add(_redisService.RemoveAsync(CacheKey.Comment(comment.Id), cancellationToken));
-            cacheInvalidations.Add(_redisService.RemoveAsync(
-                CacheKey.List($"{CollectionName.Comment}:reaction", $"comment:{comment.Id}", new CursorPageRequest(null)),
-                cancellationToken));
+            cacheInvalidations.Add(ListCache.InvalidateAsync(
+    _redisService,
+    $"{CollectionName.Comment}:reaction",
+    $"comment:{comment.Id}",
+    cancellationToken));
         }
 
         foreach(var comment in ownerComments)
@@ -216,25 +228,31 @@ public sealed class DeleteAccountService : IDeleteAccountService
         foreach(var group in commentCountByPost)
         {
             cacheInvalidations.Add(_redisService.RemoveAsync(CacheKey.Post(group.Key), cancellationToken));
-            cacheInvalidations.Add(_redisService.RemoveAsync(
-                CacheKey.List(CollectionName.Comment, $"post:{group.Key}", new CursorPageRequest(null)),
-                cancellationToken));
+            cacheInvalidations.Add(ListCache.InvalidateAsync(
+    _redisService,
+    CollectionName.Comment,
+    $"post:{group.Key}",
+    cancellationToken));
         }
 
         foreach(var follower in followerAccounts)
         {
             cacheInvalidations.Add(_redisService.RemoveAsync(CacheKey.Account(follower.Id), cancellationToken));
-            cacheInvalidations.Add(_redisService.RemoveAsync(
-                CacheKey.List($"{CollectionName.Account}:follower", $"account:{follower.Id}", new CursorPageRequest(null)),
-                cancellationToken));
+            cacheInvalidations.Add(ListCache.InvalidateAsync(
+    _redisService,
+    $"{CollectionName.Account}:follower",
+    $"account:{follower.Id}",
+    cancellationToken));
         }
 
         foreach(var following in followingAccounts)
         {
             cacheInvalidations.Add(_redisService.RemoveAsync(CacheKey.Account(following.Id), cancellationToken));
-            cacheInvalidations.Add(_redisService.RemoveAsync(
-                CacheKey.List($"{CollectionName.Account}:following", $"account:{following.Id}", new CursorPageRequest(null)),
-                cancellationToken));
+            cacheInvalidations.Add(ListCache.InvalidateAsync(
+    _redisService,
+    $"{CollectionName.Account}:following",
+    $"account:{following.Id}",
+    cancellationToken));
         }
 
         await Task.WhenAll(cacheInvalidations);

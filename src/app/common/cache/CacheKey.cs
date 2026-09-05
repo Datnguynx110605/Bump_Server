@@ -46,8 +46,20 @@ public sealed record CacheKey
     }
 
     public static TimeSpan DefaultListTTL = TimeSpan.FromMinutes(2);
-    public static string List(string entity, string? filterSignature, CursorPageRequest request)
+
+    // The version suffix is what makes invalidation complete. Deleting keys directly only
+    // ever cleared cursor=first/pageSize=20, leaving every other page and page size stale
+    // until the TTL; bumping the version retires all of them at once.
+    public static string List(string entity, string? filterSignature, CursorPageRequest request, long version)
     {
-        return $"list:v1:{entity}:{filterSignature ?? "all"}:{request.Cursor ?? "first"}:{request.PageSize}";
+        return $"list:v1:{entity}:{filterSignature ?? "all"}:{request.Cursor ?? "first"}:{request.PageSize}:v{version}";
+    }
+
+    // Must stay comfortably above DefaultListTTL so a counter can never expire back to 0
+    // while a page key stamped with the current version is still cached.
+    public static TimeSpan ListVersionTTL = TimeSpan.FromDays(1);
+    public static string ListVersion(string entity, string? filterSignature)
+    {
+        return $"list-version:{entity}:{filterSignature ?? "all"}";
     }
 }

@@ -31,10 +31,9 @@ internal sealed class GetMyCommentHistoryHandler
     {
         var identity = _identityService.GetAccountId();
         if(identity is null)
-            return Result.Fail("Unauthorized");
+            return Result.Fail(AppError.Unauthorized("Unauthorized"));
 
         string filterSignature = $"account:{identity.Value}";
-        string cacheKey = CacheKey.List(CollectionName.Comment, filterSignature, request.pageRequest);
 
         var commentCollection = _dbContext.GetCollection<Comment>(CollectionName.Comment);
 
@@ -49,7 +48,8 @@ internal sealed class GetMyCommentHistoryHandler
             filter,
             CommentProjection.Summary,
             request.pageRequest,
-            cacheKey,
+            CollectionName.Comment,
+            filterSignature,
             cancellationToken);
 
         return Result.Ok(dtoPage);

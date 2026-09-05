@@ -32,7 +32,7 @@ internal sealed class SendEmailForVerifyHandler
             .AnyAsync(cancellationToken);
         
         if(!checkEmail)
-            return Result.Fail("Email not found");
+            return Result.Fail(AppError.NotFound("Email not found"));
 
         var otp = await _otpService.GenerateAsync(
             request.email.Value, 

@@ -23,21 +23,37 @@ public sealed class R2Service : IR2Service
     }
 
     public async Task<string> UploadAsync(
-        Stream content, 
-        string fileName, 
+        Stream content,
+        string fileName,
         CancellationToken cancellationToken)
     {
-        var key = $"{_folderName}/{Guid.NewGuid()}{Path.GetExtension(fileName)}";
+        var extension = Path.GetExtension(fileName);
+        var key = $"{_folderName}/{Guid.NewGuid()}{extension}";
 
         await _s3Client.PutObjectAsync(new PutObjectRequest
         {
             BucketName = _bucketName,
             Key = key,
             InputStream = content,
+            ContentType = ResolveContentType(extension),
             UseChunkEncoding = false
         }, cancellationToken);
 
         return $"{_publicUrl}/{key}";
+    }
+
+    // Anything outside the allowlist is stored as a download rather than as a renderable
+    // type, so an object that slips past the API-layer check still cannot execute in a
+    // browser served from the public bucket domain.
+    private static string ResolveContentType(string extension)
+    {
+        return extension.ToLowerInvariant() switch
+        {
+            ".jpg" or ".jpeg" => "image/jpeg",
+            ".png" => "image/png",
+            ".webp" => "image/webp",
+            _ => "application/octet-stream"
+        };
     }
 
     public async Task DeleteAsync(

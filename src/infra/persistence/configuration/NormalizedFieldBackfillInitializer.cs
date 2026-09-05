@@ -1,28 +1,39 @@
 using app;
 using domain;
 using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
 using MongoDB.Driver;
 
 namespace infra;
 
-internal sealed class NormalizedFieldBackfillInitializer : IHostedService
+// One-shot migration. Runs as a BackgroundService rather than IHostedService.StartAsync
+// so a full scan of shop and post never blocks the app from serving traffic.
+internal sealed class NormalizedFieldBackfillInitializer : BackgroundService
 {
     private readonly IMongoDbContext _dbContext;
+    private readonly ILogger<NormalizedFieldBackfillInitializer> _logger;
 
-    public NormalizedFieldBackfillInitializer(IMongoDbContext dbContext)
+    public NormalizedFieldBackfillInitializer(
+        IMongoDbContext dbContext,
+        ILogger<NormalizedFieldBackfillInitializer> logger)
     {
         _dbContext = dbContext;
+        _logger = logger;
     }
 
-    public async Task StartAsync(CancellationToken cancellationToken)
+    protected override async Task ExecuteAsync(CancellationToken stoppingToken)
     {
-        await BackfillShopsAsync(cancellationToken);
-        await BackfillPostsAsync(cancellationToken);
-    }
+        try
+        {
+            await BackfillShopsAsync(stoppingToken);
+            await BackfillPostsAsync(stoppingToken);
 
-    public Task StopAsync(CancellationToken cancellationToken)
-    {
-        return Task.CompletedTask;
+            _logger.LogInformation("Normalized field backfill completed");
+        }
+        catch(Exception ex) when (!stoppingToken.IsCancellationRequested)
+        {
+            _logger.LogError(ex, "Normalized field backfill failed");
+        }
     }
 
     private async Task BackfillShopsAsync(CancellationToken cancellationToken)

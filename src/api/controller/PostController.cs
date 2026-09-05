@@ -34,6 +34,13 @@ public sealed class PostController : ControllerBase
         if(!rateResult.IsSuccess)
             return Result.Fail<PostDto>(rateResult.Error!).ToActionResult();
 
+        if(images is not null)
+        {
+            var validationResult = ImageUpload.Validate(images);
+            if(validationResult.IsFailed)
+                return validationResult.ToActionResult();
+        }
+
         var imageStreams = images?
             .Select(x => (x.OpenReadStream(), x.FileName))
             .ToList();

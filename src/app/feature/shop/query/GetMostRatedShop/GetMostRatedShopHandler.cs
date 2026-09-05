@@ -29,7 +29,18 @@ internal sealed class GetMostRatedShopHandler
         CancellationToken cancellationToken)
     {
         string filterSignature = "mostRated";
-        string cacheKey = CacheKey.List(CollectionName.Shop, filterSignature, request.pageRequest);
+
+        var version = await ListCache.VersionAsync(
+            _redisService,
+            CollectionName.Shop,
+            filterSignature,
+            cancellationToken);
+
+        string cacheKey = CacheKey.List(
+            CollectionName.Shop,
+            filterSignature,
+            request.pageRequest,
+            version);
 
         var cachedPage = await _redisService.GetAsync<CursorPageResult<ShopSummaryDto>>(
             cacheKey,

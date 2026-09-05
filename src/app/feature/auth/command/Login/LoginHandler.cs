@@ -39,12 +39,12 @@ internal sealed class LoginHandler
             .FirstOrDefaultAsync(cancellationToken);
 
         if(account is null)
-            return Result.Fail("Invalid credentials");
+            return Result.Fail(AppError.Unauthorized("Invalid credentials"));
 
         if(!_bcryptService.VerifyPassword(
             request.password, 
             account.Password))
-            return Result.Fail("Invalid credentials");
+            return Result.Fail(AppError.Unauthorized("Invalid credentials"));
 
         var accessToken = _jwtService.GenerateAccessToken(
             account.Id, 

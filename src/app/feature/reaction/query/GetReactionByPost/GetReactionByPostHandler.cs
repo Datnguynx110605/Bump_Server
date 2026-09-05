@@ -27,7 +27,6 @@ internal sealed class GetReactionByPostHandler
         CancellationToken cancellationToken)
     {
         string filterSignature = $"post:{request.postId}";
-        string cacheKey = CacheKey.List($"{CollectionName.Post}:reaction", filterSignature, request.pageRequest);
 
         var postCollection = _dbContext.GetCollection<Post>(CollectionName.Post);
 
@@ -44,7 +43,8 @@ internal sealed class GetReactionByPostHandler
             x => x.ReactedAt,
             x => x.AccountId,
             request.pageRequest,
-            cacheKey,
+            $"{CollectionName.Post}:reaction",
+            filterSignature,
             cancellationToken);
 
         return Result.Ok(dtoPage);

@@ -50,7 +50,7 @@ public sealed class RabbitMQService : IRabbitMQService
         Func<T, CancellationToken, Task> onMessage,
         CancellationToken cancellationToken)
     {
-        var channel = await _connection.CreateChannelAsync(cancellationToken: cancellationToken);
+        await using var channel = await _connection.CreateChannelAsync(cancellationToken: cancellationToken);
         await channel.QueueDeclareAsync(
             queue: queueName,
             durable: true,

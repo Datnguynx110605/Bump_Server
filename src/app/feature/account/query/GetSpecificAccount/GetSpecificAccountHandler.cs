@@ -43,7 +43,7 @@ internal sealed class GetSpecificAccountHandler
             .FirstOrDefaultAsync(cancellationToken);
 
         if(dbAccount is null)
-            return Result.Fail("Account not found");
+            return Result.Fail(AppError.NotFound("Account not found"));
 
         var dto = _mapper.Map<AccountSummaryDto>(dbAccount);
 

@@ -31,10 +31,9 @@ internal sealed class GetMyFollowerHandler
     {
         var identity = _identityService.GetAccountId();
         if(identity is null)
-            return Result.Fail("Unauthorized");
+            return Result.Fail(AppError.Unauthorized("Unauthorized"));
 
         string filterSignature = $"account:{identity.Value}";
-        string cacheKey = CacheKey.List($"{CollectionName.Account}:follower", filterSignature, request.pageRequest);
 
         var accountCollection = _dbContext.GetCollection<Account>(CollectionName.Account);
 
@@ -51,7 +50,8 @@ internal sealed class GetMyFollowerHandler
             x => x.FollowedAt,
             x => x.AccountId,
             request.pageRequest,
-            cacheKey,
+            $"{CollectionName.Account}:follower",
+            filterSignature,
             cancellationToken);
 
         return Result.Ok(dtoPage);

@@ -30,7 +30,7 @@ internal sealed class DeleteAccountHandler
     {
         var identity = _identityService.GetAccountId();
         if(identity is null)
-            return Result.Fail("Unauthorized");
+            return Result.Fail(AppError.Unauthorized("Unauthorized"));
 
         var accountCollection = _dbContext.GetCollection<Account>(CollectionName.Account);
 
@@ -43,7 +43,7 @@ internal sealed class DeleteAccountHandler
             .FirstOrDefaultAsync(cancellationToken);
 
         if(account is null)
-            return Result.Fail("Unauthenticated");
+            return Result.Fail(AppError.Unauthorized("Unauthenticated"));
 
         var result = account.DeleteAccount();
         if(!result.IsSuccess)

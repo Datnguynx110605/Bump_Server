@@ -13,10 +13,23 @@ public static class CachedCursorPaginator
         FilterDefinition<TEntity> filter,
         ProjectionDefinition<TEntity>? projection,
         CursorPageRequest request,
-        string cacheKey,
+        string entity,
+        string? filterSignature,
         CancellationToken cancellationToken)
         where TEntity : BaseEntity
     {
+        var version = await ListCache.VersionAsync(
+            redisService,
+            entity,
+            filterSignature,
+            cancellationToken);
+
+        var cacheKey = CacheKey.List(
+            entity,
+            filterSignature,
+            request,
+            version);
+
         var cachedPage = await redisService.GetAsync<CursorPageResult<TDto>>(
             cacheKey,
             cancellationToken);

@@ -27,7 +27,6 @@ internal sealed class GetReactionByCommentHandler
         CancellationToken cancellationToken)
     {
         string filterSignature = $"comment:{request.commentId}";
-        string cacheKey = CacheKey.List($"{CollectionName.Comment}:reaction", filterSignature, request.pageRequest);
 
         var commentCollection = _dbContext.GetCollection<Comment>(CollectionName.Comment);
 
@@ -44,7 +43,8 @@ internal sealed class GetReactionByCommentHandler
             x => x.ReactedAt,
             x => x.AccountId,
             request.pageRequest,
-            cacheKey,
+            $"{CollectionName.Comment}:reaction",
+            filterSignature,
             cancellationToken);
 
         return Result.Ok(dtoPage);

@@ -1,21 +1,15 @@
+using app;
+using FluentResults;
+
 namespace api;
 
 internal static class ResultStatusMapper
 {
-    public static int Resolve(string message)
+    public static int Resolve(IError error)
     {
-        string value = message.ToLowerInvariant();
-
-        if(value.Contains("not found"))
-            return StatusCodes.Status404NotFound;
-
-        if(value.Contains("already") || value.Contains("must be different"))
-            return StatusCodes.Status409Conflict;
-
-        if(value.Contains("unauthoriz") || value.Contains("unauthentic") || value.Contains("credentials") || value.Contains("revoked") || value.Contains("token"))
-            return StatusCodes.Status401Unauthorized;
-
-        return StatusCodes.Status400BadRequest;
+        return error.Metadata.TryGetValue(AppError.StatusKey, out var status) && status is int statusCode
+            ? statusCode
+            : StatusCodes.Status400BadRequest;
     }
 
     public static string Title(int statusCode)

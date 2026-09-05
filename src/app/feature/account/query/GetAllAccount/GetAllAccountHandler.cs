@@ -26,7 +26,6 @@ internal sealed class GetAllAccountHandler
         GetAllAccountQuery request,
         CancellationToken cancellationToken)
     {
-        string cacheKey = CacheKey.List(CollectionName.Account, filterSignature: null, request.pageRequest);
 
         var accountCollection = _dbContext.GetCollection<Account>(CollectionName.Account);
 
@@ -39,7 +38,8 @@ internal sealed class GetAllAccountHandler
             filter,
             AccountProjection.Summary,
             request.pageRequest,
-            cacheKey,
+            CollectionName.Account,
+            filterSignature: null,
             cancellationToken);
 
         return Result.Ok(dtoPage);

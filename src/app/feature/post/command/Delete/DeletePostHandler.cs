@@ -33,7 +33,7 @@ internal sealed class DeletePostHandler
     {
         var identity = _identityService.GetAccountId();
         if(identity is null)
-            return Result.Fail("Unauthorized");
+            return Result.Fail(AppError.Unauthorized("Unauthorized"));
 
         var postCollection = _dbContext.GetCollection<Post>(CollectionName.Post);
 
@@ -48,7 +48,7 @@ internal sealed class DeletePostHandler
             .FirstOrDefaultAsync(cancellationToken);
 
         if(post is null)
-            return Result.Fail("Post not found");
+            return Result.Fail(AppError.NotFound("Post not found"));
 
         var result = post.DeletePost();
         if(!result.IsSuccess)
@@ -81,17 +81,25 @@ internal sealed class DeletePostHandler
             _redisService.RemoveAsync(
                 cacheKey,
                 cancellationToken),
-            _redisService.RemoveAsync(
-                CacheKey.List(CollectionName.Post, filterSignature: null, new CursorPageRequest(null)),
+            ListCache.InvalidateAsync(
+                _redisService,
+                CollectionName.Post,
+                filterSignature: null,
                 cancellationToken),
-            _redisService.RemoveAsync(
-                CacheKey.List(CollectionName.Post, $"account:{identity.Value}", new CursorPageRequest(null)),
+            ListCache.InvalidateAsync(
+                _redisService,
+                CollectionName.Post,
+                $"account:{identity.Value}",
                 cancellationToken),
-            _redisService.RemoveAsync(
-                CacheKey.List(CollectionName.Post, $"shop:{post.ShopId}", new CursorPageRequest(null)),
+            ListCache.InvalidateAsync(
+                _redisService,
+                CollectionName.Post,
+                $"shop:{post.ShopId}",
                 cancellationToken),
-            _redisService.RemoveAsync(
-                CacheKey.List(CollectionName.Post, "mostReacted", new CursorPageRequest(null)),
+            ListCache.InvalidateAsync(
+                _redisService,
+                CollectionName.Post,
+                "mostReacted",
                 cancellationToken));
 
         var recalculateMessage = new RecalculateShopRateMessage(
