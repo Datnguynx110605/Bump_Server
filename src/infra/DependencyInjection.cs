@@ -103,6 +103,7 @@ public static class DependencyInjection
 
         services.AddHostedService<IndexInitializer>();
         services.AddHostedService<NormalizedFieldBackfillInitializer>();
+        services.AddHostedService<AdminSeeder>();
 
         services.AddQueueConsumer<FollowMessage>(
             QueueName.Follow,

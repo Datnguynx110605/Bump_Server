@@ -98,6 +98,16 @@ public sealed class Account : BaseEntity
         return Update();
     }
 
+    public DomainResult PromoteToAdmin()
+    {
+        if(Role == Role.Admin)
+            return DomainResult.Failure("Account is already an admin");
+
+        Role = Role.Admin;
+
+        return Update();
+    }
+
     public DomainResult DeleteAccount()
     {
         return Delete();
