@@ -141,13 +141,17 @@ internal sealed class SoftDeletePurgeHost : BackgroundService
             if(ids.Count == 0)
                 return deleted;
 
+            // The filter is repeated in the delete, not just the ids: a row recovered
+            // between the find and the delete must survive, and this is a hard delete.
             var result = await collection.DeleteManyAsync(
-                Builders<T>.Filter.In(x => x.Id, ids),
+                Builders<T>.Filter.And(filter, Builders<T>.Filter.In(x => x.Id, ids)),
                 cancellationToken);
 
             deleted += result.DeletedCount;
 
-            if(ids.Count < BatchSize)
+            // A full batch that deleted nothing means the rows stopped matching; stop
+            // rather than re-reading the same page forever.
+            if(ids.Count < BatchSize || result.DeletedCount == 0)
                 return deleted;
 
             await Task.Delay(BatchDelay, cancellationToken);

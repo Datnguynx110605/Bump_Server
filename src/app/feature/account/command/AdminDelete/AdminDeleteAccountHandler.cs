@@ -6,7 +6,7 @@ using MongoDB.Driver;
 namespace app;
 
 // Mirrors DeleteAccountHandler for an arbitrary account. The delete-account queue
-// message is republished so DeleteAccountService still runs the full cascade —
+// message is republished so AccountService still runs the full cascade —
 // posts, comments, reactions, follow edges and saved references.
 internal sealed class AdminDeleteAccountHandler
     : IRequestHandler<AdminDeleteAccountCommand, Result>

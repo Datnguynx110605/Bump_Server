@@ -13,6 +13,8 @@ internal sealed class CreatePostValidator
         RuleFor(x => x.shopAddress)
             .NotEmpty().WithMessage("ShopAddress is required")
             .MaximumLength(200).WithMessage("ShopAddress is too long, maximum length is 200 characters");
+        RuleFor(x => x.caption)
+            .MaximumLength(2000).WithMessage("Caption is too long, maximum length is 2000 characters");
         RuleFor(x => x.rate.Value)
             .InclusiveBetween(1, 5).WithMessage("Rate must be between 1 and 5");
         RuleForEach(x => x.images).ChildRules(image =>

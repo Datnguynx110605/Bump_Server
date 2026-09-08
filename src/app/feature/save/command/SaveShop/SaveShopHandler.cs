@@ -28,7 +28,8 @@ internal sealed class SaveShopHandler
         var message = new SaveMessage(
             Guid.NewGuid(),
             identity.Value,
-            request.shopId);
+            request.shopId,
+            IsUndo : false);
 
         await _rabbitMQService.PublishAsync(
             QueueName.SaveShop,

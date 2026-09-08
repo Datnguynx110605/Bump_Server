@@ -8,7 +8,9 @@ internal sealed class LoginValidator
     public LoginValidator()
     {
         RuleFor(x => x.email.Value)
-            .NotEmpty().WithMessage("Email is required");
+            .NotEmpty().WithMessage("Email is required")
+            .EmailAddress().WithMessage("Email is invalid")
+            .MaximumLength(200).WithMessage("Email is invalid");
         RuleFor(x => x.password)
             .NotEmpty().WithMessage("Password is required");
     }

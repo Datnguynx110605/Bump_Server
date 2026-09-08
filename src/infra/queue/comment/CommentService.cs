@@ -9,12 +9,15 @@ public sealed class CommentService : ICommentService
 {
     private readonly IMongoDbContext _dbContext;
     private readonly INotificationService _notificationService;
+    private readonly IR2Service _r2Service;
     public CommentService(
         IMongoDbContext dbContext,
-        INotificationService notificationService)
+        INotificationService notificationService,
+        IR2Service r2Service)
     {
         _dbContext = dbContext;
         _notificationService = notificationService;
+        _r2Service = r2Service;
     }
 
     public async Task<Result> ProcessCreateCommentAsync(
@@ -74,5 +77,36 @@ public sealed class CommentService : ICommentService
             accountId,
             account.Avatars.LastOrDefault(),
             cancellationToken);
+    }
+
+    // Only removes the comment's images from R2. The soft delete, the parent post's
+    // CommentAmount decrement and the cache invalidations stay with whoever deleted the
+    // comment, because a caller that returns before those land would serve stale reads;
+    // object storage is the one side effect nobody is waiting on.
+    public async Task<Result> ProcessAfterDeleteAsync(
+        Guid commentId,
+        CancellationToken cancellationToken)
+    {
+        var commentCollection = _dbContext.GetCollection<Comment>(CollectionName.Comment);
+
+        var projection = Builders<Comment>.Projection
+            .Include(x => x.Images);
+
+        var comment = await commentCollection
+            .Find(x => x.Id == commentId && x.IsDeleted)
+            .Project<Comment>(projection)
+            .FirstOrDefaultAsync(cancellationToken);
+
+        if(comment is null)
+            return Result.Fail(AppError.NotFound("Comment not found"));
+
+        foreach(var image in comment.Images)
+        {
+            await _r2Service.DeleteAsync(
+                image.Url,
+                cancellationToken);
+        }
+
+        return Result.Ok();
     }
 }

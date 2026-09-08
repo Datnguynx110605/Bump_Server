@@ -28,7 +28,8 @@ internal sealed class SavePostHandler
         var message = new SaveMessage(
             Guid.NewGuid(),
             identity.Value,
-            request.postId);
+            request.postId,
+            IsUndo : false);
 
         await _rabbitMQService.PublishAsync(
             QueueName.SavePost,

@@ -74,6 +74,7 @@ Indexes are declared in `src/infra/persistence/configuration/IndexConfiguration.
 - **comment** — `(PostId, IsDeleted, CreatedAt desc, Id desc)`; `(AccountId, IsDeleted, CreatedAt desc, Id desc)`; `(IsDeleted, CreatedAt desc, Id desc)` backing the unfiltered administrator listing; multikey `Reactions.AccountId`; `DeletedAt` partial on `IsDeleted: true`
 - **shop** — unique `(Name, Address)` partial on `IsDeleted: false`; by `Name`, `Address`, `NameNormalized`, `AddressNormalized`, `IsDeleted`, `Rate.Value desc`; `DeletedAt` partial on `IsDeleted: true`
 - **report** — by `IsDeleted`, `PostId`, `CommentId`, `AccountId`, `ReporterId`
+- **notification** — `(ToAccountId, IsDeleted, CreatedAt desc, Id desc)`, backing both the recipient's listing and the per-account delete in `AccountService`
 - **refreshtoken** — unique `Token`; **TTL index on `ExpiryDate` with `ExpireAfter = TimeSpan.Zero`**; by `IsDeleted`; `IsRevoked` partial on `IsRevoked: true`
 
 The four `DeletedAt` indexes and the `IsRevoked` index exist only to back the retention sweep; the
@@ -98,24 +99,35 @@ purged in batches of 500 ids with a 200 ms pause between batches, so a large bac
 one long write burst. A sweep resolves its own DI scope, and failures are logged without stopping
 the loop.
 
-R2 objects are removed at soft-delete time — by the delete handlers for a post's or comment's own
-images, and by `DeleteAccountService` for avatars and for the images of the posts and comments the
-cascade takes down — so the sweep itself is pure Mongo work.
+R2 objects are removed at soft-delete time. Post and comment images are never deleted inside the
+request: `PostService` owns post images and `CommentService.ProcessAfterDeleteAsync` owns
+comment images, and
+every path — the two self-service handlers, the two administrator handlers, the account cascade and
+`PostService` itself for the comments it takes down — reaches them by publishing to
+`delete-post` and `delete-comment`. **Avatars are the exception and are still deleted
+inline**, by `RemoveAvatarHandler` in the request and by `AccountService` in the cascade; both
+are bounded by one account's avatar count, so neither was moved. Either way the sweep itself is pure
+Mongo work.
 
 Cascade soft-deletes go through the driver rather than `BaseEntity.Delete`, so each one has to
 stamp `DeletedAt` itself or the row would never expire. Rows written before that was true have
 `IsDeleted: true` with no `DeletedAt`; every sweep stamps those first, which starts their 30-day
 window at the sweep that finds them rather than purging them immediately.
 
-Reports and notifications pointing at a purged **post or comment** are left behind, which the sweep
-does not make worse: they already dangle for the 30 days the row spends soft-deleted. Notifications
-addressed to a purged **account** are different — once the account row is gone nothing reads them
-and nothing removes them, so `notification` grows by that account's history for good. Known gap; the
-collection has no retention of its own.
+Notifications addressed to a deleted account are **hard-deleted immediately** by
+`AccountService`, not left for the sweep: once the account is soft-deleted nothing can read
+its notifications again, and the collection has no retention of its own. That delete is permanent
+even if the account is later recovered. Notifications where the deleted account is the *actor*
+survive in other people's inboxes, carrying an `ActorAccountId` that eventually resolves to nothing.
 
-`DeleteAccountService` hands each of the account's posts to `DeletePostService`, the same worker the
-direct delete path uses, so comments other accounts left on those posts are soft-deleted with the
-post instead of outliving it as live rows.
+Reports, and notifications pointing at a purged **post or comment**, are left behind — the sweep
+does not make that worse, since they already dangle for the 30 days the row spends soft-deleted.
+
+`AccountService` publishes one `delete-post` message per post and one `delete-comment` message
+per comment instead of doing that work inline. Two reasons: comments other accounts left on the
+account's posts are not covered by the cascade's own filter and would otherwise outlive the post as
+live rows, and an account's post and comment counts are unbounded — inline, one message's cost
+scales with them, and a failure near the end replays all of it.
 
 A purged shop leaves posts holding its `ShopId` and accounts holding it in `SaveShops`; nothing
 cascades on shop deletion, so those references already dangle for the 30 days the shop spends
@@ -173,12 +185,18 @@ One `IConnection` singleton built with `RequestedHeartbeat = 30s`,
 `.CreateConnectionAsync().GetAwaiter().GetResult()`, so the broker must be reachable at startup.
 
 14 durable, non-exclusive, non-auto-delete queues plus a `{queue}.dlq` for each. Consumers use
-`prefetchCount: 1` with manual ack. Each of the 14 `QueueConsumerHost<TMessage>` instances restarts
+`prefetchCount: 1` with manual ack. Each of the 10 `QueueConsumerHost<TMessage>` instances restarts
 its consume loop after a 5-second delay if it throws.
 
-Queues: `follow`, `unfollow`, `react-post`, `unreact-post`, `react-comment`, `unreact-comment`,
-`create-comment`, `recalculate-shop-rate`, `save-post`, `unsave-post`, `save-shop`, `unsave-shop`,
-`delete-account`, `delete-post`.
+Queues: `follow`, `react-post`, `react-comment`, `create-comment`, `recalculate-shop-rate`,
+`save-post`, `save-shop`, `delete-account`, `delete-post`, `delete-comment`.
+
+**Each inverse pair shares one queue.** Follow and unfollow, react and unreact, save and unsave all
+publish to the same queue with an `IsUndo` flag on the message, because a queue consumed by one
+consumer at `prefetchCount: 1` is FIFO. On separate queues they were consumed concurrently, so a
+rapid follow-then-unfollow could apply backwards: the unfollow matches nothing, fails, is logged and
+acked, and the follow then lands — leaving the user following someone they just unfollowed. Ordering
+only holds on the happy path; a retry republishes to the tail of the queue, behind newer messages.
 
 ### Cloudflare R2 — object storage
 
@@ -240,12 +258,12 @@ graph TB
 
     subgraph container["Railway service — mcr.microsoft.com/dotnet/aspnet:9.0<br/>USER $APP_UID · binds $PORT (8080 fallback)"]
         api["api.dll<br/>controllers + SignalR hub"]
-        hosted["18 hosted services<br/>14 queue consumers<br/>IndexInitializer<br/>NormalizedFieldBackfill<br/>AdminSeeder<br/>SoftDeletePurgeHost"]
+        hosted["14 hosted services<br/>10 queue consumers<br/>IndexInitializer<br/>NormalizedFieldBackfill<br/>AdminSeeder<br/>SoftDeletePurgeHost"]
     end
 
     mongo[("MongoDB<br/>7 collections")]
     redis[("Redis<br/>cache · OTP · idempotency<br/>SignalR backplane · DP keys")]
-    rabbit[["RabbitMQ<br/>14 queues + 14 DLQ"]]
+    rabbit[["RabbitMQ<br/>10 queues + 10 DLQ"]]
     r2[("Cloudflare R2<br/>S3 API")]
     resend["Resend<br/>api.resend.com"]
 
@@ -275,7 +293,7 @@ filesystem key ring would be discarded on every Railway deploy and never shared 
 a token issued before a deploy, or by another replica, would fail to unprotect with no error the
 caller could act on.
 
-The API and all 14 queue consumers run **in the same process**; there is no separate worker
+The API and all 10 queue consumers run **in the same process**; there is no separate worker
 deployment. Scaling the API therefore scales consumers too, and each replica competes for the same
 queues.
 
@@ -296,7 +314,7 @@ back to the `EXPOSE`d `8080` for a plain `docker run`:
 ENTRYPOINT ["sh", "-c", "exec dotnet api.dll --urls \"http://0.0.0.0:${PORT:-8080}\""]
 ```
 
-`exec` keeps `dotnet` as PID 1 so `SIGTERM` reaches the host and the 14 queue consumers shut down
+`exec` keeps `dotnet` as PID 1 so `SIGTERM` reaches the host and the 10 queue consumers shut down
 through their `stoppingToken` rather than being killed.
 
 The application also calls `app.UseHttpsRedirection()`. Because `UseForwardedHeaders` runs first and

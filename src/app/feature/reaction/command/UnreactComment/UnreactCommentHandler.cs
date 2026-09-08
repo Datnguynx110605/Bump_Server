@@ -28,10 +28,11 @@ internal sealed class UnreactCommentHandler
         var message = new ReactionMessage(
             Guid.NewGuid(), 
             identity.Value, 
-            request.commentId);
+            request.commentId,
+            IsUndo : true);
 
         await _rabbitMQService.PublishAsync(
-            QueueName.UnreactComment, 
+            QueueName.ReactComment, 
             message, 
             cancellationToken);
 

@@ -21,7 +21,7 @@ How the running components fit together and what happens at runtime. Layering ru
 ### `app` — use cases
 
 78 MediatR handlers under `src/app/feature/<area>/<command|query>/<Name>/`, each a
-`Command`/`Query` record + `Handler` + optional `Validator` (34 of 72 have one). Three pipeline
+`Command`/`Query` record + `Handler` + optional `Validator` (38 of 78 have one). Three pipeline
 behaviours run in registration order (`src/app/DependencyInjection.cs`):
 
 1. `LoggingBehavior` — logs request name, then success or the joined error messages.
@@ -47,8 +47,8 @@ wrappers, `CacheKey`, `ListCache`, `AppError`, `PostFeedEnricher`, `ReactionMemb
 | `BCryptService`, `OtpService`, `RegistrationService`, `CurrentIdentityService` | Hashing; 6-digit OTP with 10 min TTL and 3 attempts; Data-Protection-wrapped registration tokens with 10 min TTL; `accountId` claim reader. |
 | `NotificationService` | Persists a `Notification`, invalidates the recipient's list, pushes over SignalR, marks sent. |
 | `NotificationHub` | `[Authorize]` SignalR hub at `/hubs/notification`; empty body — identity comes from `AccountIdUserIdProvider`. |
-| 7 queue services | `FollowService`, `ReactionService`, `SaveService`, `CommentService`, `ShopRateService`, `DeleteAccountService`, `DeletePostService` — the actual work behind queued messages. |
-| `QueueConsumerHost<TMessage>` | One generic `BackgroundService`, registered 14 times, one per queue. |
+| 8 queue services | `FollowService`, `ReactPostService`, `ReactCommentService`, `SaveService`, `CommentService`, `ShopRateService`, `AccountService`, `PostService` — the actual work behind queued messages. A service is split when its halves write to different collections (reactions touch `post` and `comment`) and kept whole when they do not (`SaveService`'s four operations all write `account`). |
+| `QueueConsumerHost<TMessage>` | One generic `BackgroundService`, registered 10 times, one per queue. Each inverse pair (follow/unfollow, react/unreact, save/unsave) shares a queue and branches on the message's `IsUndo` flag, so the two operations cannot reorder. |
 | `IndexInitializer`, `NormalizedFieldBackfillInitializer`, `AdminSeeder` | `BackgroundService`s that build indexes, backfill normalized search fields and seed the administrator account without blocking startup. |
 | `SoftDeletePurgeHost` | `BackgroundService` on a `PeriodicTimer`; hard-deletes accounts, posts, comments and shops soft-deleted more than 30 days ago, plus revoked refresh tokens. |
 
@@ -72,7 +72,7 @@ graph TB
     subgraph infraLayer["infra"]
         svc["Services"]
         consumers["14 × QueueConsumerHost"]
-        qsvc["7 queue services"]
+        qsvc["8 queue services"]
     end
 
     mongo[("MongoDB")]
@@ -154,7 +154,7 @@ sequenceDiagram
     participant H as ReactPostHandler
     participant Q as RabbitMQService
     participant Host as QueueConsumerHost of ReactionMessage
-    participant S as ReactionService
+    participant S as ReactPostService
     participant M as MongoDB
     participant R as Redis
     participant N as NotificationService
@@ -288,14 +288,14 @@ in `DomainJsonOptions`) exists to flatten them for the Redis JSON payloads.
 |---|---|---|---|---|
 | MongoDB | out | MongoDB wire protocol | `IMongoClient` singleton → `DbContext` | All persistence |
 | Redis | out | RESP | `IConnectionMultiplexer` singleton → `RedisService` | Cache, OTP, registration tokens, idempotency, SignalR backplane |
-| RabbitMQ | out (publish) / in (consume) | AMQP 0-9-1 | `IConnection` singleton → `RabbitMQService` | 14 queues + 14 `.dlq` |
+| RabbitMQ | out (publish) / in (consume) | AMQP 0-9-1 | `IConnection` singleton → `RabbitMQService` | 10 queues + 10 `.dlq` |
 | Cloudflare R2 | out | S3 API over HTTPS | `IAmazonS3` singleton, `ForcePathStyle = true` | Avatars, post and comment images |
 | Resend | out | HTTPS REST | `AddHttpClient<IEmailService, EmailService>` | OTP and welcome emails |
 | SignalR clients | in/out | WebSocket | `MapHub<NotificationHub>("/hubs/notification")` | Live notification push |
 
-The 14 queues (`src/app/common/QueueName.cs`): `follow`, `unfollow`, `react-post`, `unreact-post`,
-`react-comment`, `unreact-comment`, `create-comment`, `recalculate-shop-rate`, `save-post`,
-`unsave-post`, `save-shop`, `unsave-shop`, `delete-account`, `delete-post`.
+The 10 queues (`src/app/common/QueueName.cs`): `follow`, `react-post`, `react-comment`,
+`create-comment`, `recalculate-shop-rate`, `save-post`, `save-shop`, `delete-account`,
+`delete-post`, `delete-comment`.
 
 SignalR authentication accepts the JWT from the `access_token` query string when the request path
 starts with `/hubs`, configured in `JwtBearerEvents.OnMessageReceived`

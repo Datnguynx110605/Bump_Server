@@ -9,5 +9,6 @@ public sealed record CommentProjection
         .Include(x => x.AccountId)
         .Include(x => x.Content)
         .Include(x => x.Images)
-        .Include(x => x.ReactionAmount);
+        .Include(x => x.ReactionAmount)
+        .Include(x => x.CreatedAt);
 }

@@ -2,18 +2,8 @@ using FluentResults;
 
 namespace app;
 
-public interface IReactionService
+public interface IReactCommentService
 {
-    Task<Result> ProcessReactPostAsync(
-        Guid accountId,
-        Guid postId,
-        CancellationToken cancellationToken);
-
-    Task<Result> ProcessUnreactPostAsync(
-        Guid accountId,
-        Guid postId,
-        CancellationToken cancellationToken);
-
     Task<Result> ProcessReactCommentAsync(
         Guid accountId,
         Guid commentId,

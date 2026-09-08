@@ -9,6 +9,7 @@ internal sealed class SendEmailForRegisterValidator
     {
         RuleFor(x => x.email.Value)
             .NotEmpty().WithMessage("Email is required")
-            .EmailAddress().WithMessage("Email is invalid");
+            .EmailAddress().WithMessage("Email is invalid")
+            .MaximumLength(200).WithMessage("Email is invalid");
     }
 }

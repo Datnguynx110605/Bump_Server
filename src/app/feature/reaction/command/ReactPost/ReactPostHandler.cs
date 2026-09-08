@@ -28,7 +28,8 @@ internal sealed class ReactPostHandler
         var message = new ReactionMessage(
             Guid.NewGuid(), 
             identity.Value, 
-            request.postId);
+            request.postId,
+            IsUndo : false);
 
         await _rabbitMQService.PublishAsync(
             QueueName.ReactPost, 

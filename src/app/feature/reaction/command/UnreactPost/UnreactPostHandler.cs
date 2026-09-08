@@ -28,10 +28,11 @@ internal sealed class UnreactPostHandler
         var message = new ReactionMessage(
             Guid.NewGuid(), 
             identity.Value, 
-            request.postId);
+            request.postId,
+            IsUndo : true);
 
         await _rabbitMQService.PublishAsync(
-            QueueName.UnreactPost, 
+            QueueName.ReactPost, 
             message, 
             cancellationToken);
 

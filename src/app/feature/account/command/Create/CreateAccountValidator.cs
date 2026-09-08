@@ -17,6 +17,8 @@ internal sealed class CreateAccountValidator
             .MaximumLength(2000).WithMessage("Bio is too long, maximum length is 2000 characters");
         RuleFor(x => x.name.Value)
             .NotEmpty().WithMessage("Name is required")
-            .MaximumLength(200).WithMessage("Name is too long, maximum length is 200 characters");
+            .MaximumLength(200).WithMessage("Name is too long, maximum length is 200 characters")
+            .Must(x => x is null || x.All(c => char.IsLower(c) || char.IsDigit(c)))
+                .WithMessage("Name must contain only lowercase letters and digits");
     }
 }

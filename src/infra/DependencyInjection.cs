@@ -84,8 +84,8 @@ public static class DependencyInjection
         services.AddScoped<IBcryptService, BCryptService>();
         services.AddScoped<ICommentService, CommentService>();
         services.AddScoped<ICurrentIdentityService, CurrentIdentityService>();
-        services.AddScoped<IDeleteAccountService, DeleteAccountService>();
-        services.AddScoped<IDeletePostService, DeletePostService>();
+        services.AddScoped<IAccountService, AccountService>();
+        services.AddScoped<IPostService, PostService>();
         services.AddHttpClient<IEmailService, EmailService>(
             client => client.Timeout = TimeSpan.FromSeconds(10));
         services.AddScoped<IFollowService, FollowService>();
@@ -95,7 +95,8 @@ public static class DependencyInjection
         services.AddScoped<IOtpService, OtpService>();
         services.AddScoped<IR2Service, R2Service>();
         services.AddScoped<IRabbitMQService, RabbitMQService>();
-        services.AddScoped<IReactionService, ReactionService>();
+        services.AddScoped<IReactCommentService, ReactCommentService>();
+        services.AddScoped<IReactPostService, ReactPostService>();
         services.AddScoped<IRedisService, RedisService>();
         services.AddScoped<IRegistrationService, RegistrationService>();
         services.AddScoped<ISaveService, SaveService>();
@@ -106,41 +107,35 @@ public static class DependencyInjection
         services.AddHostedService<AdminSeeder>();
         services.AddHostedService<SoftDeletePurgeHost>();
 
+        // Each inverse pair shares a queue so the two operations stay in order; the message's
+        // IsUndo flag picks the direction. Registering them separately would put them on
+        // separate consumers, and a rapid follow/unfollow could then apply backwards.
         services.AddQueueConsumer<FollowMessage>(
             QueueName.Follow,
             message => message.MessageId,
-            (provider, message, cancellationToken) => provider.GetRequiredService<IFollowService>()
-                .ProcessFollowAsync(message.FollowerId, message.FollowingId, cancellationToken));
-
-        services.AddQueueConsumer<FollowMessage>(
-            QueueName.Unfollow,
-            message => message.MessageId,
-            (provider, message, cancellationToken) => provider.GetRequiredService<IFollowService>()
-                .ProcessUnfollowAsync(message.FollowerId, message.FollowingId, cancellationToken));
+            (provider, message, cancellationToken) => message.IsUndo
+                ? provider.GetRequiredService<IFollowService>()
+                    .ProcessUnfollowAsync(message.FollowerId, message.FollowingId, cancellationToken)
+                : provider.GetRequiredService<IFollowService>()
+                    .ProcessFollowAsync(message.FollowerId, message.FollowingId, cancellationToken));
 
         services.AddQueueConsumer<ReactionMessage>(
             QueueName.ReactPost,
             message => message.MessageId,
-            (provider, message, cancellationToken) => provider.GetRequiredService<IReactionService>()
-                .ProcessReactPostAsync(message.AccountId, message.TargetId, cancellationToken));
-
-        services.AddQueueConsumer<ReactionMessage>(
-            QueueName.UnreactPost,
-            message => message.MessageId,
-            (provider, message, cancellationToken) => provider.GetRequiredService<IReactionService>()
-                .ProcessUnreactPostAsync(message.AccountId, message.TargetId, cancellationToken));
+            (provider, message, cancellationToken) => message.IsUndo
+                ? provider.GetRequiredService<IReactPostService>()
+                    .ProcessUnreactPostAsync(message.AccountId, message.TargetId, cancellationToken)
+                : provider.GetRequiredService<IReactPostService>()
+                    .ProcessReactPostAsync(message.AccountId, message.TargetId, cancellationToken));
 
         services.AddQueueConsumer<ReactionMessage>(
             QueueName.ReactComment,
             message => message.MessageId,
-            (provider, message, cancellationToken) => provider.GetRequiredService<IReactionService>()
-                .ProcessReactCommentAsync(message.AccountId, message.TargetId, cancellationToken));
-
-        services.AddQueueConsumer<ReactionMessage>(
-            QueueName.UnreactComment,
-            message => message.MessageId,
-            (provider, message, cancellationToken) => provider.GetRequiredService<IReactionService>()
-                .ProcessUnreactCommentAsync(message.AccountId, message.TargetId, cancellationToken));
+            (provider, message, cancellationToken) => message.IsUndo
+                ? provider.GetRequiredService<IReactCommentService>()
+                    .ProcessUnreactCommentAsync(message.AccountId, message.TargetId, cancellationToken)
+                : provider.GetRequiredService<IReactCommentService>()
+                    .ProcessReactCommentAsync(message.AccountId, message.TargetId, cancellationToken));
 
         services.AddQueueConsumer<CommentMessage>(
             QueueName.CreateComment,
@@ -157,38 +152,38 @@ public static class DependencyInjection
         services.AddQueueConsumer<SaveMessage>(
             QueueName.SavePost,
             message => message.MessageId,
-            (provider, message, cancellationToken) => provider.GetRequiredService<ISaveService>()
-                .ProcessSavePostAsync(message.AccountId, message.TargetId, cancellationToken));
-
-        services.AddQueueConsumer<SaveMessage>(
-            QueueName.UnsavePost,
-            message => message.MessageId,
-            (provider, message, cancellationToken) => provider.GetRequiredService<ISaveService>()
-                .ProcessUnsavePostAsync(message.AccountId, message.TargetId, cancellationToken));
+            (provider, message, cancellationToken) => message.IsUndo
+                ? provider.GetRequiredService<ISaveService>()
+                    .ProcessUnsavePostAsync(message.AccountId, message.TargetId, cancellationToken)
+                : provider.GetRequiredService<ISaveService>()
+                    .ProcessSavePostAsync(message.AccountId, message.TargetId, cancellationToken));
 
         services.AddQueueConsumer<SaveMessage>(
             QueueName.SaveShop,
             message => message.MessageId,
-            (provider, message, cancellationToken) => provider.GetRequiredService<ISaveService>()
-                .ProcessSaveShopAsync(message.AccountId, message.TargetId, cancellationToken));
-
-        services.AddQueueConsumer<SaveMessage>(
-            QueueName.UnsaveShop,
-            message => message.MessageId,
-            (provider, message, cancellationToken) => provider.GetRequiredService<ISaveService>()
-                .ProcessUnsaveShopAsync(message.AccountId, message.TargetId, cancellationToken));
+            (provider, message, cancellationToken) => message.IsUndo
+                ? provider.GetRequiredService<ISaveService>()
+                    .ProcessUnsaveShopAsync(message.AccountId, message.TargetId, cancellationToken)
+                : provider.GetRequiredService<ISaveService>()
+                    .ProcessSaveShopAsync(message.AccountId, message.TargetId, cancellationToken));
 
         services.AddQueueConsumer<AccountMessage>(
             QueueName.DeleteAccount,
             message => message.MessageId,
-            (provider, message, cancellationToken) => provider.GetRequiredService<IDeleteAccountService>()
+            (provider, message, cancellationToken) => provider.GetRequiredService<IAccountService>()
                 .ProcessAfterDeleteAsync(message.AccountId, cancellationToken));
 
         services.AddQueueConsumer<PostMessage>(
             QueueName.DeletePost,
             message => message.MessageId,
-            (provider, message, cancellationToken) => provider.GetRequiredService<IDeletePostService>()
+            (provider, message, cancellationToken) => provider.GetRequiredService<IPostService>()
                 .ProcessAfterDeleteAsync(message.PostId, cancellationToken));
+
+        services.AddQueueConsumer<CommentMessage>(
+            QueueName.DeleteComment,
+            message => message.MessageId,
+            (provider, message, cancellationToken) => provider.GetRequiredService<ICommentService>()
+                .ProcessAfterDeleteAsync(message.CommentId, cancellationToken));
 
         return services;
     }

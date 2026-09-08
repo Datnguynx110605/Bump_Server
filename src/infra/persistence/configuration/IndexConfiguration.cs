@@ -20,6 +20,7 @@ public static class IndexConfiguration
         await CreateShopIndexAsync(database, cancellationToken);
         await CreateReportIndexAsync(database, cancellationToken);
         await CreateRefreshTokenIndexAsync(database, cancellationToken);
+        await CreateNotificationIndexAsync(database, cancellationToken);
     }
 
     private static Task CreateAccountIndexAsync(IMongoDatabase database, CancellationToken cancellationToken)
@@ -46,7 +47,7 @@ public static class IndexConfiguration
                         .Descending(x => x.CreatedAt)
                         .Descending(x => x.Id)),
                 // Multikey indexes backing the ElemMatch/AnyEq membership lookups in
-                // SaveMembership and DeleteAccountService, which otherwise scan the
+                // SaveMembership and AccountService, which otherwise scan the
                 // whole collection on every feed request.
                 new CreateIndexModel<Account>(keys.Ascending("Followers.AccountId")),
                 new CreateIndexModel<Account>(keys.Ascending("Followings.AccountId")),
@@ -96,7 +97,7 @@ public static class IndexConfiguration
                         .Descending(x => x.CreatedAt)
                         .Descending(x => x.Id)),
                 // Backs ReactionMembership's per-request membership lookups and the
-                // ElemMatch reaction cleanup in DeleteAccountService.
+                // ElemMatch reaction cleanup in AccountService.
                 new CreateIndexModel<Post>(keys.Ascending("Reactions.AccountId")),
                 // Backs the retention sweep in SoftDeletePurgeHost. Partial so it only
                 // carries soft-deleted rows instead of the whole collection.
@@ -134,7 +135,7 @@ public static class IndexConfiguration
                     keys.Ascending(x => x.IsDeleted)
                         .Descending(x => x.CreatedAt)
                         .Descending(x => x.Id)),
-                // Backs the ElemMatch reaction cleanup in DeleteAccountService.
+                // Backs the ElemMatch reaction cleanup in AccountService.
                 new CreateIndexModel<Comment>(keys.Ascending("Reactions.AccountId")),
                 // Backs the retention sweep in SoftDeletePurgeHost. Partial so it only
                 // carries soft-deleted rows instead of the whole collection.
@@ -236,6 +237,21 @@ public static class IndexConfiguration
                         .Descending(x => x.Id))
             },
             cancellationToken);
+    }
+
+    // Backs the recipient's notification listing and the per-account delete in
+    // AccountService, both of which would otherwise collection-scan.
+    private static Task CreateNotificationIndexAsync(IMongoDatabase database, CancellationToken cancellationToken)
+    {
+        var keys = Builders<Notification>.IndexKeys;
+
+        return database.GetCollection<Notification>(CollectionName.Notification).Indexes.CreateOneAsync(
+            new CreateIndexModel<Notification>(
+                keys.Ascending(x => x.ToAccountId)
+                    .Ascending(x => x.IsDeleted)
+                    .Descending(x => x.CreatedAt)
+                    .Descending(x => x.Id)),
+            cancellationToken : cancellationToken);
     }
 
     private static Task CreateRefreshTokenIndexAsync(IMongoDatabase database, CancellationToken cancellationToken)

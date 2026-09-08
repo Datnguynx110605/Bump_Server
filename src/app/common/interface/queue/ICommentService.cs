@@ -8,4 +8,8 @@ public interface ICommentService
         Guid accountId,
         Guid commentId,
         CancellationToken cancellationToken);
+
+    Task<Result> ProcessAfterDeleteAsync(
+        Guid commentId,
+        CancellationToken cancellationToken);
 }

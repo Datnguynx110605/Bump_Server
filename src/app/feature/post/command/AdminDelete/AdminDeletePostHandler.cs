@@ -7,24 +7,21 @@ namespace app;
 
 // Mirrors DeletePostHandler without the ownership filter, rather than adding a bypass
 // flag to it: the owner path is what the client depends on and must keep its filter.
-// Every side effect is replicated — image cleanup, cache invalidation, the delete-post
-// cascade and the shop rate recalculation — because a delete that only flips IsDeleted
-// leaves shop rates and comment rows stale.
+// Every side effect is replicated — cache invalidation, the delete-post cascade that
+// also removes the images, and the shop rate recalculation — because a delete that only
+// flips IsDeleted leaves shop rates and comment rows stale.
 internal sealed class AdminDeletePostHandler
     : IRequestHandler<AdminDeletePostCommand, Result>
 {
     private readonly IMongoDbContext _dbContext;
-    private readonly IR2Service _r2Service;
     private readonly IRedisService _redisService;
     private readonly IRabbitMQService _rabbitMQService;
     public AdminDeletePostHandler(
         IMongoDbContext dbContext,
-        IR2Service r2Service,
         IRedisService redisService,
         IRabbitMQService rabbitMQService)
     {
         _dbContext = dbContext;
-        _r2Service = r2Service;
         _redisService = redisService;
         _rabbitMQService = rabbitMQService;
     }
@@ -38,7 +35,6 @@ internal sealed class AdminDeletePostHandler
         var projection = Builders<Post>.Projection
             .Include(x => x.AccountId)
             .Include(x => x.ShopId)
-            .Include(x => x.Images)
             .Include(x => x.IsDeleted);
 
         var post = await postCollection
@@ -65,13 +61,6 @@ internal sealed class AdminDeletePostHandler
             filter,
             update,
             cancellationToken : cancellationToken);
-
-        foreach(var image in post.Images)
-        {
-            await _r2Service.DeleteAsync(
-                image.Url,
-                cancellationToken);
-        }
 
         string cacheKey = CacheKey.Post(post.Id);
 

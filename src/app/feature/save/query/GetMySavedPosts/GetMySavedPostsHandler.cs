@@ -70,8 +70,12 @@ internal sealed class GetMySavedPostsHandler
 
         var postCollection = _dbContext.GetCollection<Post>(CollectionName.Post);
 
+        // Projected, not whole documents: an unprojected read drags each post's entire
+        // Reactions array over the wire, so one page of saved popular posts could pull
+        // megabytes to render a summary.
         var posts = await postCollection
             .Find(x => postIds.Contains(x.Id) && !x.IsDeleted)
+            .Project<Post>(PostProjection.Summary)
             .ToListAsync(cancellationToken);
 
         var postsById = posts.ToDictionary(x => x.Id);

@@ -2,7 +2,7 @@
 
 namespace app;
 
-public interface IDeleteAccountService
+public interface IAccountService
 {
     Task<Result> ProcessAfterDeleteAsync(
         Guid accountId,

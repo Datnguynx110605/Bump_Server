@@ -28,10 +28,11 @@ internal sealed class UnsaveShopHandler
         var message = new SaveMessage(
             Guid.NewGuid(),
             identity.Value,
-            request.shopId);
+            request.shopId,
+            IsUndo : true);
 
         await _rabbitMQService.PublishAsync(
-            QueueName.UnsaveShop,
+            QueueName.SaveShop,
             message,
             cancellationToken);
 

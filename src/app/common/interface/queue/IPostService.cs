@@ -2,7 +2,7 @@ using FluentResults;
 
 namespace app;
 
-public interface IDeletePostService
+public interface IPostService
 {
     Task<Result> ProcessAfterDeleteAsync(
         Guid postId,

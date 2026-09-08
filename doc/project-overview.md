@@ -83,7 +83,7 @@ than the reverse. `api` references only `infra` and reaches `app` and `domain` t
 ```mermaid
 graph LR
     api["<b>api</b><br/>12 controllers · 78 endpoints<br/>2 middleware · JWT · rate limiting"]
-    infra["<b>infra</b><br/>10 services · 7 queue services<br/>1 generic consumer host · SignalR hub"]
+    infra["<b>infra</b><br/>10 services · 8 queue services<br/>1 generic consumer host · SignalR hub"]
     app["<b>app</b><br/>78 MediatR handlers<br/>38 commands · 40 queries · 34 validators"]
     domain["<b>domain</b><br/>13 entities · 3 value objects<br/>2 enums · DomainResult"]
 

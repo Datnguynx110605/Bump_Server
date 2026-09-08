@@ -28,10 +28,11 @@ internal sealed class UnsavePostHandler
         var message = new SaveMessage(
             Guid.NewGuid(),
             identity.Value,
-            request.postId);
+            request.postId,
+            IsUndo : true);
 
         await _rabbitMQService.PublishAsync(
-            QueueName.UnsavePost,
+            QueueName.SavePost,
             message,
             cancellationToken);
 

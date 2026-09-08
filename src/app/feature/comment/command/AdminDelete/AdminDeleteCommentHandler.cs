@@ -6,22 +6,23 @@ using MongoDB.Driver;
 namespace app;
 
 // Mirrors DeleteCommentHandler without the ownership filter. The parent post's
-// CommentAmount decrement and both list-cache invalidations are replicated, since
-// dropping them would leave the post's comment count permanently overstated.
+// CommentAmount decrement, both list-cache invalidations and the delete-comment message
+// that removes the images are replicated, since dropping them would leave the post's
+// comment count permanently overstated and the images orphaned in R2.
 internal sealed class AdminDeleteCommentHandler
     : IRequestHandler<AdminDeleteCommentCommand, Result>
 {
     private readonly IMongoDbContext _dbContext;
-    private readonly IR2Service _r2Service;
     private readonly IRedisService _redisService;
+    private readonly IRabbitMQService _rabbitMQService;
     public AdminDeleteCommentHandler(
         IMongoDbContext dbContext,
-        IR2Service r2Service,
-        IRedisService redisService)
+        IRedisService redisService,
+        IRabbitMQService rabbitMQService)
     {
         _dbContext = dbContext;
-        _r2Service = r2Service;
         _redisService = redisService;
+        _rabbitMQService = rabbitMQService;
     }
 
     public async Task<Result> Handle(
@@ -33,7 +34,6 @@ internal sealed class AdminDeleteCommentHandler
         var projection = Builders<Comment>.Projection
             .Include(x => x.AccountId)
             .Include(x => x.PostId)
-            .Include(x => x.Images)
             .Include(x => x.IsDeleted);
 
         var comment = await commentCollection
@@ -61,13 +61,6 @@ internal sealed class AdminDeleteCommentHandler
             update,
             cancellationToken : cancellationToken);
 
-        foreach(var image in comment.Images)
-        {
-            await _r2Service.DeleteAsync(
-                image.Url,
-                cancellationToken);
-        }
-
         var postCollection = _dbContext.GetCollection<Post>(CollectionName.Post);
 
         var postFilter = Builders<Post>.Filter.And(
@@ -91,6 +84,19 @@ internal sealed class AdminDeleteCommentHandler
             _redisService.RemoveAsync(
                 CacheKey.Post(comment.PostId),
                 cancellationToken),
+            // The feed cards render CommentAmount off the Post document, so moving it has to
+            // retire the two post lists that show it. The account: and shop: signatures are
+            // deliberately left alone — those lists are thumbnail grids with no counts on them.
+            ListCache.InvalidateAsync(
+                _redisService,
+                CollectionName.Post,
+                filterSignature: null,
+                cancellationToken),
+            ListCache.InvalidateAsync(
+                _redisService,
+                CollectionName.Post,
+                "mostReacted",
+                cancellationToken),
             ListCache.InvalidateAsync(
                 _redisService,
                 CollectionName.Comment,
@@ -106,6 +112,16 @@ internal sealed class AdminDeleteCommentHandler
                 CollectionName.Comment,
                 $"account:{comment.AccountId}",
                 cancellationToken));
+
+        var deleteCommentMessage = new CommentMessage(
+            Guid.NewGuid(),
+            comment.AccountId,
+            comment.Id);
+
+        await _rabbitMQService.PublishAsync(
+            QueueName.DeleteComment,
+            deleteCommentMessage,
+            cancellationToken);
 
         return Result.Ok();
     }

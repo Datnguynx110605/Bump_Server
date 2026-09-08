@@ -28,7 +28,8 @@ internal sealed class ReactCommentHandler
         var message = new ReactionMessage(
             Guid.NewGuid(), 
             identity.Value, 
-            request.commentId);
+            request.commentId,
+            IsUndo : false);
 
         await _rabbitMQService.PublishAsync(
             QueueName.ReactComment, 

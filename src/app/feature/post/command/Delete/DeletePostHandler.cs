@@ -9,19 +9,16 @@ internal sealed class DeletePostHandler
     : IRequestHandler<DeletePostCommand, Result>
 {
     private readonly IMongoDbContext _dbContext;
-    private readonly IR2Service _r2Service;
     private readonly IRedisService _redisService;
     private readonly ICurrentIdentityService _identityService;
     private readonly IRabbitMQService _rabbitMQService;
     public DeletePostHandler(
         IMongoDbContext dbContext,
-        IR2Service r2Service,
         IRedisService redisService,
         ICurrentIdentityService identityService,
         IRabbitMQService rabbitMQService)
     {
         _dbContext = dbContext;
-        _r2Service = r2Service;
         _redisService = redisService;
         _identityService = identityService;
         _rabbitMQService = rabbitMQService;
@@ -39,7 +36,6 @@ internal sealed class DeletePostHandler
 
         var projection = Builders<Post>.Projection
             .Include(x => x.ShopId)
-            .Include(x => x.Images)
             .Include(x => x.IsDeleted);
 
         var post = await postCollection
@@ -67,13 +63,6 @@ internal sealed class DeletePostHandler
             filter,
             update,
             cancellationToken : cancellationToken);
-
-        foreach(var image in post.Images)
-        {
-            await _r2Service.DeleteAsync(
-                image.Url,
-                cancellationToken);
-        }
 
         string cacheKey = CacheKey.Post(post.Id);
 

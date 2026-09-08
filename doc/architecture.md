@@ -82,7 +82,7 @@ Accepted** and complete in a `QueueConsumerHost`. Account, post, comment and rep
 synchronous and return the created DTO.
 
 **Concurrency is handled by conditional updates, not transactions.** No MongoDB session or
-transaction is used anywhere. Instead, filters encode the precondition — `ReactionService` matches
+transaction is used anywhere. Instead, filters encode the precondition — `ReactPostService` matches
 "post exists AND not already reacted by this account" and treats `MatchedCount != 1` as the conflict
 signal. `FollowService` bulk-writes both sides of the relationship, where each side's filter excludes
 the state it writes, making `MatchedCount == 1` a self-healing repair of a half-applied follow.
@@ -99,7 +99,10 @@ with different content, counts retries in an `x-retry-count` header, and dead-le
 
 **List caches are invalidated by version counter, not by key deletion.** `ListCache` bumps
 `list-version:{entity}:{signature}`; the version is a component of every page key, so all pages and
-page sizes retire together.
+page sizes retire together. The rule a write has to satisfy is *bump every signature whose
+projection carries a field this write changed*, not just the entity it wrote to: the comment
+handlers move `Post.CommentAmount`, which `PostProjection.Summary` includes, so they bump the post
+feed's signatures alongside the comment ones.
 
 **Search uses precomputed normalized fields.** `TextNormalizer.RemoveDiacriticsAndLower` (Vietnamese
 `đ`/`Đ` folding plus Unicode `FormD` mark stripping) populates `Post.CaptionNormalized`,
@@ -110,12 +113,12 @@ page sizes retire together.
 
 These are real, evidenced, and worth knowing before extending the system.
 
-**1. Business logic lives in `infra`.** The seven queue services — `FollowService`, `ReactionService`,
-`SaveService`, `CommentService`, `ShopRateService`, `DeleteAccountService`, `DeletePostService` — hold
-domain rules (counter maintenance, cascade semantics, notification triggering, rate averaging) but
-sit in the infrastructure project. Their interfaces are in `src/app/common/interface/queue/`, so `app`
-declares the contract while `infra` owns the policy. `DeleteAccountService.ProcessAfterDeleteAsync`
-is ~220 lines of cascade logic in the adapter layer.
+**1. Business logic lives in `infra`.** The eight queue services — `FollowService`,
+`ReactPostService`, `ReactCommentService`, `SaveService`, `CommentService`, `ShopRateService`,
+`AccountService`, `PostService` — hold domain rules (counter maintenance, cascade semantics,
+notification triggering, rate averaging) but sit in the infrastructure project. Their interfaces are
+in `src/app/common/interface/queue/`, so `app` declares the contract while `infra` owns the policy.
+`AccountService.ProcessAfterDeleteAsync` is ~270 lines of cascade logic in the adapter layer.
 
 **2. `infra` contains web-framework concerns.** `infra.csproj` declares
 `<FrameworkReference Include="Microsoft.AspNetCore.App" />`, and the project holds `NotificationHub`
@@ -132,10 +135,12 @@ throughout the application layer — including in shared helpers like `ReactionM
 `src/infra/serialization/` — to flatten value objects for the Redis JSON payloads.
 
 **5. Validation is spread across three layers with no single authority.**
-Value-object factories (`domain`), FluentValidation validators (`app`, 34 of 72 handlers), and
+Value-object factories (`domain`), FluentValidation validators (`app`, 38 of 78 handlers), and
 `ImageUpload` (`api`). Some rules are duplicated and have drifted: `Account.BioMaxLength` is 2000 in
 the entity and `MaximumLength(2000)` in `CreateAccountValidator`; password length (10–40) is enforced
-**only** in validators, while the entity checks only that the hash is 60 characters.
+**only** in validators, while the entity checks only that the hash is 60 characters. Caption length
+(2000) and `Report.Reason` length (2000) likewise live **only** in `CreatePostValidator`,
+`ChangeCaptionValidator` and `CreateReportValidator` — neither `Post` nor `Report` caps them.
 
 **6. Authorization decisions happen inside handlers.** Beyond `[Authorize]` and the `Admin` role
 attribute, ownership checks are handler-level Mongo filters — `DeletePostHandler` filters
@@ -186,15 +191,15 @@ graph LR
 
 `AddApi` → `AddApp` → `AddInfra` is the registration chain. Lifetimes: `IConnectionMultiplexer`,
 `IMongoClient`, `IAmazonS3` and `IConnection` are **singletons**; 17 services are registered
-`AddScoped` and `IEmailService` via `AddHttpClient` (also scoped); `AddInfra` contributes **18
-hosted services** — 14 queue consumers plus `IndexInitializer`,
-`NormalizedFieldBackfillInitializer`, `AdminSeeder` and `SoftDeletePurgeHost` — which resolve to 20
+`AddScoped` and `IEmailService` via `AddHttpClient` (also scoped); `AddInfra` contributes **14
+hosted services** — 10 queue consumers plus `IndexInitializer`,
+`NormalizedFieldBackfillInitializer`, `AdminSeeder` and `SoftDeletePurgeHost` — which resolve to 16
 `IHostedService` descriptors in total once the framework's own Data Protection and health-check
 publisher services are counted.
 
 Queue consumers are registered with `AddSingleton<IHostedService>` rather than `AddHostedService`
 deliberately: `AddHostedService` routes through `TryAddEnumerable`, which deduplicates by
 implementation type, and several queues share a message type and therefore close the same
-`QueueConsumerHost<TMessage>` generic. Using `AddHostedService` here silently drops 7 of the 14
+`QueueConsumerHost<TMessage>` generic. Using `AddHostedService` here silently drops 3 of the 10
 consumers with no error at build or startup. The comment at `src/infra/DependencyInjection.cs`
-records this; **there is currently no automated check that all 14 survive registration.**
+records this; **there is currently no automated check that all 10 survive registration.**

@@ -5,22 +5,22 @@ using MongoDB.Driver;
 
 namespace infra;
 
-public sealed class DeleteAccountService : IDeleteAccountService
+public sealed class AccountService : IAccountService
 {
     private readonly IMongoDbContext _dbContext;
     private readonly IR2Service _r2Service;
     private readonly IRedisService _redisService;
-    private readonly IDeletePostService _deletePostService;
-    public DeleteAccountService(
+    private readonly IRabbitMQService _rabbitMQService;
+    public AccountService(
         IMongoDbContext dbContext,
         IR2Service r2Service,
         IRedisService redisService,
-        IDeletePostService deletePostService)
+        IRabbitMQService rabbitMQService)
     {
         _dbContext = dbContext;
         _r2Service = r2Service;
         _redisService = redisService;
-        _deletePostService = deletePostService;
+        _rabbitMQService = rabbitMQService;
     }
 
     public async Task<Result> ProcessAfterDeleteAsync(
@@ -100,19 +100,18 @@ public sealed class DeleteAccountService : IDeleteAccountService
 
         var commentCollection = _dbContext.GetCollection<Comment>(CollectionName.Comment);
 
+        var notificationCollection = _dbContext.GetCollection<Notification>(CollectionName.Notification);
+
         var ownerComments = await commentCollection
             .Find(ownerCommentFilter)
             .Project<Comment>(Builders<Comment>.Projection
                 .Include(x => x.Id)
-                .Include(x => x.PostId)
-                .Include(x => x.Images))
+                .Include(x => x.PostId))
             .ToListAsync(cancellationToken);
 
         var ownerPosts = await postCollection
             .Find(ownerPostFilter)
-            .Project<Post>(Builders<Post>.Projection
-                .Include(x => x.Id)
-                .Include(x => x.Images))
+            .Project<Post>(Builders<Post>.Projection.Include(x => x.Id))
             .ToListAsync(cancellationToken);
 
         var reactedPosts = await postCollection
@@ -165,26 +164,38 @@ public sealed class DeleteAccountService : IDeleteAccountService
                 followingUpdate,
                 cancellationToken : cancellationToken));
 
-        // The account's own posts and comments are soft-deleted here rather than through
-        // their delete handlers, so their images have nothing else to remove them from R2.
-        foreach(var image in ownerPosts.SelectMany(x => x.Images)
-            .Concat(ownerComments.SelectMany(x => x.Images)))
+        // The UpdateMany above only flipped IsDeleted, which is all Mongo can do: it hides the
+        // rows from every read in two commands, and nothing more. These messages carry the
+        // side effects it cannot express — the images in R2, which no read filter knows about
+        // and the retention sweep would otherwise orphan, and other accounts' comments on
+        // these posts, which ownerCommentFilter does not match and which would survive as live
+        // rows pointing at a hard-deleted post.
+        //
+        // One message per row rather than a loop here: post and comment counts are unbounded,
+        // so inline this becomes a single message whose cost scales with them, and a failure
+        // near the end replays all of it. Both workers require the row to already be
+        // IsDeleted, which is why the publish follows the update rather than replacing it.
+        foreach(var post in ownerPosts)
         {
-            await _r2Service.DeleteAsync(
-                image.Url,
+            await _rabbitMQService.PublishAsync(
+                QueueName.DeletePost,
+                new PostMessage(Guid.NewGuid(), post.Id),
                 cancellationToken);
         }
 
-        // Other accounts' comments on those posts are not covered by ownerCommentFilter, and
-        // would otherwise survive as live rows pointing at a post the retention sweep deletes.
-        // This is exactly what the DeletePost queue worker already does, so reuse it — the
-        // overlapping R2 deletes above are idempotent.
-        foreach(var post in ownerPosts)
+        foreach(var comment in ownerComments)
         {
-            await _deletePostService.ProcessAfterDeleteAsync(
-                post.Id,
+            await _rabbitMQService.PublishAsync(
+                QueueName.DeleteComment,
+                new CommentMessage(Guid.NewGuid(), account.Id, comment.Id),
                 cancellationToken);
         }
+
+        // Hard delete rather than soft: once the account is gone nothing can ever read its
+        // notifications again, and the collection has no retention of its own.
+        await notificationCollection.DeleteManyAsync(
+            Builders<Notification>.Filter.Eq(x => x.ToAccountId, account.Id),
+            cancellationToken);
 
         var commentCountByPost = ownerComments
             .GroupBy(x => x.PostId)
@@ -206,6 +217,11 @@ public sealed class DeleteAccountService : IDeleteAccountService
             _redisService.RemoveAsync(CacheKey.Account(account.Id), cancellationToken),
             ListCache.InvalidateAsync(
                 _redisService,
+                CollectionName.Notification,
+                $"account:{account.Id}",
+                cancellationToken),
+            ListCache.InvalidateAsync(
+                _redisService,
                 CollectionName.Comment,
                 $"account:{account.Id}",
                 cancellationToken),
@@ -213,6 +229,20 @@ public sealed class DeleteAccountService : IDeleteAccountService
                 _redisService,
                 CollectionName.Post,
                 $"account:{account.Id}",
+                cancellationToken),
+            // The cascade soft-deletes the owner's posts, drops their reactions from other
+            // people's posts and decrements CommentAmount on every post they commented on —
+            // all three are visible on the home feed, so both feed lists have to be retired
+            // and not just this account's own list.
+            ListCache.InvalidateAsync(
+                _redisService,
+                CollectionName.Post,
+                filterSignature: null,
+                cancellationToken),
+            ListCache.InvalidateAsync(
+                _redisService,
+                CollectionName.Post,
+                "mostReacted",
                 cancellationToken),
             ListCache.InvalidateAsync(
                 _redisService,

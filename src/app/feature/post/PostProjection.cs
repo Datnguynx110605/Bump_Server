@@ -12,5 +12,6 @@ public sealed record PostProjection
         .Include(x => x.Caption)
         .Include(x => x.Rate)
         .Include(x => x.ReactionAmount)
-        .Include(x => x.CommentAmount);
+        .Include(x => x.CommentAmount)
+        .Include(x => x.CreatedAt);
 }

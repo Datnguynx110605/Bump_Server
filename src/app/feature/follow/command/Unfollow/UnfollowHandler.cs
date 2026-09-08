@@ -31,10 +31,11 @@ internal sealed class UnfollowHandler
         var message = new FollowMessage(
             Guid.NewGuid(), 
             identity.Value, 
-            request.followingId);
+            request.followingId,
+            IsUndo : true);
 
         await _rabbitMQService.PublishAsync(
-            QueueName.Unfollow, 
+            QueueName.Follow, 
             message, 
             cancellationToken);
 

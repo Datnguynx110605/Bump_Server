@@ -38,7 +38,7 @@ Bump_Server/
     │   │   ├── dto/                [19] response and cache shapes; PascalCase record parameters
     │   │   ├── interface/               contracts implemented in infra — the inversion boundary
     │   │   │   ├── persistence/    [1]  IMongoDbContext
-    │   │   │   ├── queue/          [7]  one per queue worker (IFollowService, IReactionService, …)
+    │   │   │   ├── queue/          [8]  one per queue worker (IFollowService, IReactPostService, …)
     │   │   │   └── service/        [10] adapters (IRedisService, IR2Service, IJwtService, …)
     │   │   ├── mapping/            [12] one AutoMapper Profile per aggregate
     │   │   ├── membership/         [3]  per-viewer flags: ReactionMembership, SaveMembership, PostFeedEnricher
@@ -52,9 +52,9 @@ Bump_Server/
     │       │   │   ├── ChangeEmail/      ChangeEmail{Command, Handler, Validator}
     │       │   │   ├── ChangeName/       ChangeName{Command, Handler, Validator}
     │       │   │   ├── ChangePassword/   ChangePassword{Command, Handler, Validator}
-    │       │   │   ├── AdminDelete/      AdminDeleteAccount{Command, Handler}  ⚠ no validator
+    │       │   │   ├── AdminDelete/      AdminDeleteAccount{Command, Handler, Validator}
     │       │   │   ├── Create/           CreateAccount{Command, Handler, Validator}
-    │       │   │   ├── Delete/           DeleteAccount{Command, Handler}  ⚠ no validator
+    │       │   │   ├── Delete/           DeleteAccount{Command, Handler}  ⚠ no validator (no parameters)
     │       │   │   ├── Recover/          RecoverAccount{Command, Handler, Validator}
     │       │   │   ├── RemoveAvatar/     RemoveAvatar{Command, Handler, Validator}
     │       │   │   └── ResetPassword/    ResetPassword{Command, Handler, Validator}
@@ -69,13 +69,13 @@ Bump_Server/
     │       │   ├── command/
     │       │   │   ├── Login/                    Login{Command, Handler, Validator}
     │       │   │   ├── RequestNewAccessToken/    RequestNewAccessToken{Command, Handler, Validator}
-    │       │   │   └── RevokeRefreshToken/       RevokeRefreshToken{Command, Handler}  ⚠ no validator
+    │       │   │   └── RevokeRefreshToken/       RevokeRefreshToken{Command, Handler, Validator}
     │       │   └── query/
     │       │       ├── GetAllRefreshToken/       GetAllRefreshToken{Query, Handler}
     │       │       └── GetSpecificRefreshToken/  GetSpecificRefreshToken{Query, Handler}
     │       ├── comment/            [1]  CommentProjection.cs — area-shared
     │       │   ├── command/
-    │       │   │   ├── AdminDelete/      AdminDeleteComment{Command, Handler}  ⚠ no validator
+    │       │   │   ├── AdminDelete/      AdminDeleteComment{Command, Handler, Validator}
     │       │   │   ├── ChangeContent/    ChangeContent{Command, Handler, Validator}
     │       │   │   ├── Create/           CreateComment{Command, Handler, Validator}
     │       │   │   └── Delete/           DeleteComment{Command, Handler, Validator}
@@ -107,7 +107,7 @@ Bump_Server/
     │       │       └── GetSpecificNotification/ GetSpecificNotification{Query, Handler}
     │       ├── post/               [1]  PostProjection.cs — area-shared
     │       │   ├── command/
-    │       │   │   ├── AdminDelete/      AdminDeletePost{Command, Handler}  ⚠ no validator
+    │       │   │   ├── AdminDelete/      AdminDeletePost{Command, Handler, Validator}
     │       │   │   ├── ChangeCaption/    ChangeCaption{Command, Handler, Validator}
     │       │   │   ├── ChangeRate/       ChangeRate{Command, Handler, Validator}
     │       │   │   ├── Create/           CreatePost{Command, Handler, Validator}
@@ -165,11 +165,11 @@ Bump_Server/
     │   │   ├── configuration/      [5]  BSON class maps, backing-field serializer, indexes, initializers
     │   │   └── dbcontext/          [1]  DbContext — the only IMongoDbContext implementation
     │   ├── queue/                  [1]  QueueConsumerHost<TMessage> — the single generic consumer host
-    │   │   ├── account/            [1]  DeleteAccountService — the delete cascade
-    │   │   ├── comment/            [1]  CommentService — comment notification
+    │   │   ├── account/            [1]  AccountService — the delete cascade
+    │   │   ├── comment/            [1]  CommentService — create notification + delete image cleanup
     │   │   ├── follow/             [1]  FollowService — both sides of the edge + counters
-    │   │   ├── post/               [1]  DeletePostService — comment and image cleanup
-    │   │   ├── reaction/           [1]  ReactionService — post and comment reactions
+    │   │   ├── post/               [1]  PostService — post images + the comment cascade
+    │   │   ├── reaction/           [2]  ReactPostService, ReactCommentService — one per reaction target
     │   │   ├── save/               [1]  SaveService — save/unsave post and shop
     │   │   └── shop/               [1]  ShopRateService — rate recalculation
     │   ├── serialization/          [4]  value-object JSON converters + DomainJsonOptions
@@ -372,7 +372,7 @@ identical three-file shape; comparing `post/query/GetLatestPost`, `shop/query/Ge
 2. `<UseCase>Handler.cs` — resolve identity, build a `FilterDefinition`, call
    `CachedCursorPaginator.PaginateAsync` passing `entity` and `filterSignature` (the paginator
    resolves the cache version itself), enrich if needed.
-3. A validator only if the query takes constrained input — **38 of 72 handlers have no validator**,
+3. A validator only if the query takes constrained input — **40 of 78 handlers have no validator**,
    and they are overwhelmingly queries.
 
 Feature-local supporting types live in the use-case folder: `ReportTarget.cs` sits inside

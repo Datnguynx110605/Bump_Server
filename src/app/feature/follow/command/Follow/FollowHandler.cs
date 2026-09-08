@@ -31,7 +31,8 @@ internal sealed class FollowHandler
         var message = new FollowMessage(
             Guid.NewGuid(), 
             identity.Value, 
-            request.followingId);
+            request.followingId,
+            IsUndo : false);
 
         await _rabbitMQService.PublishAsync(
             QueueName.Follow, 

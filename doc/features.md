@@ -23,9 +23,9 @@ Each diagram then covers four stages:
    `Amount.Create` before the request is sent. A failure here short-circuits to a `ProblemDetails`
    response without ever reaching MediatR.
 3. **MediatR pipeline** — `LoggingBehavior` → `PerformanceBehavior` → `ValidationBehavior`, then the
-   handler. The validator is named where one exists: 33 of 38 commands have one (`DeleteAccount`, the
-   three administrator deletes and `RevokeRefreshToken` do
-   not), and among queries only `GetReportByTarget` does.
+   handler. The validator is named where one exists: 37 of 38 commands have one (only
+   `DeleteAccount`, which takes no parameters, does not), and among queries only
+   `GetReportByTarget` does.
 4. **Handler → infrastructure → response** — the work itself, then
    `ResultExtensions.ToActionResult()` (200 with a body, or 204) or `ToAcceptedResult()` (202).
    Failures pass through `ResultStatusMapper`, which reads the `status` metadata attached by
@@ -64,7 +64,7 @@ behind cache versioning, queue idempotency and retry, see [`system-design.md`](.
 flowchart TD
     A["Client<br/>POST /api/v1/Account<br/>{registrationToken, name, password, bio}"] --> B["AccountController.CreateAccount<br/>Name.Create(request.Name)"]
     B -->|invalid| B1["400 ProblemDetails 'Name is invalid'"]
-    B --> C["MediatR → CreateAccountValidator<br/>token non-empty · password 10–40<br/>bio ≤2000 · name ≤200"]
+    B --> C["MediatR → CreateAccountValidator<br/>token non-empty · password 10–40<br/>bio ≤2000 · name ≤200, lowercase/digits"]
     C -->|invalid| C1["400 ValidationProblemDetails"]
     C --> D["CreateAccountHandler"]
     D --> E["RegistrationService.ExtractEmailAsync<br/>Redis GETDEL registration:{token}<br/>DataProtection.Unprotect"]
@@ -100,7 +100,7 @@ email never reach the DTO.
 flowchart TD
     A["Client<br/>PUT /api/v1/Account/me/name<br/>{Name}"] --> B["AccountController.ChangeName<br/>Name.Create — lowercase alnum, ≤200"]
     B -->|invalid| B1["400 'Name is invalid'"]
-    B --> C["MediatR → ChangeNameValidator"] --> D["ChangeNameHandler → identity"]
+    B --> C["MediatR → ChangeNameValidator<br/>name ≤200, lowercase/digits"] --> D["ChangeNameHandler → identity"]
     D -->|null| D1["401 Unauthorized"]
     D --> E["Mongo find Id = identity, !IsDeleted<br/>project Name, IsDeleted"]
     E -->|null| E1["401 Unauthenticated"]
@@ -201,7 +201,7 @@ sequenceDiagram
     participant M as MongoDB
     participant R as Redis
     participant Q as RabbitMQ
-    participant S as DeleteAccountService
+    participant S as AccountService
     participant R2 as R2
 
     C->>Ctl: DELETE /api/v1/Account/me
@@ -229,11 +229,20 @@ sequenceDiagram
         S->>M: $pull me from others' Followers, $inc −1
         S->>M: $pull me from others' Followings, $inc −1
     end
+    loop each of my posts
+        S->>Q: publish delete-post
+    end
+    loop each of my comments
+        S->>Q: publish delete-comment
+    end
+    S->>M: hard-delete notifications addressed to me
     S->>M: bulk $inc CommentAmount per affected post
     S->>R: invalidate every touched entity and list
 ```
 The only command without a validator. The cascade is retry-safe: each `$pull` + `$inc` is guarded by
-an `ElemMatch` that stops matching once applied.
+an `ElemMatch` that stops matching once applied. Post and comment cleanup is fanned out rather than
+inlined, so no single message's cost scales with how much the account posted; notifications are hard
+deleted, not soft, because nothing can read them once the account is gone.
 
 ### 10. Recover account — `POST /Account/recover` · **anon** `[auth]`
 
@@ -347,7 +356,7 @@ lowercase alphanumeric, so an accented keyword never matches.
 flowchart TD
     A["Client<br/>POST /api/v1/Auth/login<br/>{Email, Password}"] --> B["AuthController.Login<br/>Email.Create(request.Email)"]
     B -->|invalid| B1["400 'Email is invalid'"]
-    B --> C["MediatR → LoginValidator<br/>email + password non-empty"] --> D["LoginHandler"]
+    B --> C["MediatR → LoginValidator<br/>email non-empty · EmailAddress() ≤200<br/>password non-empty"] --> D["LoginHandler"]
     D --> E["Mongo find Email, !IsDeleted<br/>project Email, Password, Role, IsDeleted"]
     E -->|null| X["401 'Invalid credentials'"]
     E --> F{"BCrypt.Verify"}
@@ -413,7 +422,7 @@ flowchart TD
 flowchart TD
     A["Client<br/>POST /api/v1/Email/send-for-register<br/>{Email}"] --> B["EmailController.SendForRegister<br/>Email.Create"]
     B -->|invalid| B1["400"]
-    B --> C["MediatR → SendEmailForRegisterValidator<br/>EmailAddress()"] --> D["SendEmailForRegisterHandler"]
+    B --> C["MediatR → SendEmailForRegisterValidator<br/>EmailAddress() ≤200"] --> D["SendEmailForRegisterHandler"]
     D --> E{"Mongo any account Email = x<br/><b>AND !IsDeleted</b>"}
     E -->|yes| E1["409 'Email already exists'"]
     E -->|no| F["OtpService.GenerateAsync<br/>RandomNumberGenerator 6 digits"]
@@ -427,7 +436,7 @@ flowchart TD
 ```mermaid
 flowchart TD
     A["Client<br/>POST /api/v1/Email/send-for-verify<br/>{Email}"] --> B["EmailController.SendForVerify<br/>Email.Create"]
-    B --> C["MediatR → SendEmailForVerifyValidator"] --> D["SendEmailForVerifyHandler"]
+    B --> C["MediatR → SendEmailForVerifyValidator<br/>EmailAddress() ≤200"] --> D["SendEmailForVerifyHandler"]
     D --> E{"Mongo any account Email = x<br/><b>no IsDeleted filter</b>"}
     E -->|no| E1["404 'Email not found'"]
     E -->|yes| F["OtpService.GenerateAsync"]
@@ -442,7 +451,7 @@ Note the asymmetry with #21.
 ```mermaid
 flowchart TD
     A["Client<br/>POST /api/v1/Email/verify<br/>{Email, Otp}"] --> B["EmailController.Verify<br/>Email.Create"]
-    B --> C["MediatR → VerifyEmailValidator — otp exactly 6 chars"] -->|invalid| C1["400"]
+    B --> C["MediatR → VerifyEmailValidator<br/>EmailAddress() ≤200 · otp exactly 6 chars"] -->|invalid| C1["400"]
     C --> D["VerifyEmailHandler → OtpService.VerifyAsync"]
     D --> E["Redis GETDEL otp:{email}"]
     E -->|"missing / expired"| E1["400 'Otp is incorrect'"]
@@ -467,7 +476,7 @@ flowchart TD
     B -->|invalid| B1["400"]
     B --> C["ImageUpload.Validate<br/>≤10 files · ≤5 MB · allowlist + magic bytes"]
     C -->|fail| C1["400"]
-    C --> D["MediatR → CreatePostValidator<br/>rate 1–5 · names ≤200"] -->|invalid| D1["400"]
+    C --> D["MediatR → CreatePostValidator<br/>rate 1–5 · names ≤200 · caption ≤2000"] -->|invalid| D1["400"]
     D --> E["CreatePostHandler → identity"] -->|null| E1["401"]
     E --> F["R2 PutObject per image"]
     F --> G{"Mongo find Shop<br/>Name = x AND Address = y AND !IsDeleted"}
@@ -488,7 +497,7 @@ create two shops.
 ```mermaid
 flowchart TD
     A["Client<br/>PUT /api/v1/Post/{postId}/caption<br/>{Caption}"] --> B["PostController.ChangeCaption"]
-    B --> C["MediatR → ChangeCaptionValidator"] --> D["ChangeCaptionHandler → identity"]
+    B --> C["MediatR → ChangeCaptionValidator<br/>caption non-null ≤2000"] --> D["ChangeCaptionHandler → identity"]
     D -->|null| D1["401"]
     D --> E["Mongo find Id AND <b>AccountId = me</b> AND !IsDeleted<br/>project Caption, ShopId"]
     E -->|null| E1["404 'Post not found'<br/>(also when not the owner)"]
@@ -525,30 +534,35 @@ sequenceDiagram
     participant R2 as R2
     participant R as Redis
     participant Q as RabbitMQ
-    participant S as DeletePostService
+    participant S as PostService
 
     C->>Ctl: DELETE /api/v1/Post/{postId}
     Ctl->>H: MediatR → DeletePostValidator → handler
     H->>H: identity
     H->>M: find Id AND AccountId = me AND !IsDeleted
     H->>M: $set IsDeleted, DeletedAt
-    loop each post image
-        H->>R2: DeleteObject
-    end
     H->>R: DEL post cache, bump 4 post lists
     H->>Q: publish recalculate-shop-rate
     H->>Q: publish delete-post
     H-->>Ctl: Result.Ok
     Ctl-->>C: 204 No Content
     Q->>S: ProcessAfterDeleteAsync
-    S->>M: find non-deleted comments on the post
-    loop each comment image
+    loop each post image
         S->>R2: DeleteObject
     end
+    S->>M: find non-deleted comments on the post
     S->>M: soft-delete those comments
+    loop each comment
+        S->>Q: publish delete-comment
+    end
     S->>R: DEL each comment cache, bump comment:post:{id}<br/>and comment:account:{author} per distinct author
 ```
-`Post.CommentAmount` is not reset; the shop rate is recomputed from remaining live posts.
+`Post.CommentAmount` is not reset; the shop rate is recomputed from remaining live posts. The
+request makes no object-storage calls — the post's own images are deleted by the worker, so the
+owner path and the administrator path (#75) share one implementation. The comments' images are not
+deleted here either: a post's comment count is unbounded, so each one gets its own `delete-comment`
+message and `CommentService.ProcessAfterDeleteAsync` stays the single place that cleans a comment's
+images.
 
 ### 28. Get post — `GET /Post/{postId}`
 
@@ -667,7 +681,7 @@ sequenceDiagram
     H->>H: Comment.Create — content ≤2000
     H->>M: insertOne(comment)
     H->>M: updateOne(post, !IsDeleted) $inc CommentAmount +1
-    H->>R: SET comment 7d, DEL post cache,<br/>bump comment:post:{id}, comment:account:{me}
+    H->>R: SET comment 7d, DEL post cache,<br/>bump comment:post:{id}, comment:account:{me},<br/>post:all, post:mostReacted
     H->>Q: publish create-comment
     H-->>Ctl: Result.Ok(CommentDto)
     Ctl-->>C: 200 OK
@@ -692,7 +706,7 @@ counter stays correct, but an orphan comment row is still inserted.
 ```mermaid
 flowchart TD
     A["Client<br/>PUT /api/v1/Comment/{commentId}<br/>{Content}"] --> B["CommentController.ChangeContent"]
-    B --> C["MediatR → ChangeContentValidator"] --> D["ChangeContentHandler → identity"]
+    B --> C["MediatR → ChangeContentValidator<br/>content non-null ≤2000"] --> D["ChangeContentHandler → identity"]
     D -->|null| D1["401"]
     D --> E["Mongo find Id AND AccountId = me AND !IsDeleted<br/>project Content, PostId"]
     E -->|null| E1["404 'Comment not found'"]
@@ -709,15 +723,20 @@ flowchart TD
     A["Client<br/>DELETE /api/v1/Comment/{commentId}"] --> B["CommentController.DeleteComment"]
     B --> C["MediatR → DeleteCommentValidator"] --> D["DeleteCommentHandler → identity"]
     D -->|null| D1["401"]
-    D --> E["Mongo find Id AND AccountId = me AND !IsDeleted<br/>project PostId, Images"]
+    D --> E["Mongo find Id AND AccountId = me AND !IsDeleted<br/>project PostId"]
     E -->|null| E1["404 'Comment not found'"]
     E --> F["Mongo $set IsDeleted, DeletedAt"]
-    F --> G["R2 DeleteObject per comment image"]
-    G --> H["Mongo updateOne(post, !IsDeleted)<br/>$inc CommentAmount −1"]
-    H --> I["Redis DEL comment + post cache<br/>bump comment:post, comment:account"]
-    I --> J["204 No Content"]
+    F --> G["Mongo updateOne(post, !IsDeleted)<br/>$inc CommentAmount −1"]
+    G --> H["Redis DEL comment + post cache<br/>bump comment:post, comment:account,<br/>post:all, post:mostReacted"]
+    H --> I["RabbitMQ publish delete-comment"] --> J["204 No Content"]
+    I --> K["CommentService.ProcessAfterDeleteAsync<br/>R2 DeleteObject per image"]
 ```
-Fully synchronous — no queue, unlike post deletion.
+The soft delete, the parent's `CommentAmount` decrement and the cache invalidations stay in the
+request because a caller returning before those land would serve stale reads. `CommentAmount` is
+projected into `PostSummaryDto`, so the two post lists that render it — `post:all` and
+`post:mostReacted`, the feed's Latest and Top — are bumped here as well; `post:account:{id}` and
+`post:shop:{id}` are not, because those are thumbnail grids that carry no counts. Only the image
+deletes move to the queue — nobody is waiting on object storage.
 
 ### 38. Get comment — `GET /Comment/{commentId}`
 
@@ -861,7 +880,7 @@ sequenceDiagram
     participant Ctl as ReactionController
     participant H as ReactPostHandler
     participant Q as RabbitMQ
-    participant S as ReactionService
+    participant S as ReactPostService
     participant M as MongoDB
     participant R as Redis
     participant N as NotificationService
@@ -897,8 +916,8 @@ The reaction snapshots the actor's `Name` and latest `Avatar` into the embedded 
 flowchart TD
     A["Client<br/>DELETE /api/v1/Reaction/post/{postId}"] --> B["ReactionController.UnreactPost"]
     B --> C["MediatR → UnreactPostValidator → handler · identity"] -->|null| C1["401"]
-    C --> D["RabbitMQ publish unreact-post"] --> E["202 Accepted"]
-    D -.-> F["ReactionService.ProcessUnreactPostAsync"]
+    C --> D["RabbitMQ publish react-post {IsUndo: true}"] --> E["202 Accepted"]
+    D -.-> F["ReactPostService.ProcessUnreactPostAsync"]
     F --> G["Mongo updateOne(post, !IsDeleted,<br/>AnyEq Reactions.AccountId = me)<br/>$pull Reactions, $inc −1"]
     G -->|"MatchedCount ≠ 1"| G1["Fail 'Not reacted to this post' — logged"]
     G --> H["Redis DEL post cache, bump post:reaction<br/>re-read post → bump 4 post lists"]
@@ -912,7 +931,7 @@ flowchart TD
     A["Client<br/>POST /api/v1/Reaction/comment/{commentId}"] --> B["ReactionController.ReactComment"]
     B --> C["MediatR → ReactCommentValidator → handler · identity"] -->|null| C1["401"]
     C --> D["RabbitMQ publish react-comment"] --> E["202 Accepted"]
-    D -.-> F["ReactionService.ProcessReactCommentAsync · load actor"]
+    D -.-> F["ReactCommentService.ProcessReactCommentAsync · load actor"]
     F --> G["Mongo updateOne(comment, NOT already reacted)<br/>$push Reactions, $inc +1"]
     G -->|"≠ 1"| G1["Fail 'Already reacted to this comment'"]
     G --> H["Redis DEL comment cache<br/>bump comment:reaction:{id}"]
@@ -928,7 +947,7 @@ The notification's `TargetId` is the post, so clients deep-link to the post rath
 flowchart TD
     A["Client<br/>DELETE /api/v1/Reaction/comment/{commentId}"] --> B["ReactionController.UnreactComment"]
     B --> C["MediatR → UnreactCommentValidator → handler · identity"] -->|null| C1["401"]
-    C --> D["RabbitMQ publish unreact-comment"] --> E["202 Accepted"]
+    C --> D["RabbitMQ publish react-comment {IsUndo: true}"] --> E["202 Accepted"]
     D -.-> F["Mongo updateOne(comment, AnyEq AccountId = me)<br/>$pull Reactions, $inc −1"]
     F -->|"≠ 1"| F1["Fail 'Not reacted to this comment'"]
     F --> G["Redis DEL comment cache, bump comment:reaction<br/>re-read → bump comment:post, comment:account"]
@@ -1006,13 +1025,14 @@ flowchart TD
     B --> C["MediatR → UnfollowValidator → handler · identity"] -->|null| C1["401"]
     C --> D{"identity == followingId?"}
     D -->|yes| D1["400 'Cannot unfollow yourself'"]
-    D -->|no| E["RabbitMQ publish unfollow"] --> F["202 Accepted"]
+    D -->|no| E["RabbitMQ publish follow {IsUndo: true}"] --> F["202 Accepted"]
     E -.-> G["FollowService.ProcessUnfollowAsync<br/>bulkWrite both sides $pull + $inc −1,<br/>each filtered AnyEq"]
     G -->|"Matched 0"| G1["Fail 'Not following this account'"]
     G -->|"Matched 1"| G2["log — half-applied, repaired"]
     G --> H["Redis DEL both account caches<br/>bump both follow lists"]
 ```
-No notification is raised on unfollow.
+No notification is raised on unfollow. It shares the `follow` queue so a rapid follow/unfollow pair
+cannot apply out of order.
 
 ### 56. Followers of an account — `GET /Follow/follower/{accountId}`
 
@@ -1083,7 +1103,7 @@ The only save path that checks the target exists.
 flowchart TD
     A["Client<br/>DELETE /api/v1/Save/post/{postId}"] --> B["SaveController.UnsavePost"]
     B --> C["MediatR → UnsavePostValidator → handler · identity"] -->|null| C1["401"]
-    C --> D["RabbitMQ publish unsave-post"] --> E["202 Accepted"]
+    C --> D["RabbitMQ publish save-post {IsUndo: true}"] --> E["202 Accepted"]
     D -.-> F["Mongo updateOne(account,<br/>AnyEq SavePosts.PostId = x) $pull SavePosts"]
     F -->|"≠ 1"| F1["Fail 'Not saved this post'"]
     F --> G["Redis bump account:savepost:{me}"]
@@ -1109,7 +1129,7 @@ flowchart TD
 flowchart TD
     A["Client<br/>DELETE /api/v1/Save/shop/{shopId}"] --> B["SaveController.UnsaveShop"]
     B --> C["MediatR → UnsaveShopValidator → handler · identity"] -->|null| C1["401"]
-    C --> D["RabbitMQ publish unsave-shop"] --> E["202 Accepted"]
+    C --> D["RabbitMQ publish save-shop {IsUndo: true}"] --> E["202 Accepted"]
     D -.-> F["Mongo updateOne(account,<br/>AnyEq SaveShops.ShopId = x) $pull SaveShops"]
     F -->|"≠ 1"| F1["Fail 'Not saved this shop'"]
     F --> G["Redis bump account:saveshop:{me}"]
@@ -1125,12 +1145,14 @@ flowchart TD
     D --> E["Redis GET page key"]
     E -->|hit| Z["200 page of PostSummaryDto"]
     E -->|miss| F["EmbeddedArrayPaginator over Account.SavePosts<br/>→ page of PostIds, ordered SavedAt desc"]
-    F --> G["Mongo find posts In(ids), !IsDeleted<br/>→ dictionary by Id"]
+    F --> G["Mongo find posts In(ids), !IsDeleted<br/>project Summary → dictionary by Id"]
     G --> H["re-order to match the id page · map DTO"]
     H --> I["Redis SET 2 min"] --> Z
 ```
 Two-stage lookup. Deleted posts drop out, so a page can return fewer than `pageSize` items while
-still reporting `HasMore`.
+still reporting `HasMore`. The second stage projects `PostProjection.Summary` rather than reading
+whole documents, which would drag each post's entire `Reactions` array over the wire to render a
+summary.
 
 ### 65. My saved shops — `GET /Save/me/shop`
 
@@ -1155,7 +1177,7 @@ flowchart TD
 ```mermaid
 flowchart TD
     A["Client<br/>POST /api/v1/Report<br/>{PostId?, CommentId?, AccountId?, Reason}"] --> B["ReportController.CreateReport"]
-    B --> C["MediatR → CreateReportValidator — reason non-empty"] -->|invalid| C1["400"]
+    B --> C["MediatR → CreateReportValidator<br/>reason non-empty ≤2000 · target ids non-empty when sent"] -->|invalid| C1["400"]
     C --> D["CreateReportHandler → identity"] -->|null| D1["401"]
     D --> E["Report.Create<br/>reporterId set · reason non-blank"]
     E -->|fail| E1["400"]
@@ -1281,9 +1303,10 @@ existing entries keep their numbers; each is gated by `[Authorize(Roles = nameof
 The three deletes are **separate use cases rather than a flag on the existing handlers**. The
 self-service handlers (#9, #27, #37) fold ownership into their Mongo filter, which is what the
 client depends on; adding a bypass would put an administrator-only branch inside the path every
-user takes. Each admin handler instead mirrors its counterpart's side effects in full — the
-image cleanup, every cache invalidation, and the RabbitMQ cascade — because a delete that only
-flips `IsDeleted` leaves shop rates and comment counters stale.
+user takes. Each admin handler instead mirrors its counterpart's side effects in full — every cache
+invalidation and every RabbitMQ cascade, including the `delete-post`/`delete-comment` messages that
+remove the images — because a delete that only flips `IsDeleted` leaves shop rates and comment
+counters stale, and a missing message orphans the images in R2.
 
 ### 73. List all comments — `GET /Comment` · **admin**
 
@@ -1306,7 +1329,7 @@ index added alongside it, which `account` and `post` already had for their own a
 ```mermaid
 flowchart TD
     A["Client<br/>DELETE /api/v1/Account/admin/{accountId}"] --> B["AccountController.AdminDeleteAccount<br/>[Authorize(Roles=Admin)]"]
-    B --> C["MediatR → AdminDeleteAccountHandler"]
+    B --> C["MediatR → AdminDeleteAccountValidator → AdminDeleteAccountHandler"]
     C --> D{"caller id == target id?"}
     D -->|yes| D1["400 'Use the self-service endpoint…'"]
     D -->|no| E["Mongo find Id, !IsDeleted · project Email, IsDeleted"]
@@ -1314,7 +1337,7 @@ flowchart TD
     E --> F["account.DeleteAccount() → set IsDeleted, DeletedAt"]
     F --> G["Redis DEL account:v1:id · account:v1:email<br/>ListCache invalidate account:all"]
     G --> H["RabbitMQ publish delete-account"] --> Z["200"]
-    H --> I["DeleteAccountService cascade<br/>posts · comments · reactions · follow edges · saves"]
+    H --> I["AccountService cascade<br/>posts · comments · reactions · follow edges · saves"]
 ```
 Self-deletion is refused because it would revoke the credentials the caller is using; #9 is the
 deliberate route for that.
@@ -1324,12 +1347,11 @@ deliberate route for that.
 ```mermaid
 flowchart TD
     A["Client<br/>DELETE /api/v1/Post/admin/{postId}"] --> B["PostController.AdminDeletePost<br/>[Authorize(Roles=Admin)]"]
-    B --> C["MediatR → AdminDeletePostHandler"]
-    C --> D["Mongo find Id, !IsDeleted<br/>project AccountId, ShopId, Images"]
+    B --> C["MediatR → AdminDeletePostValidator → AdminDeletePostHandler"]
+    C --> D["Mongo find Id, !IsDeleted<br/>project AccountId, ShopId"]
     D -->|null| D1["404 'Post not found'"]
     D --> E["post.DeletePost() → set IsDeleted, DeletedAt"]
-    E --> F["R2 delete each image"]
-    F --> G["Redis DEL post:v1:id<br/>ListCache invalidate all · account:{post.AccountId} · shop:{ShopId} · mostReacted"]
+    E --> G["Redis DEL post:v1:id<br/>ListCache invalidate all · account:{post.AccountId} · shop:{ShopId} · mostReacted"]
     G --> H["RabbitMQ publish recalculate-shop-rate + delete-post"] --> Z["200"]
 ```
 The per-account list signature is the **post author's** id, not the acting administrator's —
@@ -1340,13 +1362,13 @@ invalidating the admin's own list would leave the author's cached page serving a
 ```mermaid
 flowchart TD
     A["Client<br/>DELETE /api/v1/Comment/admin/{commentId}"] --> B["CommentController.AdminDeleteComment<br/>[Authorize(Roles=Admin)]"]
-    B --> C["MediatR → AdminDeleteCommentHandler"]
-    C --> D["Mongo find Id, !IsDeleted<br/>project AccountId, PostId, Images"]
+    B --> C["MediatR → AdminDeleteCommentValidator → AdminDeleteCommentHandler"]
+    C --> D["Mongo find Id, !IsDeleted<br/>project AccountId, PostId"]
     D -->|null| D1["404 'Comment not found'"]
     D --> E["comment.DeleteComment() → set IsDeleted, DeletedAt"]
-    E --> F["R2 delete each image"]
-    F --> G["Mongo post.CommentAmount.Value −1"]
-    G --> H["Redis DEL comment:v1:id · post:v1:id<br/>ListCache invalidate all · post:{PostId} · account:{comment.AccountId}"] --> Z["200"]
+    E --> F["Mongo post.CommentAmount.Value −1"]
+    F --> G["Redis DEL comment:v1:id · post:v1:id<br/>ListCache invalidate comment all · post:{PostId} · account:{comment.AccountId}<br/>· post:all · post:mostReacted"]
+    G --> H["RabbitMQ publish delete-comment"] --> Z["200"]
 ```
 
 ### 77. Revoke refresh token — `POST /Auth/refresh-token/{id}/revoke` · **admin**
@@ -1354,7 +1376,7 @@ flowchart TD
 ```mermaid
 flowchart TD
     A["Client<br/>POST /api/v1/Auth/refresh-token/{id}/revoke"] --> B["AuthController.RevokeRefreshToken<br/>[Authorize(Roles=Admin)]"]
-    B --> C["MediatR → RevokeRefreshTokenHandler"]
+    B --> C["MediatR → RevokeRefreshTokenValidator → RevokeRefreshTokenHandler"]
     C --> D["Mongo find Id, !IsDeleted"]
     D -->|null| D1["404 'Refresh token not found'"]
     D --> E["refreshToken.Revoke()"]
