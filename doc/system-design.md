@@ -49,7 +49,8 @@ wrappers, `CacheKey`, `ListCache`, `AppError`, `PostFeedEnricher`, `ReactionMemb
 | `NotificationHub` | `[Authorize]` SignalR hub at `/hubs/notification`; empty body — identity comes from `AccountIdUserIdProvider`. |
 | 7 queue services | `FollowService`, `ReactionService`, `SaveService`, `CommentService`, `ShopRateService`, `DeleteAccountService`, `DeletePostService` — the actual work behind queued messages. |
 | `QueueConsumerHost<TMessage>` | One generic `BackgroundService`, registered 14 times, one per queue. |
-| `IndexInitializer`, `NormalizedFieldBackfillInitializer` | `BackgroundService`s that build indexes and backfill normalized search fields without blocking startup. |
+| `IndexInitializer`, `NormalizedFieldBackfillInitializer`, `AdminSeeder` | `BackgroundService`s that build indexes, backfill normalized search fields and seed the administrator account without blocking startup. |
+| `SoftDeletePurgeHost` | `BackgroundService` on a `PeriodicTimer`; hard-deletes accounts, posts, comments and shops soft-deleted more than 30 days ago, plus revoked refresh tokens. |
 
 ## Component interaction
 
@@ -259,6 +260,7 @@ and call `IMongoDbContext.GetCollection<T>()`.
 `account`, `post`, `comment`, `report`, `shop`, `refreshtoken`, `notification`
 (`src/app/common/CollectionName.cs`). Deletion is **soft** everywhere: `BaseEntity` carries
 `IsDeleted`, `DeletedAt`, `RecoveredAt`, and effectively every read filters `!x.IsDeleted`.
+`SoftDeletePurgeHost` turns a soft delete permanent 30 days after `DeletedAt`.
 
 Entity state is mapped through `BsonConfiguration` (`src/infra/persistence/configuration/`), which
 registers class maps that expose the private `_avatars`, `_followers`, `_followings`, `_savePosts`,

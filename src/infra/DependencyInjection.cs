@@ -104,6 +104,7 @@ public static class DependencyInjection
         services.AddHostedService<IndexInitializer>();
         services.AddHostedService<NormalizedFieldBackfillInitializer>();
         services.AddHostedService<AdminSeeder>();
+        services.AddHostedService<SoftDeletePurgeHost>();
 
         services.AddQueueConsumer<FollowMessage>(
             QueueName.Follow,

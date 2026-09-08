@@ -69,16 +69,57 @@ Registered as an `IMongoClient` singleton; `DbContext` resolves the database by 
 Indexes are declared in `src/infra/persistence/configuration/IndexConfiguration.cs` and created by
 `IndexInitializer`, a `BackgroundService` so builds never block startup:
 
-- **account** — unique `Email` partial on `IsDeleted: false`; `(Name, IsDeleted, CreatedAt desc, Id desc)`; `(IsDeleted, CreatedAt desc, Id desc)`; multikey `Followers.AccountId`, `Followings.AccountId`, `SavePosts.PostId`, `SaveShops.ShopId`
-- **post** — by `AccountId`, by `ShopId`, by `IsDeleted`, by `ReactionAmount.Value desc`, by `CaptionNormalized`; multikey `Reactions.AccountId`
-- **comment** — `(PostId, IsDeleted, CreatedAt desc, Id desc)`; `(AccountId, IsDeleted, CreatedAt desc, Id desc)`; `(IsDeleted, CreatedAt desc, Id desc)` backing the unfiltered administrator listing; multikey `Reactions.AccountId`
-- **shop** — unique `(Name, Address)` partial on `IsDeleted: false`; by `Name`, `Address`, `NameNormalized`, `AddressNormalized`, `IsDeleted`, `Rate.Value desc`
+- **account** — unique `Email` partial on `IsDeleted: false`; `(Name, IsDeleted, CreatedAt desc, Id desc)`; `(IsDeleted, CreatedAt desc, Id desc)`; multikey `Followers.AccountId`, `Followings.AccountId`, `SavePosts.PostId`, `SaveShops.ShopId`; `DeletedAt` partial on `IsDeleted: true`
+- **post** — by `AccountId`, by `ShopId`, by `IsDeleted`, by `ReactionAmount.Value desc`, by `CaptionNormalized`; multikey `Reactions.AccountId`; `DeletedAt` partial on `IsDeleted: true`
+- **comment** — `(PostId, IsDeleted, CreatedAt desc, Id desc)`; `(AccountId, IsDeleted, CreatedAt desc, Id desc)`; `(IsDeleted, CreatedAt desc, Id desc)` backing the unfiltered administrator listing; multikey `Reactions.AccountId`; `DeletedAt` partial on `IsDeleted: true`
+- **shop** — unique `(Name, Address)` partial on `IsDeleted: false`; by `Name`, `Address`, `NameNormalized`, `AddressNormalized`, `IsDeleted`, `Rate.Value desc`; `DeletedAt` partial on `IsDeleted: true`
 - **report** — by `IsDeleted`, `PostId`, `CommentId`, `AccountId`, `ReporterId`
-- **refreshtoken** — unique `Token`; **TTL index on `ExpiryDate` with `ExpireAfter = TimeSpan.Zero`**; by `IsDeleted`
+- **refreshtoken** — unique `Token`; **TTL index on `ExpiryDate` with `ExpireAfter = TimeSpan.Zero`**; by `IsDeleted`; `IsRevoked` partial on `IsRevoked: true`
+
+The four `DeletedAt` indexes and the `IsRevoked` index exist only to back the retention sweep; the
+partial filters keep them holding soft-deleted rows rather than whole collections.
 
 `NormalizedFieldBackfillInitializer` is a second `BackgroundService` that fills
 `Shop.NameNormalized`/`AddressNormalized` and `Post.CaptionNormalized` for documents missing them,
 scanning with a cursor and applying `BulkWriteAsync` per batch.
+
+#### Retention — `SoftDeletePurgeHost`
+
+Soft deletes are not permanent: `BaseEntity.Delete` sets `IsDeleted`/`DeletedAt` and `Recover`
+clears them again. `SoftDeletePurgeHost` is the `BackgroundService` that makes them permanent once
+the window has passed — **accounts, posts, comments and shops whose `DeletedAt` is more than 30 days
+old are hard-deleted**, and revoked refresh tokens are dropped on sight (the `ExpiryDate` TTL index
+would reach them within 7 days anyway).
+
+There is no scheduler dependency. The first sweep is held back 10 minutes so a deploy never pays
+for it during startup, and `PeriodicTimer` runs it every 6 hours after that; a delay short enough
+to survive frequent Railway restarts, which a once-a-day timer would not. Each collection is
+purged in batches of 500 ids with a 200 ms pause between batches, so a large backlog never lands as
+one long write burst. A sweep resolves its own DI scope, and failures are logged without stopping
+the loop.
+
+R2 objects are removed at soft-delete time — by the delete handlers for a post's or comment's own
+images, and by `DeleteAccountService` for avatars and for the images of the posts and comments the
+cascade takes down — so the sweep itself is pure Mongo work.
+
+Cascade soft-deletes go through the driver rather than `BaseEntity.Delete`, so each one has to
+stamp `DeletedAt` itself or the row would never expire. Rows written before that was true have
+`IsDeleted: true` with no `DeletedAt`; every sweep stamps those first, which starts their 30-day
+window at the sweep that finds them rather than purging them immediately.
+
+Reports and notifications pointing at a purged **post or comment** are left behind, which the sweep
+does not make worse: they already dangle for the 30 days the row spends soft-deleted. Notifications
+addressed to a purged **account** are different — once the account row is gone nothing reads them
+and nothing removes them, so `notification` grows by that account's history for good. Known gap; the
+collection has no retention of its own.
+
+`DeleteAccountService` hands each of the account's posts to `DeletePostService`, the same worker the
+direct delete path uses, so comments other accounts left on those posts are soft-deleted with the
+post instead of outliving it as live rows.
+
+A purged shop leaves posts holding its `ShopId` and accounts holding it in `SaveShops`; nothing
+cascades on shop deletion, so those references already dangle for the 30 days the shop spends
+soft-deleted. `report` carries the same `IsDeleted`/`DeletedAt` fields but is not swept.
 
 ### Redis — cache, ephemeral state, SignalR backplane
 
@@ -199,7 +240,7 @@ graph TB
 
     subgraph container["Railway service — mcr.microsoft.com/dotnet/aspnet:9.0<br/>USER $APP_UID · binds $PORT (8080 fallback)"]
         api["api.dll<br/>controllers + SignalR hub"]
-        hosted["16 hosted services<br/>14 queue consumers<br/>IndexInitializer<br/>NormalizedFieldBackfill"]
+        hosted["18 hosted services<br/>14 queue consumers<br/>IndexInitializer<br/>NormalizedFieldBackfill<br/>AdminSeeder<br/>SoftDeletePurgeHost"]
     end
 
     mongo[("MongoDB<br/>7 collections")]

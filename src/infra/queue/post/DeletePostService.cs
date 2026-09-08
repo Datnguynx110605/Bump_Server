@@ -66,7 +66,8 @@ public sealed class DeletePostService : IDeletePostService
             Builders<Comment>.Filter.Eq(x => x.IsDeleted, false));
 
         var commentUpdate = Builders<Comment>.Update
-            .Set(x => x.IsDeleted, true);
+            .Set(x => x.IsDeleted, true)
+            .Set(x => x.DeletedAt, DateTime.UtcNow);
 
         await commentCollection.UpdateManyAsync(
             commentFilter,

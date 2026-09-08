@@ -68,7 +68,9 @@ direction for this design because `app` owns the interfaces; `infra` supplies th
 `DeletedAt`, `RecoveredAt` and the `Update()`/`Delete()`/`Recover()` transitions. `Update()` and
 `Delete()` refuse to act on an already-deleted entity. Practically every query filters
 `!x.IsDeleted`, and unique indexes are **partial** on `IsDeleted: false` so a deleted account's email
-can be reused.
+can be reused. Soft is not forever: `SoftDeletePurgeHost` hard-deletes accounts, posts, comments and
+shops 30 days after `DeletedAt` (see `doc/infrastructure.md`), which is also the window `Recover()` has to
+run in.
 
 **Entities are only constructible through static factories.** Every entity has a private constructor
 plus a `static DomainResult<T> Create(...)`, and mutations return `DomainResult`. Invariants live on
@@ -184,10 +186,11 @@ graph LR
 
 `AddApi` → `AddApp` → `AddInfra` is the registration chain. Lifetimes: `IConnectionMultiplexer`,
 `IMongoClient`, `IAmazonS3` and `IConnection` are **singletons**; 17 services are registered
-`AddScoped` and `IEmailService` via `AddHttpClient` (also scoped); `AddInfra` contributes **16
-hosted services** — 14 queue consumers plus `IndexInitializer` and
-`NormalizedFieldBackfillInitializer` — which resolve to 18 `IHostedService` descriptors in total once
-the framework's own Data Protection and health-check publisher services are counted.
+`AddScoped` and `IEmailService` via `AddHttpClient` (also scoped); `AddInfra` contributes **18
+hosted services** — 14 queue consumers plus `IndexInitializer`,
+`NormalizedFieldBackfillInitializer`, `AdminSeeder` and `SoftDeletePurgeHost` — which resolve to 20
+`IHostedService` descriptors in total once the framework's own Data Protection and health-check
+publisher services are counted.
 
 Queue consumers are registered with `AddSingleton<IHostedService>` rather than `AddHostedService`
 deliberately: `AddHostedService` routes through `TryAddEnumerable`, which deduplicates by

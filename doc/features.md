@@ -377,7 +377,7 @@ flowchart TD
     J --> K["200 AuthResult (rotated pair)"]
 ```
 Single-use rotation; a replayed revoked token returns 401 without invalidating the family. A TTL
-index on `ExpiryDate` purges expired rows.
+index on `ExpiryDate` purges expired rows, and `SoftDeletePurgeHost` drops revoked ones sooner.
 
 ### 19. List refresh tokens — `GET /Auth/refresh-token` · **admin**
 
@@ -1226,6 +1226,12 @@ flowchart TD
 Ownership is re-checked on the cached branch, so the shared key cannot leak another account's
 notification.
 
+`NotificationProjection.Summary` carries `Type`, `TargetId`, `ActorAccountId` and `ActorAvatar`
+alongside the text fields, because a Mongo inclusion projection returns only the fields it lists and
+those four are what let a client resolve a notification to a destination. Cached entries written
+before they were projected hold `null` in all four and survive until the 7-day TTL expires; the
+notification list below re-reads within 2 minutes and is unaffected.
+
 ### 71. My notifications — `GET /Notification/mine`
 
 ```mermaid
@@ -1237,6 +1243,11 @@ flowchart TD
     E --> F["200 page of NotificationSummaryDto"]
 ```
 `NotificationService` bumps this signature on every notification it creates for the account.
+
+Each item carries `Type` and `TargetId`, which together give the client its destination:
+`Follow` → the actor's account, `PostReaction`/`Comment`/`CommentReaction` → the post. Both
+notification queries share this projection, so the SignalR push payload and the list agree on the
+fields a client needs to deep-link.
 
 ---
 
@@ -1391,3 +1402,10 @@ through `TextNormalizer`; #16 does not.
 **Denormalized actor snapshots go stale.** `Reaction`, `Follower`, `Following` and `Notification`
 each embed the actor's `Name` and latest `Avatar` at write time; a later rename or avatar change does
 not rewrite them.
+
+**Projections and DTOs are coupled by hand.** A Mongo inclusion projection returns only the fields it
+names, so a `*SummaryDto` property with no matching `.Include` silently deserializes to `null` — the
+endpoint keeps returning 200 and nothing fails. `NotificationProjection` omitted four fields this
+way. Nothing enforces the pairing; adding a property to a DTO means adding it to the projection too.
+`AccountSummaryDto.Avatar` is the one intentional mismatch: it is mapped from the projected
+`Avatars` list by `AccountProfile`.

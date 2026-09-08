@@ -51,7 +51,15 @@ public static class IndexConfiguration
                 new CreateIndexModel<Account>(keys.Ascending("Followers.AccountId")),
                 new CreateIndexModel<Account>(keys.Ascending("Followings.AccountId")),
                 new CreateIndexModel<Account>(keys.Ascending("SavePosts.PostId")),
-                new CreateIndexModel<Account>(keys.Ascending("SaveShops.ShopId"))
+                new CreateIndexModel<Account>(keys.Ascending("SaveShops.ShopId")),
+                // Backs the retention sweep in SoftDeletePurgeHost. Partial so it only
+                // carries soft-deleted rows instead of the whole collection.
+                new CreateIndexModel<Account>(
+                    keys.Ascending(x => x.DeletedAt),
+                    new CreateIndexOptions<Account>
+                    {
+                        PartialFilterExpression = Builders<Account>.Filter.Eq(x => x.IsDeleted, true)
+                    })
             },
             cancellationToken);
     }
@@ -89,7 +97,15 @@ public static class IndexConfiguration
                         .Descending(x => x.Id)),
                 // Backs ReactionMembership's per-request membership lookups and the
                 // ElemMatch reaction cleanup in DeleteAccountService.
-                new CreateIndexModel<Post>(keys.Ascending("Reactions.AccountId"))
+                new CreateIndexModel<Post>(keys.Ascending("Reactions.AccountId")),
+                // Backs the retention sweep in SoftDeletePurgeHost. Partial so it only
+                // carries soft-deleted rows instead of the whole collection.
+                new CreateIndexModel<Post>(
+                    keys.Ascending(x => x.DeletedAt),
+                    new CreateIndexOptions<Post>
+                    {
+                        PartialFilterExpression = Builders<Post>.Filter.Eq(x => x.IsDeleted, true)
+                    })
             },
             cancellationToken);
     }
@@ -119,7 +135,15 @@ public static class IndexConfiguration
                         .Descending(x => x.CreatedAt)
                         .Descending(x => x.Id)),
                 // Backs the ElemMatch reaction cleanup in DeleteAccountService.
-                new CreateIndexModel<Comment>(keys.Ascending("Reactions.AccountId"))
+                new CreateIndexModel<Comment>(keys.Ascending("Reactions.AccountId")),
+                // Backs the retention sweep in SoftDeletePurgeHost. Partial so it only
+                // carries soft-deleted rows instead of the whole collection.
+                new CreateIndexModel<Comment>(
+                    keys.Ascending(x => x.DeletedAt),
+                    new CreateIndexOptions<Comment>
+                    {
+                        PartialFilterExpression = Builders<Comment>.Filter.Eq(x => x.IsDeleted, true)
+                    })
             },
             cancellationToken);
     }
@@ -137,6 +161,14 @@ public static class IndexConfiguration
                     {
                         Unique = true,
                         PartialFilterExpression = Builders<Shop>.Filter.Eq(x => x.IsDeleted, false)
+                    }),
+                // Backs the retention sweep in SoftDeletePurgeHost. Partial so it only
+                // carries soft-deleted rows instead of the whole collection.
+                new CreateIndexModel<Shop>(
+                    keys.Ascending(x => x.DeletedAt),
+                    new CreateIndexOptions<Shop>
+                    {
+                        PartialFilterExpression = Builders<Shop>.Filter.Eq(x => x.IsDeleted, true)
                     }),
                 new CreateIndexModel<Shop>(
                     keys.Ascending(x => x.Name)
@@ -222,7 +254,14 @@ public static class IndexConfiguration
                 new CreateIndexModel<RefreshToken>(
                     keys.Ascending(x => x.IsDeleted)
                         .Descending(x => x.CreatedAt)
-                        .Descending(x => x.Id))
+                        .Descending(x => x.Id)),
+                // Backs the revoked-token sweep in SoftDeletePurgeHost.
+                new CreateIndexModel<RefreshToken>(
+                    keys.Ascending(x => x.IsRevoked),
+                    new CreateIndexOptions<RefreshToken>
+                    {
+                        PartialFilterExpression = Builders<RefreshToken>.Filter.Eq(x => x.IsRevoked, true)
+                    })
             },
             cancellationToken);
     }

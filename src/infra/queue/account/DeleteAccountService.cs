@@ -10,14 +10,17 @@ public sealed class DeleteAccountService : IDeleteAccountService
     private readonly IMongoDbContext _dbContext;
     private readonly IR2Service _r2Service;
     private readonly IRedisService _redisService;
+    private readonly IDeletePostService _deletePostService;
     public DeleteAccountService(
         IMongoDbContext dbContext,
         IR2Service r2Service,
-        IRedisService redisService)
+        IRedisService redisService,
+        IDeletePostService deletePostService)
     {
         _dbContext = dbContext;
         _r2Service = r2Service;
         _redisService = redisService;
+        _deletePostService = deletePostService;
     }
 
     public async Task<Result> ProcessAfterDeleteAsync(
@@ -56,7 +59,8 @@ public sealed class DeleteAccountService : IDeleteAccountService
             Builders<Comment>.Filter.Eq(x => x.IsDeleted, false));
 
         var ownerCommentUpdate = Builders<Comment>.Update
-            .Set(x => x.IsDeleted, true);
+            .Set(x => x.IsDeleted, true)
+            .Set(x => x.DeletedAt, DateTime.UtcNow);
 
         var postFilter = Builders<Post>.Filter.ElemMatch(x => x.Reactions, r => r.AccountId == account.Id);
 
@@ -69,7 +73,8 @@ public sealed class DeleteAccountService : IDeleteAccountService
             Builders<Post>.Filter.Eq(x => x.IsDeleted, false));
 
         var ownerPostUpdate = Builders<Post>.Update
-            .Set(x => x.IsDeleted, true);
+            .Set(x => x.IsDeleted, true)
+            .Set(x => x.DeletedAt, DateTime.UtcNow);
 
         var commentFilter = Builders<Comment>.Filter.ElemMatch(x => x.Reactions, r => r.AccountId == account.Id);
 
@@ -97,12 +102,17 @@ public sealed class DeleteAccountService : IDeleteAccountService
 
         var ownerComments = await commentCollection
             .Find(ownerCommentFilter)
-            .Project<Comment>(Builders<Comment>.Projection.Include(x => x.Id).Include(x => x.PostId))
+            .Project<Comment>(Builders<Comment>.Projection
+                .Include(x => x.Id)
+                .Include(x => x.PostId)
+                .Include(x => x.Images))
             .ToListAsync(cancellationToken);
 
         var ownerPosts = await postCollection
             .Find(ownerPostFilter)
-            .Project<Post>(Builders<Post>.Projection.Include(x => x.Id))
+            .Project<Post>(Builders<Post>.Projection
+                .Include(x => x.Id)
+                .Include(x => x.Images))
             .ToListAsync(cancellationToken);
 
         var reactedPosts = await postCollection
@@ -154,6 +164,27 @@ public sealed class DeleteAccountService : IDeleteAccountService
                 followingFilter,
                 followingUpdate,
                 cancellationToken : cancellationToken));
+
+        // The account's own posts and comments are soft-deleted here rather than through
+        // their delete handlers, so their images have nothing else to remove them from R2.
+        foreach(var image in ownerPosts.SelectMany(x => x.Images)
+            .Concat(ownerComments.SelectMany(x => x.Images)))
+        {
+            await _r2Service.DeleteAsync(
+                image.Url,
+                cancellationToken);
+        }
+
+        // Other accounts' comments on those posts are not covered by ownerCommentFilter, and
+        // would otherwise survive as live rows pointing at a post the retention sweep deletes.
+        // This is exactly what the DeletePost queue worker already does, so reuse it — the
+        // overlapping R2 deletes above are idempotent.
+        foreach(var post in ownerPosts)
+        {
+            await _deletePostService.ProcessAfterDeleteAsync(
+                post.Id,
+                cancellationToken);
+        }
 
         var commentCountByPost = ownerComments
             .GroupBy(x => x.PostId)
