@@ -45,6 +45,16 @@ public sealed record CacheKey
         return $"notification:v1:id:{notificationId}";
     }
 
+    // The accounts this account reacts to most, resolved by GetRelatedPostHandler. The
+    // aggregation behind it scans every post the account has ever reacted to, so it is
+    // computed once an hour rather than per request. An hour of drift is invisible in a
+    // related feed: reacting to a new author starts influencing it on the next refresh.
+    public static TimeSpan DefaultAffinityTTL = TimeSpan.FromHours(1);
+    public static string Affinity(Guid accountId)
+    {
+        return $"affinity:v1:account:{accountId}";
+    }
+
     public static TimeSpan DefaultListTTL = TimeSpan.FromMinutes(2);
 
     // The version suffix is what makes invalidation complete. Deleting keys directly only

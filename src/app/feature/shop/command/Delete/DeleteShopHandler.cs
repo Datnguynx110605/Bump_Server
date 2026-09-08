@@ -69,11 +69,6 @@ internal sealed class DeleteShopHandler
                 _redisService,
                 CollectionName.Shop,
                 filterSignature: null,
-                cancellationToken),
-            ListCache.InvalidateAsync(
-                _redisService,
-                CollectionName.Shop,
-                "mostRated",
                 cancellationToken));
 
         return Result.Ok();

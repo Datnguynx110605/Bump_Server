@@ -1,4 +1,4 @@
-using AutoMapper;
+﻿using AutoMapper;
 using domain;
 using FluentResults;
 using MediatR;
@@ -68,11 +68,19 @@ internal sealed class CreatePostHandler
         Guid shopId;
         if(existingShop is not null)
         {
+            // The first post to name a (shop, address) pair fixes its coordinate for
+            // good — later posts reuse the row and never overwrite Location. The client
+            // sources both from one place-picker result, so a second poster picking the
+            // same place submits the same coordinate anyway.
             shopId = existingShop.Id;
         }
         else
         {
-            var shopResult = Shop.Create(request.shopName, request.shopAddress);
+            var shopResult = Shop.Create(
+                request.shopName,
+                request.shopAddress,
+                request.latitude,
+                request.longitude);
             if(!shopResult.IsSuccess)
                 return Result.Fail(shopResult.Error);
 
@@ -94,11 +102,6 @@ internal sealed class CreatePostHandler
                     _redisService,
                     CollectionName.Shop,
                     filterSignature: null,
-                    cancellationToken),
-                ListCache.InvalidateAsync(
-                    _redisService,
-                    CollectionName.Shop,
-                    "mostRated",
                     cancellationToken));
 
             shopId = shop.Id;
@@ -146,11 +149,6 @@ internal sealed class CreatePostHandler
                 _redisService,
                 CollectionName.Post,
                 $"shop:{shopId}",
-                cancellationToken),
-            ListCache.InvalidateAsync(
-                _redisService,
-                CollectionName.Post,
-                "mostReacted",
                 cancellationToken));
 
         var recalculateMessage = new RecalculateShopRateMessage(

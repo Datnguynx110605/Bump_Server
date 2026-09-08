@@ -1,4 +1,4 @@
-# Infrastructure
+﻿# Infrastructure
 
 Every external service the system integrates with, how it is configured, and how the application is
 packaged. Runtime data flow is in [`system-design.md`](./system-design.md).
@@ -70,15 +70,20 @@ Indexes are declared in `src/infra/persistence/configuration/IndexConfiguration.
 `IndexInitializer`, a `BackgroundService` so builds never block startup:
 
 - **account** — unique `Email` partial on `IsDeleted: false`; `(Name, IsDeleted, CreatedAt desc, Id desc)`; `(IsDeleted, CreatedAt desc, Id desc)`; multikey `Followers.AccountId`, `Followings.AccountId`, `SavePosts.PostId`, `SaveShops.ShopId`; `DeletedAt` partial on `IsDeleted: true`
-- **post** — by `AccountId`, by `ShopId`, by `IsDeleted`, by `ReactionAmount.Value desc`, by `CaptionNormalized`; multikey `Reactions.AccountId`; `DeletedAt` partial on `IsDeleted: true`
+- **post** — by `AccountId`, by `ShopId`, by `IsDeleted`, by `CaptionNormalized`; multikey `Reactions.AccountId` backing both `ReactionMembership` and the affinity ranking in `GetRelatedPost`; `DeletedAt` partial on `IsDeleted: true`
 - **comment** — `(PostId, IsDeleted, CreatedAt desc, Id desc)`; `(AccountId, IsDeleted, CreatedAt desc, Id desc)`; `(IsDeleted, CreatedAt desc, Id desc)` backing the unfiltered administrator listing; multikey `Reactions.AccountId`; `DeletedAt` partial on `IsDeleted: true`
-- **shop** — unique `(Name, Address)` partial on `IsDeleted: false`; by `Name`, `Address`, `NameNormalized`, `AddressNormalized`, `IsDeleted`, `Rate.Value desc`; `DeletedAt` partial on `IsDeleted: true`
+- **shop** — unique `(Name, Address)` partial on `IsDeleted: false`; by `Name`, `Address`, `NameNormalized`, `AddressNormalized`, `IsDeleted`; **2dsphere on `Location`** backing `GetBestShopAround`; `DeletedAt` partial on `IsDeleted: true`
 - **report** — by `IsDeleted`, `PostId`, `CommentId`, `AccountId`, `ReporterId`
 - **notification** — `(ToAccountId, IsDeleted, CreatedAt desc, Id desc)`, backing both the recipient's listing and the per-account delete in `AccountService`
 - **refreshtoken** — unique `Token`; **TTL index on `ExpiryDate` with `ExpireAfter = TimeSpan.Zero`**; by `IsDeleted`; `IsRevoked` partial on `IsRevoked: true`
 
 The four `DeletedAt` indexes and the `IsRevoked` index exist only to back the retention sweep; the
 partial filters keep them holding soft-deleted rows rather than whole collections.
+
+A 2dsphere index is sparse over its geo field, and `BsonConfiguration` sets `IgnoreIfNull` on
+`Shop.Location` so a shop posted without a place pick omits the field entirely rather than writing
+`null`. Both together are what let `GetBestShopAround` skip coordinate-less shops instead of failing
+to extract a geo key from them.
 
 `NormalizedFieldBackfillInitializer` is a second `BackgroundService` that fills
 `Shop.NameNormalized`/`AddressNormalized` and `Post.CaptionNormalized` for documents missing them,
@@ -155,6 +160,7 @@ without either forcing it open during composition.
 | `account:v1:email:{email}` | 7 days | Admin lookup by email |
 | `list:v1:{entity}:{signature}:{cursor}:{size}:v{version}` | 2 minutes | Cursor page cache |
 | `list-version:{entity}:{signature}` | 1 day, sliding | List invalidation counter |
+| `affinity:v1:account:{guid}` | 1 hour | Accounts this account reacts to most, ranked; a query input for `GetRelatedPost`, not a page of results, so no version counter governs it |
 | `otp:{email}` | 10 minutes | `{Code, Attempts, ExpiresAt}`, max 3 attempts |
 | `registration:{token}` | 10 minutes | Data-Protection-wrapped email |
 | `rabbitmq:idempotency:{queue}:{messageId}` | 24 hours | SHA-256 of the processed payload |
@@ -384,7 +390,7 @@ that emits one single-line JSON object per event in the shape Railway's log expl
 every Serilog property flattened alongside them:
 
 ```json
-{"timestamp":"2026-09-05T07:08:18.90Z","level":"warn","message":"GET /api/v1/Post/latest took 812 ms","Method":"GET","Path":"/api/v1/Post/latest","ElapsedMilliseconds":812,"CorrelationId":"abc-123"}
+{"timestamp":"2026-09-05T07:08:18.90Z","level":"warn","message":"GET /api/v1/Post/search took 812 ms","Method":"GET","Path":"/api/v1/Post/search","ElapsedMilliseconds":812,"CorrelationId":"abc-123"}
 ```
 
 The template is a `const` in `Program.cs` rather than a `WriteTo` entry in `appsettings.json`

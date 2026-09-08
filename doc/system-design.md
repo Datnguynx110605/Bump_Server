@@ -1,4 +1,4 @@
-# System Design
+﻿# System Design
 
 How the running components fit together and what happens at runtime. Layering rules are in
 [`architecture.md`](./architecture.md); per-feature business rules are in
@@ -21,7 +21,7 @@ How the running components fit together and what happens at runtime. Layering ru
 ### `app` — use cases
 
 78 MediatR handlers under `src/app/feature/<area>/<command|query>/<Name>/`, each a
-`Command`/`Query` record + `Handler` + optional `Validator` (38 of 78 have one). Three pipeline
+`Command`/`Query` record + `Handler` + optional `Validator` (39 of 78 have one). Three pipeline
 behaviours run in registration order (`src/app/DependencyInjection.cs`):
 
 1. `LoggingBehavior` — logs request name, then success or the joined error messages.
@@ -66,7 +66,7 @@ graph TB
 
     subgraph appLayer["app"]
         pipe["MediatR pipeline<br/>Logging → Performance → Validation"]
-        handlers["72 handlers"]
+        handlers["78 handlers"]
     end
 
     subgraph infraLayer["infra"]
@@ -102,7 +102,7 @@ every one of the 78 endpoints has its own diagram and rules in [`features.md`](.
 
 ## Flow 1 — Cached list read
 
-`GET /api/v1/Post/latest` → `GetLatestPostHandler`. Every cached list query resolves a version
+`GET /api/v1/Post/search?keyword=` → `GetPostByKeywordHandler`. Every cached list query resolves a version
 counter first; the version is part of the page key, so bumping the counter retires every cached page
 and page size for that entity/signature at once.
 
@@ -110,23 +110,23 @@ and page size for that entity/signature at once.
 sequenceDiagram
     participant C as Client
     participant Ctl as PostController
-    participant H as GetLatestPostHandler
+    participant H as GetPostByKeywordHandler
     participant P as CachedCursorPaginator
     participant R as Redis
     participant M as MongoDB
     participant E as PostFeedEnricher
 
-    C->>Ctl: GET /api/v1/Post/latest?cursor&pageSize
-    Ctl->>H: GetLatestPostQuery
+    C->>Ctl: GET /api/v1/Post/search?keyword&cursor&pageSize
+    Ctl->>H: GetPostByKeywordQuery
     H->>H: GetAccountId() from JWT claim
-    H->>P: PaginateAsync(entity=post, signature=null)
-    P->>R: GET list-version:post:all
+    H->>P: PaginateAsync(entity=post, signature=keyword:{k})
+    P->>R: GET list-version:post:keyword:{k}
     R-->>P: version N
-    P->>R: GET list:v1:post:all:{cursor}:{size}:vN
+    P->>R: GET list:v1:post:keyword:{k}:{cursor}:{size}:vN
     alt cache hit
         R-->>P: cached page
     else cache miss
-        P->>M: find(IsDeleted=false) sort CreatedAt,Id desc limit size+1
+        P->>M: find(IsDeleted=false, CaptionNormalized ~ k) sort CreatedAt,Id desc limit size+1
         M-->>P: documents
         P->>R: SET page key, TTL 2 min
     end
@@ -141,6 +141,14 @@ sequenceDiagram
 
 `PostFeedEnricher` issues **two additional Mongo queries per list request** to compute the
 `IsReacted`/`IsSaved` flags, and these are never cached because they are per-viewer.
+
+Two list endpoints deviate from this flow. `GetRelatedPost` runs it unchanged for the posts
+themselves, but first resolves its source accounts — followed ids from the account document, and a
+ranking of reaction targets cached separately under `affinity:v1:account:{id}` for an hour, outside
+the version-counter scheme because it is an input to the query rather than a page of results.
+`GetBestShopAround` skips the paginator entirely: its answer depends on a location that only arrives
+with the request, and a `$nearSphere` scan bounded by radius costs about what the cache round-trip
+would.
 
 ## Flow 2 — Write with async fan-out
 

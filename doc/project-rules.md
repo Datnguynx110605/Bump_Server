@@ -1,4 +1,4 @@
-# Project Rules
+﻿# Project Rules
 
 Conventions as they actually exist in the repository, measured rather than assumed. Every rule below
 is followed by the evidence it was derived from.
@@ -113,12 +113,12 @@ Bump_Server/
     │       │   │   ├── Create/           CreatePost{Command, Handler, Validator}
     │       │   │   └── Delete/           DeletePost{Command, Handler, Validator}
     │       │   └── query/
-    │       │       ├── GetLatestPost/        GetLatestPost{Query, Handler}
-    │       │       ├── GetMostReactedPost/   GetMostReactedPost{Query, Handler}
+    │       │       ├── GetAllPost/           GetAllPost{Query, Handler}
     │       │       ├── GetMyPost/            GetMyPost{Query, Handler}
     │       │       ├── GetPostByAccount/     GetPostByAccount{Query, Handler}
     │       │       ├── GetPostByKeyword/     GetPostByKeyword{Query, Handler}
     │       │       ├── GetPostByShop/        GetPostByShop{Query, Handler}
+    │       │       ├── GetRelatedPost/       GetRelatedPost{Query, Handler}
     │       │       └── GetSpecificPost/      GetSpecificPost{Query, Handler}
     │       ├── reaction/
     │       │   ├── command/
@@ -152,7 +152,7 @@ Bump_Server/
     │           │   └── Delete/           DeleteShop{Command, Handler, Validator}
     │           └── query/
     │               ├── GetAllShop/           GetAllShop{Query, Handler}
-    │               ├── GetMostRatedShop/     GetMostRatedShop{Query, Handler}
+    │               ├── GetBestShopAround/    GetBestShopAround{Query, Handler, Validator}
     │               ├── GetShopByAddress/     GetShopByAddress{Query, Handler}
     │               ├── GetShopByKeyword/     GetShopByKeyword{Query, Handler}
     │               ├── GetShopByName/        GetShopByName{Query, Handler}
@@ -210,7 +210,7 @@ exists.
 together rather than hyphenated or split.
 
 **Use-case folders are PascalCase** and named for the operation: `Create`, `Delete`, `ChangeBio`,
-`ChangeCaption`, `GetLatestPost`, `GetMostRatedShop`, `GetReportByTarget`.
+`ChangeCaption`, `GetMyPost`, `GetAllShop`, `GetReportByTarget`.
 
 The `app/feature` tree nests as `feature/<area>/<command|query>/<UseCase>/`, except **`email`, which
 omits the `command`/`query` level** — `app/feature/email/VerifyEmail/` sits directly under the area.
@@ -218,17 +218,17 @@ That is the one structural inconsistency in the feature tree.
 
 ## Namespaces
 
-**File-scoped, lowercase, one per project — 352 files, zero exceptions**, and no block-bodied
+**File-scoped, lowercase, one per project — 369 files, zero exceptions**, and no block-bodied
 namespace anywhere:
 
 | Namespace | Files |
 |---|---|
-| `namespace app;` | 260 |
+| `namespace app;` | 274 |
 | `namespace api;` | 36 |
-| `namespace infra;` | 34 |
+| `namespace infra;` | 37 |
 | `namespace domain;` | 22 |
 
-Namespaces are **flat**: a type in `app/feature/post/query/GetLatestPost/` is still `namespace app;`.
+Namespaces are **flat**: a type in `app/feature/post/query/GetMyPost/` is still `namespace app;`.
 Folders carry no namespace meaning, so every type name must be unique within its project.
 
 Lowercase namespaces are contrary to the .NET convention of PascalCase (`Bump.Application`), and the
@@ -244,7 +244,7 @@ Suffixes are load-bearing and consistent:
 | Suffix | Meaning | Example |
 |---|---|---|
 | `*Command.cs` | MediatR request that mutates | `CreatePostCommand.cs` |
-| `*Query.cs` | MediatR request that reads | `GetLatestPostQuery.cs` |
+| `*Query.cs` | MediatR request that reads | `GetMyPostQuery.cs` |
 | `*Handler.cs` | `IRequestHandler` implementation | `CreatePostHandler.cs` |
 | `*Validator.cs` | `AbstractValidator<T>` | `CreatePostValidator.cs` |
 | `*Request.cs` | HTTP request body record (`api` only) | `ChangeRateRequest.cs` |
@@ -283,7 +283,7 @@ Two opposite conventions coexist, split by layer:
 public sealed record LoginCommand(
    Email email, 
    string password);
-public sealed record GetLatestPostQuery(CursorPageRequest pageRequest);
+public sealed record GetAllShopQuery(CursorPageRequest pageRequest);
 public sealed record ChangeRateCommand(
    Guid postId, 
    Amount rate);
@@ -353,7 +353,7 @@ cosmetic, but visible in diffs.
 ## Scaffolding a new feature
 
 Comparing `post/command/Create`, `comment/command/Create` and `account/command/ChangeBio` gives an
-identical three-file shape; comparing `post/query/GetLatestPost`, `shop/query/GetAllShop` and
+identical three-file shape; comparing `post/query/GetMyPost`, `shop/query/GetAllShop` and
 `report/query/GetReportByTarget` gives a two-file shape plus optional extras.
 
 **A new command** — `src/app/feature/<area>/command/<UseCase>/`:
@@ -372,8 +372,9 @@ identical three-file shape; comparing `post/query/GetLatestPost`, `shop/query/Ge
 2. `<UseCase>Handler.cs` — resolve identity, build a `FilterDefinition`, call
    `CachedCursorPaginator.PaginateAsync` passing `entity` and `filterSignature` (the paginator
    resolves the cache version itself), enrich if needed.
-3. A validator only if the query takes constrained input — **40 of 78 handlers have no validator**,
-   and they are overwhelmingly queries.
+3. A validator only if the query takes constrained input — **39 of 78 handlers have no validator**,
+   and they are overwhelmingly queries. `GetBestShopAround` is one of the two that does have one,
+   because a latitude or longitude outside its range is a bad request rather than an empty result.
 
 Feature-local supporting types live in the use-case folder: `ReportTarget.cs` sits inside
 `query/GetReportByTarget/`. Types shared across an area sit one level up

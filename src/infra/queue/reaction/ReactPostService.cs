@@ -162,11 +162,6 @@ public sealed class ReactPostService : IReactPostService
                 _redisService,
                 CollectionName.Post,
                 $"shop:{shopId}",
-                cancellationToken),
-            ListCache.InvalidateAsync(
-                _redisService,
-                CollectionName.Post,
-                "mostReacted",
                 cancellationToken));
     }
 }

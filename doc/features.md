@@ -1,6 +1,6 @@
-# Features
+﻿# Features
 
-Every capability implemented in the codebase — **all 72 use cases, each with an end-to-end flow
+Every capability implemented in the codebase — **all 78 use cases, each with an end-to-end flow
 diagram** running from the HTTP client, through the controller, the MediatR pipeline and the handler,
 out to MongoDB / Redis / RabbitMQ / R2, and back to the HTTP response.
 
@@ -25,7 +25,8 @@ Each diagram then covers four stages:
 3. **MediatR pipeline** — `LoggingBehavior` → `PerformanceBehavior` → `ValidationBehavior`, then the
    handler. The validator is named where one exists: 37 of 38 commands have one (only
    `DeleteAccount`, which takes no parameters, does not), and among queries only
-   `GetReportByTarget` does.
+   `GetReportByTarget` and `GetBestShopAround` do — the two that take constrained input
+   rather than an id or a free-text term.
 4. **Handler → infrastructure → response** — the work itself, then
    `ResultExtensions.ToActionResult()` (200 with a body, or 204) or `ToAcceptedResult()` (202).
    Failures pass through `ResultStatusMapper`, which reads the `status` metadata attached by
@@ -49,10 +50,10 @@ behind cache versioning, queue idempotency and retry, see [`system-design.md`](.
 | [Account](#account) | 16 | [Reaction](#reaction) | 6 |
 | [Auth](#auth) | 4 | [Follow](#follow) | 6 |
 | [Email](#email) | 3 | [Save](#save) | 6 |
-| [Post](#post) | 11 | [Report](#report) | 4 |
+| [Post](#post) | 10 | [Report](#report) | 4 |
 | [Comment](#comment) | 6 | [Notification](#notification) | 2 |
-| [Shop](#shop) | 7 | [Dashboard](#dashboard) | 2 |
-| [Administrator additions](#administrator-additions) | 6 | | |
+| [Shop](#shop) | 7 | [Dashboard](#dashboard) | 1 |
+| [Administrator additions](#administrator-additions) | 7 | | |
 
 ---
 
@@ -472,25 +473,33 @@ flowchart TD
 
 ```mermaid
 flowchart TD
-    A["Client<br/>POST /api/v1/Post (multipart)<br/>shopName, shopAddress, caption, rate, images"] --> B["PostController.CreatePost<br/>Amount.Create(rate) ≥ 0"]
+    A["Client<br/>POST /api/v1/Post (multipart)<br/>shopName, shopAddress, latitude, longitude,<br/>caption, rate, images"] --> B["PostController.CreatePost<br/>Amount.Create(rate) ≥ 0"]
     B -->|invalid| B1["400"]
     B --> C["ImageUpload.Validate<br/>≤10 files · ≤5 MB · allowlist + magic bytes"]
     C -->|fail| C1["400"]
-    C --> D["MediatR → CreatePostValidator<br/>rate 1–5 · names ≤200 · caption ≤2000"] -->|invalid| D1["400"]
+    C --> D["MediatR → CreatePostValidator<br/>rate 1–5 · names ≤200 · caption ≤2000<br/>lat/lng both-or-neither, in range"] -->|invalid| D1["400"]
     D --> E["CreatePostHandler → identity"] -->|null| E1["401"]
     E --> F["R2 PutObject per image"]
     F --> G{"Mongo find Shop<br/>Name = x AND Address = y AND !IsDeleted"}
     G -->|found| H["shopId = existing.Id"]
-    G -->|none| I["Shop.Create → insertOne<br/>Redis SET shop 7d<br/>bump shop:all, shop:mostRated"] --> H
+    G -->|none| I["Shop.Create(name, address, lat, lng)<br/>→ insertOne · Redis SET shop 7d<br/>bump shop:all"] --> H
     H --> J["Post.Create — CaptionNormalized computed"]
     J --> K["Mongo insertOne(post)"]
-    K --> L["Redis SET post:v1:id 7d<br/>bump post:all, post:account:{me},<br/>post:shop:{id}, post:mostReacted"]
+    K --> L["Redis SET post:v1:id 7d<br/>bump post:account:{me},<br/>post:shop:{id}"]
     L --> M["RabbitMQ publish recalculate-shop-rate"]
     M --> N["200 PostDto"]
     M -.-> O["ShopRateService: average live post rates<br/>$set Shop.Rate · bump shop lists"]
 ```
 Shop matching uses the raw name and address, not the normalized fields, so "Cafe X" and "cafe x"
 create two shops.
+
+The coordinate is optional and reaches `Shop` only on the branch that inserts one: a post naming an
+existing shop reuses the row and never overwrites `Location`, so the first poster to name a
+(name, address) pair fixes that shop's coordinate permanently. Both values must arrive together and
+within range or `CreatePostValidator` rejects the request — checked there as well as in `Shop.Create`
+because the handler uploads every image to R2 before it reaches the entity, and a failure at the
+entity would orphan the uploaded objects. A post created without a coordinate is not an error; the
+shop is simply absent from the 2dsphere index and never appears in #78.
 
 ### 25. Change caption — `PUT /Post/{postId}/caption`
 
@@ -503,7 +512,7 @@ flowchart TD
     E -->|null| E1["404 'Post not found'<br/>(also when not the owner)"]
     E --> F["post.ChangeCaption — recomputes CaptionNormalized"]
     F --> G["Mongo $set Caption, CaptionNormalized, UpdatedAt"]
-    G --> H["Redis DEL post:v1:id<br/>bump post:all, post:account:{me},<br/>post:shop:{id}, post:mostReacted"]
+    G --> H["Redis DEL post:v1:id<br/>bump post:account:{me},<br/>post:shop:{id}"]
     H --> I["204 No Content"]
 ```
 
@@ -559,7 +568,7 @@ sequenceDiagram
 ```
 `Post.CommentAmount` is not reset; the shop rate is recomputed from remaining live posts. The
 request makes no object-storage calls — the post's own images are deleted by the worker, so the
-owner path and the administrator path (#75) share one implementation. The comments' images are not
+owner path and the administrator path (#73) share one implementation. The comments' images are not
 deleted here either: a post's comment count is unbounded, so each one gets its own `delete-comment`
 message and `CommentService.ProcessAfterDeleteAsync` stays the single place that cleans a comment's
 images.
@@ -591,7 +600,7 @@ flowchart TD
     D --> E["CachedCursorPaginator<br/>version + page key · Summary"]
     E --> F["200 CursorPageResult&lt;PostSummaryDto&gt;"]
 ```
-Returns bare `PostSummaryDto` — no enrichment, unlike #28/#32/#33/#34.
+Returns bare `PostSummaryDto` — no enrichment, unlike #28/#32.
 
 ### 30. Posts by account — `GET /Post/account/{accountId}`
 
@@ -627,38 +636,45 @@ flowchart TD
 ```
 No write path bumps a `keyword:*` version, so these pages refresh only on the 2-minute TTL.
 
-### 33. Latest posts — `GET /Post/latest`
+### 77. Related posts — `GET /Post/related`
 
 ```mermaid
 flowchart TD
-    A["Client<br/>GET /api/v1/Post/latest?cursor&pageSize"] --> B["PostController.GetLatestPost"]
-    B --> C["MediatR → GetLatestPostHandler → identity"] -->|null| C1["401"]
-    C --> D["filter: IsDeleted = false · sig = null"]
-    D --> E["CachedCursorPaginator<br/>Redis GET list-version:post:all → page key<br/>Mongo sort CreatedAt,Id desc limit size+1"]
-    E --> F["PostFeedEnricher"] --> G["200 page of PostFeedItemDto"]
+    A["Client<br/>GET /api/v1/Post/related"] --> B["PostController.GetRelatedPost"]
+    B --> C["MediatR → GetRelatedPostHandler → identity"] -->|null| C1["401"]
+    C --> D["Mongo find Account<br/>project Followings.AccountId<br/>read as raw BsonDocument"]
+    C --> E{"Redis GET affinity:v1:account:{me}"}
+    E -->|hit| G
+    E -->|miss| F["Mongo aggregate on post<br/>$match Reactions.AccountId = me<br/>$sortByCount AccountId · $limit 20<br/>Redis SET affinity 1h"] --> G
+    D --> G["union · drop self · cap 300"]
+    G --> H["filter: AccountId $in ids AND !IsDeleted<br/>sig = related:{me}"]
+    H --> I["CachedCursorPaginator · Summary"]
+    I --> J["PostFeedEnricher · +2 Mongo reads"] --> K["200 page of PostFeedItemDto"]
 ```
+Two sources, precomputed to different degrees. Followed accounts are embedded on the account
+document, so they cost one projected read and stay exact. That read returns a raw `BsonDocument`
+rather than a projected `Account`: deserializing a `Following` from a subdocument holding only
+`AccountId` throws `No matching creator found for class domain.Following`, because the entity has no
+creator satisfiable without `Name` and `Avatar`. Requesting the whole `Followings` array would
+deserialize, at the cost of dragging every followed account's name and avatar across the wire to read
+one field from each. Reaction affinity is the expensive half —
+`$sortByCount` groups every post the account has ever reacted to — so it is resolved once an hour and
+cached as a list of account ids under `affinity:v1:account:{id}`.
 
-### 34. Most-reacted posts — `GET /Post/most-reacted`
+What is cached is the ranking, never the feed: the posts themselves are read live through an indexed
+`$in`, so a followed account's new post appears within the 2-minute list TTL rather than waiting on
+the hourly refresh. The `$in` is capped at 300 ids because MongoDB scans the `AccountId` index once
+per value and merge-sorts the results.
 
-```mermaid
-flowchart TD
-    A["Client<br/>GET /api/v1/Post/most-reacted"] --> B["PostController.GetMostReactedPost"]
-    B --> C["MediatR → GetMostReactedPostHandler → identity"] -->|null| C1["401"]
-    C --> D["ListCache.VersionAsync(post, mostReacted)<br/>build page key by hand"]
-    D --> E["Redis GET page key"]
-    E -->|hit| H["PostFeedEnricher"]
-    E -->|miss| F["Mongo find !IsDeleted<br/>sort ReactionAmount, CreatedAt, Id desc<br/>limit pageSize (no +1) · Summary"]
-    F --> G["Redis SET 2 min<br/>NextCursor = null · HasMore = false"] --> H
-    H --> I["200 page of PostFeedItemDto"]
-```
-Builds its cache key manually and always returns the first page, so the `cursor` parameter has no
-effect.
+Nothing bumps the `related:{me}` version counter — no write path knows which readers a post is
+related to — so unlike the shared feeds these pages retire on the 2-minute TTL alone. That is the
+deliberate trade against fanning an invalidation out to every follower on each new post.
 
 ---
 
 ## Comment
 
-### 35. Create comment — `POST /Comment` `[upload]`
+### 33. Create comment — `POST /Comment` `[upload]`
 
 ```mermaid
 sequenceDiagram
@@ -681,7 +697,7 @@ sequenceDiagram
     H->>H: Comment.Create — content ≤2000
     H->>M: insertOne(comment)
     H->>M: updateOne(post, !IsDeleted) $inc CommentAmount +1
-    H->>R: SET comment 7d, DEL post cache,<br/>bump comment:post:{id}, comment:account:{me},<br/>post:all, post:mostReacted
+    H->>R: SET comment 7d, DEL post cache,<br/>bump comment:post:{id}, comment:account:{me}
     H->>Q: publish create-comment
     H-->>Ctl: Result.Ok(CommentDto)
     Ctl-->>C: 200 OK
@@ -701,7 +717,7 @@ sequenceDiagram
 `Comment.Create` does not verify the post exists; the `$inc` is filtered on a live post so the
 counter stays correct, but an orphan comment row is still inserted.
 
-### 36. Change content — `PUT /Comment/{commentId}`
+### 34. Change content — `PUT /Comment/{commentId}`
 
 ```mermaid
 flowchart TD
@@ -716,7 +732,7 @@ flowchart TD
     H --> I["204 No Content"]
 ```
 
-### 37. Delete comment — `DELETE /Comment/{commentId}`
+### 35. Delete comment — `DELETE /Comment/{commentId}`
 
 ```mermaid
 flowchart TD
@@ -727,18 +743,18 @@ flowchart TD
     E -->|null| E1["404 'Comment not found'"]
     E --> F["Mongo $set IsDeleted, DeletedAt"]
     F --> G["Mongo updateOne(post, !IsDeleted)<br/>$inc CommentAmount −1"]
-    G --> H["Redis DEL comment + post cache<br/>bump comment:post, comment:account,<br/>post:all, post:mostReacted"]
+    G --> H["Redis DEL comment + post cache<br/>bump comment:post, comment:account"]
     H --> I["RabbitMQ publish delete-comment"] --> J["204 No Content"]
     I --> K["CommentService.ProcessAfterDeleteAsync<br/>R2 DeleteObject per image"]
 ```
 The soft delete, the parent's `CommentAmount` decrement and the cache invalidations stay in the
 request because a caller returning before those land would serve stale reads. `CommentAmount` is
-projected into `PostSummaryDto`, so the two post lists that render it — `post:all` and
-`post:mostReacted`, the feed's Latest and Top — are bumped here as well; `post:account:{id}` and
-`post:shop:{id}` are not, because those are thumbnail grids that carry no counts. Only the image
+projected into `PostSummaryDto`, but no post list version is bumped here: `post:account:{id}` and
+`post:shop:{id}` are thumbnail grids that carry no counts, and the post document cache is deleted
+outright. Only the image
 deletes move to the queue — nobody is waiting on object storage.
 
-### 38. Get comment — `GET /Comment/{commentId}`
+### 36. Get comment — `GET /Comment/{commentId}`
 
 ```mermaid
 flowchart TD
@@ -751,7 +767,7 @@ flowchart TD
     E --> F["Redis SET 7d"] --> Z
 ```
 
-### 39. Comments on a post — `GET /Comment/post/{postId}`
+### 37. Comments on a post — `GET /Comment/post/{postId}`
 
 ```mermaid
 flowchart TD
@@ -762,7 +778,7 @@ flowchart TD
     E --> F["200 page of CommentSummaryDto"]
 ```
 
-### 40. My comment history — `GET /Comment/mine`
+### 38. My comment history — `GET /Comment/mine`
 
 ```mermaid
 flowchart TD
@@ -776,7 +792,7 @@ flowchart TD
 
 ## Shop
 
-### 41. Delete shop — `DELETE /Shop/{shopId}` · **admin**
+### 39. Delete shop — `DELETE /Shop/{shopId}` · **admin**
 
 ```mermaid
 flowchart TD
@@ -787,12 +803,12 @@ flowchart TD
     E -->|null| E1["404 'Shop not found'"]
     E --> F["shop.DeleteShop()"]
     F --> G["Mongo $set IsDeleted, DeletedAt"]
-    G --> H["Redis DEL shop:v1:id<br/>bump shop:all, shop:mostRated"]
+    G --> H["Redis DEL shop:v1:id<br/>bump shop:all"]
     H --> I["204 No Content"]
 ```
 Posts keep their `ShopId` and stay visible; `GET /Post/shop/{id}` continues to return them.
 
-### 42. Get shop — `GET /Shop/{shopId}`
+### 40. Get shop — `GET /Shop/{shopId}`
 
 ```mermaid
 flowchart TD
@@ -807,7 +823,7 @@ flowchart TD
 ```
 The only shop read with a per-viewer flag and the only one fetching the whole document.
 
-### 43. List shops — `GET /Shop`
+### 41. List shops — `GET /Shop`
 
 ```mermaid
 flowchart TD
@@ -818,7 +834,7 @@ flowchart TD
     E --> F["200 page of ShopSummaryDto"]
 ```
 
-### 44. Search shops — `GET /Shop/search?keyword=` `[search]`
+### 42. Search shops — `GET /Shop/search?keyword=` `[search]`
 
 ```mermaid
 flowchart TD
@@ -830,7 +846,7 @@ flowchart TD
 ```
 The only search matching two fields with `OR`.
 
-### 45. Shops by name — `GET /Shop/by-name?name=`
+### 43. Shops by name — `GET /Shop/by-name?name=`
 
 ```mermaid
 flowchart TD
@@ -841,7 +857,7 @@ flowchart TD
 ```
 Exact, case-sensitive match on the raw `Name`, not the normalized field.
 
-### 46. Shops by address — `GET /Shop/by-address?address=`
+### 44. Shops by address — `GET /Shop/by-address?address=`
 
 ```mermaid
 flowchart TD
@@ -851,19 +867,32 @@ flowchart TD
     D --> E["CachedCursorPaginator · Summary"] --> F["200 page of ShopSummaryDto"]
 ```
 
-### 47. Most-rated shops — `GET /Shop/most-rated`
+### 78. Best shops around — `GET /Shop/around?latitude=&longitude=`
 
 ```mermaid
 flowchart TD
-    A["Client<br/>GET /api/v1/Shop/most-rated"] --> B["ShopController.GetMostRatedShop"]
-    B --> C["MediatR → GetMostRatedShopHandler"]
-    C --> D["ListCache.VersionAsync(shop, mostRated)<br/>build page key by hand"]
-    D --> E["Redis GET page key"]
-    E -->|hit| Z["200 page of ShopSummaryDto"]
-    E -->|miss| F["Mongo find !IsDeleted<br/>sort Rate, CreatedAt, Id desc · Summary"]
-    F --> G["Redis SET 2 min"] --> Z
+    A["Client<br/>GET /api/v1/Shop/around?latitude=&longitude="] --> B["ShopController.GetBestShopAround"]
+    B --> C["MediatR → GetBestShopAroundValidator<br/>lat ±90 · lng ±180"] -->|invalid| C1["400"]
+    C --> D["GetBestShopAroundHandler"]
+    D --> E["filter: !IsDeleted AND Rate.Value ≥ 4 AND<br/>Location $nearSphere origin, $maxDistance 5000 m"]
+    E --> F["Mongo find · limit 50 · Summary<br/>2dsphere index · nearest first"]
+    F --> G["OrderByDescending(Rate).Take(10) in memory"]
+    G --> H["200 CursorPageResult of ShopSummaryDto<br/>NextCursor null"]
 ```
-Like #34, hand-rolled caching and effectively a single page.
+Nothing here is precomputed and nothing is cached. The result depends on a location that only arrives
+with the request, so a per-cell precomputed list would have to be rebuilt for every neighbourhood and
+would still drop a five-star shop sitting just across a cell boundary; the 2dsphere index already
+answers the question in a single index scan. Fifty documents off that index cost about what a Redis
+round-trip would, which is why this is the one list endpoint with no `CachedCursorPaginator`.
+
+`$nearSphere` imposes its own distance ordering and MongoDB rejects an explicit `.Sort()` alongside
+it, so the rate ordering happens in memory over the 50 nearest candidates that already clear 4 stars.
+`OrderByDescending` is stable, so shops sharing a rate stay nearest-first. Widening `CandidateLimit`
+trades relevance for reach.
+
+The answer is a fixed top ten with `NextCursor: null`, matching the `CursorPageResult` shape every
+other list endpoint returns so the client decodes it the same way. Shops with no `Location` are
+absent from the 2dsphere index and can never appear here.
 
 ---
 
@@ -872,7 +901,7 @@ Like #34, hand-rolled caching and effectively a single page.
 All four mutations publish and return **202**; the state change and any conflict happen in the
 consumer.
 
-### 48. React to post — `POST /Reaction/post/{postId}` → 202
+### 45. React to post — `POST /Reaction/post/{postId}` → 202
 
 ```mermaid
 sequenceDiagram
@@ -900,7 +929,7 @@ sequenceDiagram
     else applied
         S->>R: DEL post cache, bump post:reaction:{id}
         S->>M: re-read post → AccountId, ShopId
-        S->>R: bump post:all, post:account, post:shop, post:mostReacted
+        S->>R: bump post:account, post:shop
         alt actor is the post author
             S-->>Q: Ok, no notification
         else
@@ -910,7 +939,7 @@ sequenceDiagram
 ```
 The reaction snapshots the actor's `Name` and latest `Avatar` into the embedded array.
 
-### 49. Unreact post — `DELETE /Reaction/post/{postId}` → 202
+### 46. Unreact post — `DELETE /Reaction/post/{postId}` → 202
 
 ```mermaid
 flowchart TD
@@ -924,7 +953,7 @@ flowchart TD
 ```
 Removal raises no notification.
 
-### 50. React to comment — `POST /Reaction/comment/{commentId}` → 202
+### 47. React to comment — `POST /Reaction/comment/{commentId}` → 202
 
 ```mermaid
 flowchart TD
@@ -941,7 +970,7 @@ flowchart TD
 ```
 The notification's `TargetId` is the post, so clients deep-link to the post rather than the comment.
 
-### 51. Unreact comment — `DELETE /Reaction/comment/{commentId}` → 202
+### 48. Unreact comment — `DELETE /Reaction/comment/{commentId}` → 202
 
 ```mermaid
 flowchart TD
@@ -953,7 +982,7 @@ flowchart TD
     F --> G["Redis DEL comment cache, bump comment:reaction<br/>re-read → bump comment:post, comment:account"]
 ```
 
-### 52. Reactions on a post — `GET /Reaction/post/{postId}`
+### 49. Reactions on a post — `GET /Reaction/post/{postId}`
 
 ```mermaid
 flowchart TD
@@ -964,7 +993,7 @@ flowchart TD
     E --> F["200 page of ReactionDto"]
 ```
 
-### 53. Reactions on a comment — `GET /Reaction/comment/{commentId}`
+### 50. Reactions on a comment — `GET /Reaction/comment/{commentId}`
 
 ```mermaid
 flowchart TD
@@ -979,7 +1008,7 @@ flowchart TD
 
 ## Follow
 
-### 54. Follow — `POST /Follow/{followingId}` → 202
+### 51. Follow — `POST /Follow/{followingId}` → 202
 
 ```mermaid
 sequenceDiagram
@@ -1017,7 +1046,7 @@ sequenceDiagram
 `MatchedCount == 1` means the other side was already correct, so the write repaired a previously
 half-applied follow and is treated as success.
 
-### 55. Unfollow — `DELETE /Follow/{followingId}` → 202
+### 52. Unfollow — `DELETE /Follow/{followingId}` → 202
 
 ```mermaid
 flowchart TD
@@ -1034,7 +1063,7 @@ flowchart TD
 No notification is raised on unfollow. It shares the `follow` queue so a rapid follow/unfollow pair
 cannot apply out of order.
 
-### 56. Followers of an account — `GET /Follow/follower/{accountId}`
+### 53. Followers of an account — `GET /Follow/follower/{accountId}`
 
 ```mermaid
 flowchart TD
@@ -1045,7 +1074,7 @@ flowchart TD
     E --> F["200 page of FollowerDto"]
 ```
 
-### 57. Following of an account — `GET /Follow/following/{accountId}`
+### 54. Following of an account — `GET /Follow/following/{accountId}`
 
 ```mermaid
 flowchart TD
@@ -1056,7 +1085,7 @@ flowchart TD
     E --> F["200 page of FollowingDto"]
 ```
 
-### 58. My followers — `GET /Follow/me/follower`
+### 55. My followers — `GET /Follow/me/follower`
 
 ```mermaid
 flowchart TD
@@ -1065,9 +1094,9 @@ flowchart TD
     C --> D["parentFilter: Id = me, !IsDeleted<br/>entity = account:follower · sig = account:{me}"]
     D --> E["CachedEmbeddedArrayPaginator"] --> F["200 page of FollowerDto"]
 ```
-Shares a cache key with #56 when `accountId == me`.
+Shares a cache key with #53 when `accountId == me`.
 
-### 59. My following — `GET /Follow/me/following`
+### 56. My following — `GET /Follow/me/following`
 
 ```mermaid
 flowchart TD
@@ -1081,7 +1110,7 @@ flowchart TD
 
 ## Save
 
-### 60. Save post — `POST /Save/post/{postId}` → 202
+### 57. Save post — `POST /Save/post/{postId}` → 202
 
 ```mermaid
 flowchart TD
@@ -1097,7 +1126,7 @@ flowchart TD
 ```
 The only save path that checks the target exists.
 
-### 61. Unsave post — `DELETE /Save/post/{postId}` → 202
+### 58. Unsave post — `DELETE /Save/post/{postId}` → 202
 
 ```mermaid
 flowchart TD
@@ -1110,7 +1139,7 @@ flowchart TD
 ```
 No existence check, so a post can be unsaved after it is deleted.
 
-### 62. Save shop — `POST /Save/shop/{shopId}` → 202
+### 59. Save shop — `POST /Save/shop/{shopId}` → 202
 
 ```mermaid
 flowchart TD
@@ -1123,7 +1152,7 @@ flowchart TD
     G --> H["Redis bump account:saveshop:{me}"]
 ```
 
-### 63. Unsave shop — `DELETE /Save/shop/{shopId}` → 202
+### 60. Unsave shop — `DELETE /Save/shop/{shopId}` → 202
 
 ```mermaid
 flowchart TD
@@ -1135,7 +1164,7 @@ flowchart TD
     F --> G["Redis bump account:saveshop:{me}"]
 ```
 
-### 64. My saved posts — `GET /Save/me/post`
+### 61. My saved posts — `GET /Save/me/post`
 
 ```mermaid
 flowchart TD
@@ -1154,7 +1183,7 @@ still reporting `HasMore`. The second stage projects `PostProjection.Summary` ra
 whole documents, which would drag each post's entire `Reactions` array over the wire to render a
 summary.
 
-### 65. My saved shops — `GET /Save/me/shop`
+### 62. My saved shops — `GET /Save/me/shop`
 
 ```mermaid
 flowchart TD
@@ -1172,7 +1201,7 @@ flowchart TD
 
 ## Report
 
-### 66. Create report — `POST /Report`
+### 63. Create report — `POST /Report`
 
 ```mermaid
 flowchart TD
@@ -1187,7 +1216,7 @@ flowchart TD
 The three target ids are all optional and none is required, so a report can be filed against no
 target. The referenced entity is not checked.
 
-### 67. List reports — `GET /Report` · **admin**
+### 64. List reports — `GET /Report` · **admin**
 
 ```mermaid
 flowchart TD
@@ -1198,7 +1227,7 @@ flowchart TD
     E --> F["200 page of ReportDto"]
 ```
 
-### 68. Get report — `GET /Report/{reportId}` · **admin**
+### 65. Get report — `GET /Report/{reportId}` · **admin**
 
 ```mermaid
 flowchart TD
@@ -1211,7 +1240,7 @@ flowchart TD
     E --> F["Redis SET 7d"] --> Z
 ```
 
-### 69. Reports by target — `GET /Report/target?target=&targetId=` · **admin**
+### 66. Reports by target — `GET /Report/target?target=&targetId=` · **admin**
 
 ```mermaid
 flowchart TD
@@ -1232,7 +1261,7 @@ into a 500 rather than a 400.
 
 ## Notification
 
-### 70. Get notification — `GET /Notification/{notificationId}`
+### 67. Get notification — `GET /Notification/{notificationId}`
 
 ```mermaid
 flowchart TD
@@ -1254,7 +1283,7 @@ those four are what let a client resolve a notification to a destination. Cached
 before they were projected hold `null` in all four and survive until the 7-day TTL expires; the
 notification list below re-reads within 2 minutes and is unaffected.
 
-### 71. My notifications — `GET /Notification/mine`
+### 68. My notifications — `GET /Notification/mine`
 
 ```mermaid
 flowchart TD
@@ -1275,7 +1304,7 @@ fields a client needs to deep-link.
 
 ## Dashboard
 
-### 72. Stats — `GET /Dashboard/stats` · **admin** (class-level)
+### 69. Stats — `GET /Dashboard/stats` · **admin** (class-level)
 
 ```mermaid
 flowchart TD
@@ -1297,18 +1326,18 @@ Uncached; three counts run on every call.
 
 ## Administrator additions
 
-Six endpoints added for the `Bump_Admin` operations panel. They are numbered from 73 so the
+Seven endpoints added for the `Bump_Admin` operations panel. They are numbered from 70 so the
 existing entries keep their numbers; each is gated by `[Authorize(Roles = nameof(Role.Admin))]`.
 
 The three deletes are **separate use cases rather than a flag on the existing handlers**. The
-self-service handlers (#9, #27, #37) fold ownership into their Mongo filter, which is what the
+self-service handlers (#9, #27, #35) fold ownership into their Mongo filter, which is what the
 client depends on; adding a bypass would put an administrator-only branch inside the path every
 user takes. Each admin handler instead mirrors its counterpart's side effects in full — every cache
 invalidation and every RabbitMQ cascade, including the `delete-post`/`delete-comment` messages that
 remove the images — because a delete that only flips `IsDeleted` leaves shop rates and comment
 counters stale, and a missing message orphans the images in R2.
 
-### 73. List all comments — `GET /Comment` · **admin**
+### 70. List all comments — `GET /Comment` · **admin**
 
 ```mermaid
 flowchart TD
@@ -1324,7 +1353,24 @@ flowchart TD
 The only unfiltered read of `comment`; it is backed by the `(IsDeleted, CreatedAt desc, Id desc)`
 index added alongside it, which `account` and `post` already had for their own all-rows queries.
 
-### 74. Admin delete account — `DELETE /Account/admin/{accountId}` · **admin**
+### 71. List all posts — `GET /Post` · **admin**
+
+```mermaid
+flowchart TD
+    A["Client<br/>GET /api/v1/Post?cursor&pageSize"] --> B["PostController.GetAllPost<br/>[Authorize(Roles=Admin)]"]
+    B --> C["MediatR → GetAllPostHandler"]
+    C --> D["filter: IsDeleted = false · sig = null"]
+    D --> E["CachedCursorPaginator<br/>Redis GET list-version:post:all"]
+    E --> F["Redis GET list:v1:post:all:{cursor}:{size}:v{N}"]
+    F -->|hit| Z["200 CursorPageResult&lt;PostSummaryDto&gt;"]
+    F -->|miss| G["Mongo find sort CreatedAt,Id desc<br/>limit size+1 · project Summary"]
+    G --> H["Redis SET page 2 min"] --> Z
+```
+The only unfiltered read of `post`, and the panel's post list. No `PostFeedEnricher` — the
+per-viewer `IsReacted`/`IsSaved` flags mean nothing to an administrator, so it returns bare
+`PostSummaryDto` and saves the two extra Mongo reads.
+
+### 72. Admin delete account — `DELETE /Account/admin/{accountId}` · **admin**
 
 ```mermaid
 flowchart TD
@@ -1342,7 +1388,7 @@ flowchart TD
 Self-deletion is refused because it would revoke the credentials the caller is using; #9 is the
 deliberate route for that.
 
-### 75. Admin delete post — `DELETE /Post/admin/{postId}` · **admin**
+### 73. Admin delete post — `DELETE /Post/admin/{postId}` · **admin**
 
 ```mermaid
 flowchart TD
@@ -1351,13 +1397,13 @@ flowchart TD
     C --> D["Mongo find Id, !IsDeleted<br/>project AccountId, ShopId"]
     D -->|null| D1["404 'Post not found'"]
     D --> E["post.DeletePost() → set IsDeleted, DeletedAt"]
-    E --> G["Redis DEL post:v1:id<br/>ListCache invalidate all · account:{post.AccountId} · shop:{ShopId} · mostReacted"]
+    E --> G["Redis DEL post:v1:id<br/>ListCache invalidate account:{post.AccountId} · shop:{ShopId}"]
     G --> H["RabbitMQ publish recalculate-shop-rate + delete-post"] --> Z["200"]
 ```
 The per-account list signature is the **post author's** id, not the acting administrator's —
 invalidating the admin's own list would leave the author's cached page serving a deleted post.
 
-### 76. Admin delete comment — `DELETE /Comment/admin/{commentId}` · **admin**
+### 74. Admin delete comment — `DELETE /Comment/admin/{commentId}` · **admin**
 
 ```mermaid
 flowchart TD
@@ -1367,11 +1413,11 @@ flowchart TD
     D -->|null| D1["404 'Comment not found'"]
     D --> E["comment.DeleteComment() → set IsDeleted, DeletedAt"]
     E --> F["Mongo post.CommentAmount.Value −1"]
-    F --> G["Redis DEL comment:v1:id · post:v1:id<br/>ListCache invalidate comment all · post:{PostId} · account:{comment.AccountId}<br/>· post:all · post:mostReacted"]
+    F --> G["Redis DEL comment:v1:id · post:v1:id<br/>ListCache invalidate comment all · post:{PostId} · account:{comment.AccountId}"]
     G --> H["RabbitMQ publish delete-comment"] --> Z["200"]
 ```
 
-### 77. Revoke refresh token — `POST /Auth/refresh-token/{id}/revoke` · **admin**
+### 75. Revoke refresh token — `POST /Auth/refresh-token/{id}/revoke` · **admin**
 
 ```mermaid
 flowchart TD
@@ -1387,7 +1433,7 @@ Revocation rather than deletion: rows are removed on their own by the TTL index 
 deleting is never necessary, while revoking stops #18 from issuing a new access token. The holder
 keeps their current access token until it expires.
 
-### 78. Dashboard activity — `GET /Dashboard/activity?windowHours=` · **admin**
+### 76. Dashboard activity — `GET /Dashboard/activity?windowHours=` · **admin**
 
 ```mermaid
 flowchart TD
@@ -1399,24 +1445,24 @@ flowchart TD
     E --> F["$match IsDeleted=false, CreatedAt ≥ since<br/>$group by $dateTrunc CreatedAt to hour"]
     F --> G["union bucket keys · zero-fill missing"] --> Z["200 DashboardActivityDto"]
 ```
-Where #72 answers *how many exist now*, this answers *how fast they are arriving* — which a running
+Where #69 answers *how many exist now*, this answers *how fast they are arriving* — which a running
 total cannot show, and which no client-side sampling loop can reconstruct for time already past.
 Bucketing happens in MongoDB via `$dateTrunc` rather than pulling documents back to count in process.
 
 ---
 
-**Four handlers build their cache key by hand** rather than delegating to a cached paginator — #34,
-#47, #64, #65. Two of them (#34, #47) consequently return a single page with `HasMore = false`.
+**Two handlers build their cache key by hand** rather than delegating to a cached paginator — #61,
+#62.
 
-**Enrichment is applied inconsistently.** `PostFeedEnricher` runs on #28, #32, #33 and #34, which
-return `PostFeedItemDto` carrying `IsReacted`/`IsSaved`. #29, #30, #31 and #64 return bare
+**Enrichment is applied inconsistently.** `PostFeedEnricher` runs on #28 and #32, which
+return `PostFeedItemDto` carrying `IsReacted`/`IsSaved`. #29, #30, #31 and #61 return bare
 `PostSummaryDto`, so the same post exposes those flags on one endpoint and not another.
 
-**Keyword search normalizes for posts and shops but not accounts** — #32 and #44 fold diacritics
+**Keyword search normalizes for posts and shops but not accounts** — #32 and #42 fold diacritics
 through `TextNormalizer`; #16 does not.
 
 **Ownership failures answer 404, not 403**, because ownership is folded into the lookup filter —
-#25, #26, #27, #36, #37.
+#25, #26, #27, #34, #35.
 
 **The ten 202 endpoints cannot report conflicts.** "Already reacted", "Already following" and
 "Already saved" are all detected inside the consumer, where the outcome is only logged.

@@ -3,5 +3,5 @@ using MediatR;
 
 namespace app;
 
-public sealed record GetLatestPostQuery(CursorPageRequest pageRequest)
+public sealed record GetRelatedPostQuery(CursorPageRequest pageRequest)
     : IRequest<Result<CursorPageResult<PostFeedItemDto>>>;

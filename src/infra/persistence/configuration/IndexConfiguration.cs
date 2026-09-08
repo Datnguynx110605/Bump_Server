@@ -1,4 +1,4 @@
-using app;
+﻿using app;
 using domain;
 using Microsoft.Extensions.Configuration;
 using MongoDB.Driver;
@@ -84,11 +84,6 @@ public static class IndexConfiguration
                         .Descending(x => x.Id)),
                 new CreateIndexModel<Post>(
                     keys.Ascending(x => x.IsDeleted)
-                        .Descending(x => x.CreatedAt)
-                        .Descending(x => x.Id)),
-                new CreateIndexModel<Post>(
-                    keys.Ascending(x => x.IsDeleted)
-                        .Descending(x => x.ReactionAmount.Value)
                         .Descending(x => x.CreatedAt)
                         .Descending(x => x.Id)),
                 new CreateIndexModel<Post>(
@@ -195,11 +190,10 @@ public static class IndexConfiguration
                     keys.Ascending(x => x.IsDeleted)
                         .Descending(x => x.CreatedAt)
                         .Descending(x => x.Id)),
-                new CreateIndexModel<Shop>(
-                    keys.Ascending(x => x.IsDeleted)
-                        .Descending(x => x.Rate.Value)
-                        .Descending(x => x.CreatedAt)
-                        .Descending(x => x.Id))
+                // Backs the $nearSphere lookup in GetBestShopAroundHandler. A 2dsphere
+                // index is sparse over its geo field, so shops with no Location are
+                // absent from it and never surface in a proximity search.
+                new CreateIndexModel<Shop>(keys.Geo2DSphere(x => x.Location))
             },
             cancellationToken);
     }

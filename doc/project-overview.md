@@ -1,4 +1,4 @@
-# Project Overview
+﻿# Project Overview
 
 ## What this project is
 
@@ -13,7 +13,11 @@ The domain model is in `src/domain/core/entity/`: `Account`, `Post`, `Comment`, 
 
 Shops are not created directly by any endpoint. `CreatePostHandler`
 (`src/app/feature/post/command/Create/CreatePostHandler.cs`) looks up a shop by exact `Name` +
-`Address` and inserts one if absent, so the shop catalogue is a side effect of posting. A shop's
+`Address` and inserts one if absent, so the shop catalogue is a side effect of posting. That insert
+is also the only place a shop's coordinate is ever set: `Shop.Location` holds an optional
+`[longitude, latitude]` pair supplied by the client's place picker, indexed with 2dsphere and read by
+`GetBestShopAround`. Reusing an existing shop never overwrites it, so the first poster to name a
+(name, address) pair fixes that shop's coordinate. A shop's
 `Rate` is the rounded average of its posts' rates, recalculated asynchronously by
 `ShopRateService` (`src/infra/queue/shop/ShopRateService.cs`).
 
@@ -84,7 +88,7 @@ than the reverse. `api` references only `infra` and reaches `app` and `domain` t
 graph LR
     api["<b>api</b><br/>12 controllers · 78 endpoints<br/>2 middleware · JWT · rate limiting"]
     infra["<b>infra</b><br/>10 services · 8 queue services<br/>1 generic consumer host · SignalR hub"]
-    app["<b>app</b><br/>78 MediatR handlers<br/>38 commands · 40 queries · 34 validators"]
+    app["<b>app</b><br/>78 MediatR handlers<br/>38 commands · 40 queries · 39 validators"]
     domain["<b>domain</b><br/>13 entities · 3 value objects<br/>2 enums · DomainResult"]
 
     api --> infra

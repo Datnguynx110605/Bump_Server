@@ -84,18 +84,13 @@ internal sealed class AdminDeleteCommentHandler
             _redisService.RemoveAsync(
                 CacheKey.Post(comment.PostId),
                 cancellationToken),
-            // The feed cards render CommentAmount off the Post document, so moving it has to
-            // retire the two post lists that show it. The account: and shop: signatures are
-            // deliberately left alone — those lists are thumbnail grids with no counts on them.
+            // The admin post listing renders CommentAmount off the Post document, so moving it
+            // has to retire post:all. The account: and shop: signatures are deliberately left
+            // alone — those lists are thumbnail grids with no counts on them.
             ListCache.InvalidateAsync(
                 _redisService,
                 CollectionName.Post,
                 filterSignature: null,
-                cancellationToken),
-            ListCache.InvalidateAsync(
-                _redisService,
-                CollectionName.Post,
-                "mostReacted",
                 cancellationToken),
             ListCache.InvalidateAsync(
                 _redisService,

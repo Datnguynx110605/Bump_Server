@@ -1,4 +1,4 @@
-using app;
+﻿using app;
 using domain;
 using FluentResults;
 using MediatR;
@@ -25,6 +25,8 @@ public sealed class PostController : ControllerBase
     public async Task<ActionResult<PostDto>> CreatePost(
         [FromForm] string shopName,
         [FromForm] string shopAddress,
+        [FromForm] double? latitude,
+        [FromForm] double? longitude,
         [FromForm] string? caption,
         [FromForm] int rate,
         [FromForm] List<IFormFile>? images,
@@ -45,7 +47,7 @@ public sealed class PostController : ControllerBase
             .Select(x => (x.OpenReadStream(), x.FileName))
             .ToList();
 
-        var result = await _sender.Send(new CreatePostCommand(shopName, shopAddress, caption, rateResult.Value!, imageStreams), cancellationToken);
+        var result = await _sender.Send(new CreatePostCommand(shopName, shopAddress, latitude, longitude, caption, rateResult.Value!, imageStreams), cancellationToken);
         return result.ToActionResult();
     }
 
@@ -123,6 +125,16 @@ public sealed class PostController : ControllerBase
         return result.ToActionResult();
     }
 
+    [HttpGet("related")]
+    public async Task<ActionResult<CursorPageResult<PostFeedItemDto>>> GetRelatedPost(
+        [FromQuery] string? cursor,
+        [FromQuery] int pageSize = 20,
+        CancellationToken cancellationToken = default)
+    {
+        var result = await _sender.Send(new GetRelatedPostQuery(new CursorPageRequest(cursor, pageSize)), cancellationToken);
+        return result.ToActionResult();
+    }
+
     [EnableRateLimiting(RateLimiterPolicy.Search)]
     [HttpGet("search")]
     public async Task<ActionResult<CursorPageResult<PostFeedItemDto>>> GetPostByKeyword(
@@ -135,23 +147,14 @@ public sealed class PostController : ControllerBase
         return result.ToActionResult();
     }
 
-    [HttpGet("latest")]
-    public async Task<ActionResult<CursorPageResult<PostFeedItemDto>>> GetLatestPost(
+    [Authorize(Roles = nameof(Role.Admin))]
+    [HttpGet]
+    public async Task<ActionResult<CursorPageResult<PostSummaryDto>>> GetAllPost(
         [FromQuery] string? cursor,
         [FromQuery] int pageSize = 20,
         CancellationToken cancellationToken = default)
     {
-        var result = await _sender.Send(new GetLatestPostQuery(new CursorPageRequest(cursor, pageSize)), cancellationToken);
-        return result.ToActionResult();
-    }
-
-    [HttpGet("most-reacted")]
-    public async Task<ActionResult<CursorPageResult<PostFeedItemDto>>> GetMostReactedPost(
-        [FromQuery] string? cursor,
-        [FromQuery] int pageSize = 20,
-        CancellationToken cancellationToken = default)
-    {
-        var result = await _sender.Send(new GetMostReactedPostQuery(new CursorPageRequest(cursor, pageSize)), cancellationToken);
+        var result = await _sender.Send(new GetAllPostQuery(new CursorPageRequest(cursor, pageSize)), cancellationToken);
         return result.ToActionResult();
     }
 

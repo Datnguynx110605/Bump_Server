@@ -1,4 +1,4 @@
-using domain;
+﻿using domain;
 using MongoDB.Bson;
 using MongoDB.Bson.Serialization;
 using MongoDB.Bson.Serialization.Serializers;
@@ -76,7 +76,14 @@ public static class BsonConfiguration
 
         BsonClassMap.RegisterClassMap<Report>(map => map.AutoMap());
 
-        BsonClassMap.RegisterClassMap<Shop>(map => map.AutoMap());
+        BsonClassMap.RegisterClassMap<Shop>(map =>
+        {
+            map.AutoMap();
+            // A written-out `Location: null` is not a coordinate the 2dsphere index can
+            // extract a key from. Omitting the field entirely is what makes the index
+            // skip shops posted without a place pick instead of rejecting the insert.
+            map.GetMemberMap(x => x.Location).SetIgnoreIfNull(true);
+        });
 
         RegisterBackingFieldSerializer<Account>();
         RegisterBackingFieldSerializer<Comment>();

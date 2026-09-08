@@ -1,4 +1,4 @@
-using app;
+﻿using app;
 using domain;
 using MediatR;
 using Microsoft.AspNetCore.Authorization;
@@ -48,6 +48,16 @@ public sealed class ShopController : ControllerBase
         return result.ToActionResult();
     }
 
+    [HttpGet("around")]
+    public async Task<ActionResult<CursorPageResult<ShopSummaryDto>>> GetBestShopAround(
+        [FromQuery] double latitude,
+        [FromQuery] double longitude,
+        CancellationToken cancellationToken)
+    {
+        var result = await _sender.Send(new GetBestShopAroundQuery(latitude, longitude), cancellationToken);
+        return result.ToActionResult();
+    }
+
     [EnableRateLimiting(RateLimiterPolicy.Search)]
     [HttpGet("search")]
     public async Task<ActionResult<CursorPageResult<ShopSummaryDto>>> GetShopByKeyword(
@@ -79,16 +89,6 @@ public sealed class ShopController : ControllerBase
         CancellationToken cancellationToken = default)
     {
         var result = await _sender.Send(new GetShopByAddressQuery(address, new CursorPageRequest(cursor, pageSize)), cancellationToken);
-        return result.ToActionResult();
-    }
-
-    [HttpGet("most-rated")]
-    public async Task<ActionResult<CursorPageResult<ShopSummaryDto>>> GetMostRatedShop(
-        [FromQuery] string? cursor,
-        [FromQuery] int pageSize = 20,
-        CancellationToken cancellationToken = default)
-    {
-        var result = await _sender.Send(new GetMostRatedShopQuery(new CursorPageRequest(cursor, pageSize)), cancellationToken);
         return result.ToActionResult();
     }
 }

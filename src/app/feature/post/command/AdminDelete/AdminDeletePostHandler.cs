@@ -85,11 +85,6 @@ internal sealed class AdminDeletePostHandler
                 _redisService,
                 CollectionName.Post,
                 $"shop:{post.ShopId}",
-                cancellationToken),
-            ListCache.InvalidateAsync(
-                _redisService,
-                CollectionName.Post,
-                "mostReacted",
                 cancellationToken));
 
         var recalculateMessage = new RecalculateShopRateMessage(

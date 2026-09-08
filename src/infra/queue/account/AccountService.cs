@@ -232,17 +232,12 @@ public sealed class AccountService : IAccountService
                 cancellationToken),
             // The cascade soft-deletes the owner's posts, drops their reactions from other
             // people's posts and decrements CommentAmount on every post they commented on —
-            // all three are visible on the home feed, so both feed lists have to be retired
+            // all three are visible in the all-posts listing, so post:all has to be retired
             // and not just this account's own list.
             ListCache.InvalidateAsync(
                 _redisService,
                 CollectionName.Post,
                 filterSignature: null,
-                cancellationToken),
-            ListCache.InvalidateAsync(
-                _redisService,
-                CollectionName.Post,
-                "mostReacted",
                 cancellationToken),
             ListCache.InvalidateAsync(
                 _redisService,

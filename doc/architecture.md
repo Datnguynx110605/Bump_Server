@@ -1,4 +1,4 @@
-# Architecture
+﻿# Architecture
 
 Layering, dependency rules, and where cross-cutting concerns live. Runtime flows are in
 [`system-design.md`](./system-design.md); conventions are in [`project-rules.md`](./project-rules.md).
@@ -104,6 +104,19 @@ projection carries a field this write changed*, not just the entity it wrote to:
 handlers move `Post.CommentAmount`, which `PostProjection.Summary` includes, so they bump the post
 feed's signatures alongside the comment ones.
 
+Two signatures opt out of that rule by design, and both are per-reader: `keyword:{kw}` and
+`related:{accountId}`. No write path can know which searches or which readers a new post belongs to,
+so nothing ever bumps them and they retire on the 2-minute `DefaultListTTL` alone. For the related
+feed that is the deliberate alternative to fanning an invalidation out to every follower on each
+post.
+
+**Read cost is pushed into indexes and precomputed inputs, not into materialized results.** No feed
+is fanned out on write. `GetBestShopAround` reads a 2dsphere index directly, because its answer
+depends on a location that only arrives with the request. `GetRelatedPost` precomputes the one
+genuinely expensive input — the ranking of accounts the reader reacts to, cached hourly under
+`affinity:v1:account:{id}` — and still reads the posts themselves live through an indexed `$in`, so a
+new post from a followed account is never waiting on a rebuild.
+
 **Search uses precomputed normalized fields.** `TextNormalizer.RemoveDiacriticsAndLower` (Vietnamese
 `đ`/`Đ` folding plus Unicode `FormD` mark stripping) populates `Post.CaptionNormalized`,
 `Shop.NameNormalized` and `Shop.AddressNormalized` at write time; keyword search runs a
@@ -135,7 +148,7 @@ throughout the application layer — including in shared helpers like `ReactionM
 `src/infra/serialization/` — to flatten value objects for the Redis JSON payloads.
 
 **5. Validation is spread across three layers with no single authority.**
-Value-object factories (`domain`), FluentValidation validators (`app`, 38 of 78 handlers), and
+Value-object factories (`domain`), FluentValidation validators (`app`, 39 of 78 handlers), and
 `ImageUpload` (`api`). Some rules are duplicated and have drifted: `Account.BioMaxLength` is 2000 in
 the entity and `MaximumLength(2000)` in `CreateAccountValidator`; password length (10–40) is enforced
 **only** in validators, while the entity checks only that the hash is 60 characters. Caption length

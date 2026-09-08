@@ -83,11 +83,6 @@ internal sealed class ChangeCaptionHandler
                 _redisService,
                 CollectionName.Post,
                 $"shop:{post.ShopId}",
-                cancellationToken),
-            ListCache.InvalidateAsync(
-                _redisService,
-                CollectionName.Post,
-                "mostReacted",
                 cancellationToken));
 
         return Result.Ok();
