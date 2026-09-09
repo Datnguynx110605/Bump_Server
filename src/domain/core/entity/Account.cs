@@ -16,6 +16,12 @@ public sealed class Account : BaseEntity
     private List<Following> _followings = new();
     public IReadOnlyCollection<Following> Followings => _followings.AsReadOnly();
     public Amount FollowingAmount { get; private set; } =  Amount.Create(0).Value;
+    private List<Block> _blocks = new();
+    public IReadOnlyCollection<Block> Blocks => _blocks.AsReadOnly();
+    // Ids only, never displayed: this side exists so a blocked account can be filtered out
+    // of the blocked-by account's reads without a collection-wide scan for "who blocked me".
+    private List<Guid> _blockedBy = new();
+    public IReadOnlyCollection<Guid> BlockedBy => _blockedBy.AsReadOnly();
     private List<SavedPost> _savePosts = new();
     public IReadOnlyCollection<SavedPost> SavePosts => _savePosts.AsReadOnly();
     private List<SavedShop> _saveShops = new();

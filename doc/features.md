@@ -1,11 +1,11 @@
 ﻿# Features
 
-Every capability implemented in the codebase — **all 78 use cases, each with an end-to-end flow
+Every capability implemented in the codebase — **all 81 use cases, each with an end-to-end flow
 diagram** running from the HTTP client, through the controller, the MediatR pipeline and the handler,
 out to MongoDB / Redis / RabbitMQ / R2, and back to the HTTP response.
 
-Endpoint count equals handler count: 12 controllers → 78 actions → 78 handlers (38 commands,
-40 queries). All routes are prefixed `api/v1/[controller]`.
+Endpoint count equals handler count: 13 controllers → 81 actions → 81 handlers (40 commands,
+41 queries). All routes are prefixed `api/v1/[controller]`.
 
 ## How to read these diagrams
 
@@ -23,7 +23,7 @@ Each diagram then covers four stages:
    `Amount.Create` before the request is sent. A failure here short-circuits to a `ProblemDetails`
    response without ever reaching MediatR.
 3. **MediatR pipeline** — `LoggingBehavior` → `PerformanceBehavior` → `ValidationBehavior`, then the
-   handler. The validator is named where one exists: 37 of 38 commands have one (only
+   handler. The validator is named where one exists: 39 of 40 commands have one (only
    `DeleteAccount`, which takes no parameters, does not), and among queries only
    `GetReportByTarget` and `GetBestShopAround` do — the two that take constrained input
    rather than an id or a free-text term.
@@ -53,7 +53,7 @@ behind cache versioning, queue idempotency and retry, see [`system-design.md`](.
 | [Post](#post) | 10 | [Report](#report) | 4 |
 | [Comment](#comment) | 6 | [Notification](#notification) | 2 |
 | [Shop](#shop) | 7 | [Dashboard](#dashboard) | 1 |
-| [Administrator additions](#administrator-additions) | 7 | | |
+| [Administrator additions](#administrator-additions) | 7 | [Block](#block) | 3 |
 
 ---
 
@@ -1108,6 +1108,157 @@ flowchart TD
 
 ---
 
+## Block
+
+A block is recorded on **both** accounts: the blocker gets a `Block` entry carrying the target's
+name and avatar snapshot, and the target gets the blocker's bare id in `BlockedBy`. The second array
+exists so that "is this author blocking me?" is answerable from the viewer's own document instead of
+a collection-wide scan.
+
+Both endpoints are **queued**, like follow, reaction and save. The handlers resolve identity, reject
+a self-block and publish; every write lives in `BlockService`. Splitting them — pushing `Blocks` in
+the handler and severing in the consumer — would put the array and its side effects on two
+independent channels, and a rapid block/unblock pair could then apply them against each other's
+order. One FIFO queue makes that race impossible and the operation all-or-nothing.
+
+### How hiding works
+
+`BlockedAccountSet.ResolveAsync` reads the viewer's `Blocks` and `BlockedBy` in one projected `_id`
+lookup, unions them, sorts, caps at 300 and caches the result under `blocked-set:v1:account:{id}` for
+a day — `BlockService` deletes that key, so it is never stale, only cold. Ten read paths consult it,
+in three shapes:
+
+| Shape | Endpoints | What it does |
+|---|---|---|
+| Membership check | #22 `GetSpecificPost`, #38 `GetSpecificComment`, #14 `GetSpecificAccount`, #29 `GetPostByAccount` | Every result has one author, so a `HashSet` lookup replaces the filter. The three singles answer **404**; `GetPostByAccount` answers an empty page. No query and no cache key changes. |
+| `$nin` in Mongo | #30 `GetPostByShop`, #32 `GetPostByKeyword`, #37 `GetCommentByPost`, #15 `GetAccountByName`, #16 `GetAccountByKeyword` | Many authors, so the exclusion goes into the query and the cache signature gains a suffix. |
+| Shrink the source list | #77 `GetRelatedPost` | The feed already names its authors, so hidden ids are dropped from `sourceIds` before the `$in` rather than excluded after it. Its signature is already per-account, so nothing changes. |
+| `$nin` on the unwound item | #49 `GetReactionByPost`, #50 `GetReactionByComment`, #53 `GetFollowerByAccount`, #54 `GetFollowingByAccount`, #55 `GetMyFollower`, #56 `GetMyFollowing` | Actor lists. The exclusion rides the item `$match` that `EmbeddedArrayPaginator` already runs after `$unwind` for the cursor, on the path `{array}.AccountId`. |
+
+**The cache key is a function of what is hidden, not of who is viewing.** The signature suffix is
+`:hidden:{sha256(sorted ids)[..16]}`, which buys three things a per-viewer key does not: an empty set
+returns the signature untouched, so everyone who blocks nobody keeps sharing the one cached page;
+the key changes the instant a block lands, so **no page-cache invalidation is needed on block at
+all**; and two viewers hiding the same accounts share cached pages.
+
+Filtering happens in MongoDB rather than over the returned page, so `HasMore` and the cursor are
+computed over what the viewer can actually see and pages come back full rather than ragged.
+
+### How enforcement works
+
+Hiding stops a blocked account being seen; `BlockGuard.IsBlockedAsync` stops it acting. One
+`_id`-anchored lookup on the actor's own document answers both directions at once —
+`Blocks.AccountId == target OR BlockedBy == target` — because checking only `BlockedBy` would still
+let an account act on someone *it* blocked, which a stale client or a direct link reaches.
+
+It deliberately does **not** reuse `BlockedAccountSet`. That set is capped at 300 and cached because
+it feeds the read side, where the cap only degrades what a viewer sees; the same cap in a write
+guard would let the account past it follow, react and comment. The guard reads the arrays directly,
+uncapped and current.
+
+Neither reaction service pays an extra read for it: both already read the target's author for the
+notification, just *after* the write, so the read moved above the write instead. `CreateComment`
+does add one read, and it runs before the R2 upload — rejecting afterwards would strand images in R2
+that nothing references.
+
+The three single-entity endpoints answer 404 rather than omitting the body, so a blocked post or
+profile is indistinguishable from one that does not exist — matching how ownership failures already
+answer 404 here. Their entity caches (`CacheKey.Post(id)`, `CacheKey.Account(id)`) are shared across
+viewers, so the check sits on both exits of the handler rather than inside the cached value.
+
+Because every `$nin` runs inside the query — in the item `$match` for the embedded lists, before
+`$sort` and `$limit` — no path filters a page after the fact, so none of them can return short pages.
+
+#55 and #56 are the viewer's *own* follower and following lists, which `BlockService` already
+severs at block time. They are filtered anyway because nothing yet stops a blocked account from
+re-following, so a hidden account can reappear in an own list until write-side guards exist.
+
+**Not filtered:** the three admin listings (#70, #71, and `GetAllAccount`) — administrators moderate
+and must see everything — and the viewer's own content (#21 `GetMyPost`, #39 `GetMyCommentHistory`,
+#68 `GetMyNotification`).
+
+### 79. Block account — `POST /Block/{accountId}` → 202
+
+```mermaid
+sequenceDiagram
+    participant C as Client
+    participant Ctl as BlockController
+    participant H as BlockAccountHandler
+    participant Q as RabbitMQ block
+    participant S as BlockService
+    participant M as MongoDB
+    participant R as Redis
+
+    C->>Ctl: POST /api/v1/Block/{accountId}
+    Ctl->>H: MediatR → BlockAccountValidator → handler
+    H->>H: identity, then check identity == accountId
+    alt self-block
+        H-->>Ctl: Fail
+        Ctl-->>C: 400 "Cannot block yourself"
+    else
+        H->>Q: publish block {MessageId, BlockerId, BlockedId, IsUndo false}
+        Ctl-->>C: 202 Accepted
+    end
+    Q->>S: ProcessBlockAsync
+    S->>M: find target, !IsDeleted · project Name, Avatars
+    S->>M: updateOne(me, NOT already blocked) $push Blocks
+    alt Matched ≠ 1
+        S-->>Q: Fail "Already blocked this account"
+    end
+    S->>M: bulkWrite — target $push BlockedBy ·<br/>4 tolerant follow pulls + $inc −1 each side
+    S->>M: 4× find + updateMany — pull each account's<br/>reactions off the other's posts and comments, $inc −1
+    S->>R: DEL both account caches, both blocked-set keys ·<br/>bump account:block, follower and following lists ·<br/>per post/comment touched
+```
+The target is read in the consumer, so blocking a non-existent account fails the message rather than
+the request. Severing follows is **tolerant**: strangers block each other far more often than
+mutuals do, so each of the four pulls carries its own filter and a filter matching nothing is the
+normal case, not a failure. The reaction sweep is the expensive half and the reason this is queued
+at all — it is index-backed by the existing `Reactions.AccountId` multikeys on both `post` and
+`comment`. The pushed `Block` snapshots the target's name and latest avatar the same way `Following`
+does, and goes equally stale on a later rename.
+
+### 80. Unblock account — `DELETE /Block/{accountId}` → 202
+
+```mermaid
+flowchart TD
+    A["Client<br/>DELETE /api/v1/Block/{accountId}"] --> B["BlockController.UnblockAccount"]
+    B --> C["MediatR → UnblockAccountValidator → handler · identity"] -->|null| C1["401"]
+    C --> D{"identity == accountId?"}
+    D -->|yes| D1["400 'Cannot unblock yourself'"]
+    D -->|no| E["RabbitMQ publish block {IsUndo: true}"] --> F["202 Accepted"]
+    E -.-> G["BlockService.ProcessUnblockAsync<br/>updateOne(me, AnyEq Blocks.AccountId = x) $pull Blocks"]
+    G -->|"Matched ≠ 1"| G1["Fail 'Not blocked this account'"]
+    G --> H["Mongo updateOne(target) $pull BlockedBy"]
+    H --> I["Redis DEL both blocked-set keys<br/>bump account:block:{me}"]
+```
+**Unblock is deliberately not the inverse of block.** It lifts the visibility barrier and nothing
+else: severed follows and reactions are *not* restored, because the block never recorded what it
+removed and re-following is the user's decision. For the same reason the account delete cascade
+leaves `Blocks` and `BlockedBy` alone: a block holds until it is explicitly lifted, so it survives
+the blocked account being deleted and still applies if that account is later recovered. No existence check on the target, mirroring #58, so
+an account blocked before it was deleted can still be removed from the list.
+
+### 81. My blocked accounts — `GET /Block/me`
+
+```mermaid
+flowchart TD
+    A["Client<br/>GET /api/v1/Block/me"] --> B["BlockController.GetMyBlockedAccount"]
+    B --> C["MediatR → GetMyBlockedAccountHandler → identity"] -->|null| C1["401"]
+    C --> D["entity = account:block · sig = account:{me}"]
+    D --> E["CachedEmbeddedArrayPaginator<br/>$unwind Blocks · order BlockedAt, tiebreak AccountId"]
+    E --> F["200 page of BlockDto"]
+```
+Reads `Blocks`, never `BlockedBy` — you can list who you blocked, not who blocked you. Because the
+write is queued, this list is **eventually consistent**: a client that blocks and immediately reads
+back may not see the entry yet, the same as `GetMyFollowing` after a follow.
+
+The `$unwind` path resolves to the BSON element name `Blocks`, which only exists because
+`BsonConfiguration` maps the `_blocks` backing field with
+`SetElementName(nameof(Account.Blocks))`. `BlockedBy` needs the same map for the same reason.
+Without it the array is written but never hydrated, and the read returns nothing with no error.
+
+---
+
 ## Save
 
 ### 57. Save post — `POST /Save/post/{postId}` → 202
@@ -1458,17 +1609,36 @@ Bucketing happens in MongoDB via `$dateTrunc` rather than pulling documents back
 return `PostFeedItemDto` carrying `IsReacted`/`IsSaved`. #29, #30, #31 and #61 return bare
 `PostSummaryDto`, so the same post exposes those flags on one endpoint and not another.
 
-**Keyword search normalizes for posts and shops but not accounts** — #32 and #42 fold diacritics
-through `TextNormalizer`; #16 does not.
+**Keyword search is index-eligible, not index-optimal.** #16, #32 and #42 all fold the keyword
+through `TextNormalizer` and match with a **case-sensitive** regex — the `"i"` option was removed
+because every stored field is already lowercase (`TextNormalizer` for `CaptionNormalized`,
+`NameNormalized` and `AddressNormalized`; `Name.Create`, which rejects any character that is not
+lowercase or a digit, for `Account.Name.Value`), so it could not change a match and only prevented
+MongoDB from using the index. Each field now has a supporting index. The regexes remain **unanchored**,
+so the planner scans index keys rather than seeking a range: far cheaper than fetching every
+document, still linear in collection size. Anchoring with `^` would make it a range seek at the cost
+of turning "contains" into "starts with", and a `$text` index would give word-level seeking at the
+cost of partial-word matching — neither is applied.
 
 **Ownership failures answer 404, not 403**, because ownership is folded into the lookup filter —
 #25, #26, #27, #34, #35.
 
-**The ten 202 endpoints cannot report conflicts.** "Already reacted", "Already following" and
-"Already saved" are all detected inside the consumer, where the outcome is only logged.
+**Blocked content is hidden by the reader, not by the writer.** A blocked account's posts stay in
+`post` and in every shared cached page; sixteen read paths subtract them per viewer, always inside
+the query rather than from the returned page.
 
-**Denormalized actor snapshots go stale.** `Reaction`, `Follower`, `Following` and `Notification`
-each embed the actor's `Name` and latest `Avatar` at write time; a later rename or avatar change does
+**Blocked accounts cannot interact.** `FollowService`, `ReactPostService`, `ReactCommentService` and
+`CreateCommentHandler` call `BlockGuard.IsBlockedAsync` before their write. The three queued paths
+fail the message, which `QueueConsumerHost` only logs, so the actor still sees its 202 and learns
+nothing; `CreateComment` answers 404. Unfollow, unreact and unblock are **not** guarded — undoing an
+interaction must stay possible on either side of a block.
+
+**The twelve 202 endpoints cannot report conflicts.** "Already reacted", "Already following",
+"Already saved" and "Already blocked" are all detected inside the consumer, where the outcome is
+only logged.
+
+**Denormalized actor snapshots go stale.** `Reaction`, `Follower`, `Following`, `Block` and
+`Notification` each embed the actor's `Name` and latest `Avatar` at write time; a later rename or avatar change does
 not rewrite them.
 
 **Projections and DTOs are coupled by hand.** A Mongo inclusion projection returns only the fields it

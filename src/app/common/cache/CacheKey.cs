@@ -55,6 +55,15 @@ public sealed record CacheKey
         return $"affinity:v1:account:{accountId}";
     }
 
+    // The union of Blocks and BlockedBy for one viewer, resolved on every filtered read.
+    // Held for a day rather than minutes because BlockService deletes the key outright on
+    // every block and unblock, so it is never stale, only cold.
+    public static TimeSpan DefaultBlockedSetTTL = TimeSpan.FromDays(1);
+    public static string BlockedSet(Guid accountId)
+    {
+        return $"blocked-set:v1:account:{accountId}";
+    }
+
     public static TimeSpan DefaultListTTL = TimeSpan.FromMinutes(2);
 
     // The version suffix is what makes invalidation complete. Deleting keys directly only

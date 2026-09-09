@@ -17,8 +17,13 @@ public static class CachedEmbeddedArrayPaginator
         CursorPageRequest request,
         string entity,
         string? filterSignature,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        IReadOnlyList<Guid>? hiddenAccountIds = null,
+        Expression<Func<TItem, Guid>>? accountField = null)
     {
+        if(hiddenAccountIds is { Count: > 0 } && accountField is not null)
+            filterSignature = BlockedAccountSet.Signature(filterSignature, hiddenAccountIds);
+
         var version = await ListCache.VersionAsync(
             redisService,
             entity,
@@ -45,7 +50,9 @@ public static class CachedEmbeddedArrayPaginator
             orderKey,
             tieBreaker,
             request,
-            cancellationToken);
+            cancellationToken,
+            hiddenAccountIds,
+            accountField);
 
         var items = page.Items
             .Select(x => mapper.Map<TDto>(x))

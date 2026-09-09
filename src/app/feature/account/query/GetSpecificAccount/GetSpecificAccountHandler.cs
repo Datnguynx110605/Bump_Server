@@ -9,14 +9,17 @@ namespace app;
 internal sealed class GetSpecificAccountHandler
     : IRequestHandler<GetSpecificAccountQuery, Result<AccountSummaryDto>>
 {
+    private readonly ICurrentIdentityService _identityService;
     private readonly IRedisService _redisService;
     private readonly IMongoDbContext _dbContext;
     private readonly IMapper _mapper;
     public GetSpecificAccountHandler(
+        ICurrentIdentityService identityService,
         IRedisService redisService,
         IMongoDbContext dbContext,
         IMapper mapper)
     {
+        _identityService = identityService;
         _redisService = redisService;
         _dbContext = dbContext;
         _mapper = mapper;
@@ -26,6 +29,21 @@ internal sealed class GetSpecificAccountHandler
         GetSpecificAccountQuery request,
         CancellationToken cancellationToken)
     {
+        var identity = _identityService.GetAccountId();
+        if(identity is null)
+            return Result.Fail(AppError.Unauthorized("Unauthorized"));
+
+        var hidden = await BlockedAccountSet.ResolveAsync(
+            _redisService,
+            _dbContext,
+            identity.Value,
+            cancellationToken);
+
+        // 404 rather than an empty body: a blocked profile must be indistinguishable from
+        // one that does not exist, the same way ownership failures answer 404 here.
+        if(hidden.Contains(request.accountId))
+            return Result.Fail(AppError.NotFound("Account not found"));
+
         string cacheKey = CacheKey.Account(request.accountId);
 
         var cacheAccount = await _redisService.GetAsync<AccountSummaryDto>(

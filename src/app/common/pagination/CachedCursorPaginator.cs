@@ -1,3 +1,4 @@
+using System.Linq.Expressions;
 using AutoMapper;
 using domain;
 using MongoDB.Driver;
@@ -15,9 +16,24 @@ public static class CachedCursorPaginator
         CursorPageRequest request,
         string entity,
         string? filterSignature,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        IReadOnlyList<Guid>? hiddenAccountIds = null,
+        Expression<Func<TEntity, Guid>>? authorField = null)
         where TEntity : BaseEntity
     {
+        // Blocked authors are excluded in Mongo rather than dropped from the page after
+        // the fact, so HasMore and the cursor are computed over what the viewer can
+        // actually see and pages come back full. Both arguments absent, or an empty set,
+        // leaves the filter and the cache key exactly as they were.
+        if(hiddenAccountIds is { Count: > 0 } && authorField is not null)
+        {
+            filter = Builders<TEntity>.Filter.And(
+                filter,
+                Builders<TEntity>.Filter.Nin(authorField, hiddenAccountIds));
+
+            filterSignature = BlockedAccountSet.Signature(filterSignature, hiddenAccountIds);
+        }
+
         var version = await ListCache.VersionAsync(
             redisService,
             entity,

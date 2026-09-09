@@ -33,6 +33,12 @@ internal sealed class GetMyFollowingHandler
         if(identity is null)
             return Result.Fail(AppError.Unauthorized("Unauthorized"));
 
+        var hidden = await BlockedAccountSet.ResolveAsync(
+            _redisService,
+            _dbContext,
+            identity.Value,
+            cancellationToken);
+
         string filterSignature = $"account:{identity.Value}";
 
         var accountCollection = _dbContext.GetCollection<Account>(CollectionName.Account);
@@ -52,7 +58,9 @@ internal sealed class GetMyFollowingHandler
             request.pageRequest,
             $"{CollectionName.Account}:following",
             filterSignature,
-            cancellationToken);
+            cancellationToken,
+            hidden,
+            x => x.AccountId);
 
         return Result.Ok(dtoPage);
     }

@@ -54,6 +54,12 @@ public sealed class FollowService : IFollowService
         if(following is null)
             return Result.Fail(AppError.NotFound("Following account not found"));
 
+        // Silently refused, not reported: the endpoint already answered 202, and an error
+        // here would tell the actor that the other account blocked them. A failed Result is
+        // logged by QueueConsumerHost and the message is not retried.
+        if(await BlockGuard.IsBlockedAsync(accountCollection, followerId, followingId, cancellationToken))
+            return Result.Fail("Blocked by or blocking this account");
+
         var followerFilter = Builders<Account>.Filter.And(
             Builders<Account>.Filter.Eq(x => x.Id, followerId),
             Builders<Account>.Filter.Eq(x => x.IsDeleted, false),

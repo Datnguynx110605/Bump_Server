@@ -46,6 +46,14 @@ public static class IndexConfiguration
                     keys.Ascending(x => x.IsDeleted)
                         .Descending(x => x.CreatedAt)
                         .Descending(x => x.Id)),
+                // GetAccountByKeyword matches on the dotted path Name.Value, which the index
+                // on the Name subdocument above does not serve. Post and shop already have
+                // the equivalent index on their normalized search fields.
+                new CreateIndexModel<Account>(
+                    keys.Ascending("Name.Value")
+                        .Ascending(x => x.IsDeleted)
+                        .Descending(x => x.CreatedAt)
+                        .Descending(x => x.Id)),
                 // Multikey indexes backing the ElemMatch/AnyEq membership lookups in
                 // SaveMembership and AccountService, which otherwise scan the
                 // whole collection on every feed request.

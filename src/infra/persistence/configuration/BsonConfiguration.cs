@@ -52,6 +52,8 @@ public static class BsonConfiguration
             map.MapField("_avatars").SetElementName(nameof(Account.Avatars));
             map.MapField("_followers").SetElementName(nameof(Account.Followers));
             map.MapField("_followings").SetElementName(nameof(Account.Followings));
+            map.MapField("_blocks").SetElementName(nameof(Account.Blocks));
+            map.MapField("_blockedBy").SetElementName(nameof(Account.BlockedBy));
             map.MapField("_savePosts").SetElementName(nameof(Account.SavePosts));
             map.MapField("_saveShops").SetElementName(nameof(Account.SaveShops));
         });

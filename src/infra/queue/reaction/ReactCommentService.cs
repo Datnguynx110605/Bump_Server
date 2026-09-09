@@ -41,6 +41,27 @@ public sealed class ReactCommentService : IReactCommentService
 
         var commentCollection = _dbContext.GetCollection<Comment>(CollectionName.Comment);
 
+        // Read before the write rather than after it. The author id is what the guard
+        // compares against, and this read already existed below for the notification, so
+        // moving it up costs nothing.
+        var commentOwnerProjection = Builders<Comment>.Projection
+            .Include(x => x.AccountId)
+            .Include(x => x.PostId);
+
+        var comment = await commentCollection
+            .Find(x => x.Id == commentId && !x.IsDeleted)
+            .Project<Comment>(commentOwnerProjection)
+            .FirstOrDefaultAsync(cancellationToken);
+
+        if(comment is null)
+            return Result.Fail(AppError.NotFound("Comment not found"));
+
+        // Silently refused, not reported: the endpoint already answered 202, and an error
+        // here would tell the actor that the other account blocked them. A failed Result is
+        // logged by QueueConsumerHost and the message is not retried.
+        if(await BlockGuard.IsBlockedAsync(accountCollection, accountId, comment.AccountId, cancellationToken))
+            return Result.Fail("Blocked by or blocking this account");
+
         var filter = Builders<Comment>.Filter.And(
             Builders<Comment>.Filter.Eq(x => x.Id, commentId),
             Builders<Comment>.Filter.Eq(x => x.IsDeleted, false),
@@ -67,18 +88,6 @@ public sealed class ReactCommentService : IReactCommentService
                 $"{CollectionName.Comment}:reaction",
                 $"comment:{commentId}",
                 cancellationToken));
-
-        var commentOwnerProjection = Builders<Comment>.Projection
-            .Include(x => x.AccountId)
-            .Include(x => x.PostId);
-
-        var comment = await commentCollection
-            .Find(x => x.Id == commentId && !x.IsDeleted)
-            .Project<Comment>(commentOwnerProjection)
-            .FirstOrDefaultAsync(cancellationToken);
-
-        if(comment is null)
-            return Result.Fail(AppError.NotFound("Comment not found"));
 
         await InvalidateCommentListsAsync(comment.PostId, comment.AccountId, cancellationToken);
 

@@ -50,14 +50,37 @@ internal sealed class GetRelatedPostHandler
 
         var postCollection = _dbContext.GetCollection<Post>(CollectionName.Post);
 
-        var followingIds = await GetFollowingIdsAsync(identity.Value, cancellationToken);
-        var affinityIds = await GetAffinityIdsAsync(postCollection, identity.Value, cancellationToken);
+        // Started together rather than awaited in turn: they read different collections and
+        // share no state, so the second no longer waits out the first's round trip.
+        var hiddenTask = BlockedAccountSet.ResolveAsync(
+            _redisService,
+            _dbContext,
+            identity.Value,
+            cancellationToken);
 
-        // Reacting to your own post is allowed, so affinity can name the reader. Their own
-        // posts belong in GetMyPost, not in a feed about everyone else.
+        var followingTask = GetFollowingIdsAsync(identity.Value, cancellationToken);
+        var affinityTask = GetAffinityIdsAsync(postCollection, identity.Value, cancellationToken);
+
+        // Depends on nothing but the identity, so it starts here and overlaps the feed query
+        // instead of trailing it. Only on the first page — the only page it can be prepended
+        // to — so later pages do not pay for a read they will discard.
+        var latestTask = request.pageRequest.Cursor is null
+            ? GetMyLatestPostAsync(postCollection, identity.Value, cancellationToken)
+            : null;
+
+        var followingIds = await followingTask;
+        var affinityIds = await affinityTask;
+        var hidden = (await hiddenTask).ToHashSet();
+
+        // Reacting to your own post is allowed, so affinity can name the reader. The reader's
+        // own posts are not part of the feed body — only their latest one, pinned on top.
+        // Blocked accounts are dropped from the source list rather than excluded with a
+        // $nin: this feed already names its authors, so removing them shrinks the $in
+        // instead of adding a residual filter the index cannot help with. The signature is
+        // already per-account, so no cache key changes.
         var sourceIds = followingIds
             .Concat(affinityIds)
-            .Where(x => x != identity.Value)
+            .Where(x => x != identity.Value && !hidden.Contains(x))
             .Distinct()
             .Take(MaxSourceAccounts)
             .ToList();
@@ -83,7 +106,66 @@ internal sealed class GetRelatedPostHandler
             filterSignature,
             cancellationToken);
 
+        // An account that follows nobody and has reacted to nobody has nothing to relate to,
+        // and so does one whose followed accounts have never posted. Rather than hand back an
+        // empty home, fall back to the reader's own posts, newest first.
+        //
+        // The condition is "the page came back empty", not "sourceIds is empty", because the
+        // second case is invisible to sourceIds. Testing it on every page rather than only the
+        // first is what keeps the fallback pageable: CursorPaginator ends a stream with
+        // NextCursor null, so a normal feed never yields an empty page mid-stream, and the
+        // condition therefore re-derives the same way for page 2 as it did for page 1.
+        if(dtoPage.Items.Count == 0)
+        {
+            // Same filter and signature as GetMyPost, so the two share cached pages — and the
+            // pin below is unnecessary here: post create, edit and delete all bump
+            // "account:{id}", so a just-created post is already at the top of this stream.
+            dtoPage = await CachedCursorPaginator.PaginateAsync<Post, PostSummaryDto>(
+                _redisService,
+                _mapper,
+                postCollection,
+                Builders<Post>.Filter.And(
+                    Builders<Post>.Filter.Eq(x => x.AccountId, identity.Value),
+                    Builders<Post>.Filter.Eq(x => x.IsDeleted, false)),
+                PostProjection.Summary,
+                request.pageRequest,
+                CollectionName.Post,
+                $"account:{identity.Value}",
+                cancellationToken);
+        }
+        // Pinned outside the paginator on purpose: the related page is cached for
+        // DefaultListTTL under a signature nothing bumps, so a post created a moment ago would
+        // not show up in it. This read is uncached and one indexed lookup, which is what makes
+        // "my newest post is always first" hold.
+        else if(latestTask is not null)
+        {
+            var latest = await latestTask;
+            if(latest is not null)
+                dtoPage = dtoPage with { Items = dtoPage.Items.Prepend(latest).ToList() };
+        }
+
         return Result.Ok(await PostFeedEnricher.EnrichAsync(_dbContext, dtoPage, identity.Value, cancellationToken));
+    }
+
+    // The cursor on dtoPage still belongs to the last feed item, so prepending here does not
+    // disturb paging: the pinned post is never part of the stream the cursor walks.
+    private async Task<PostSummaryDto?> GetMyLatestPostAsync(
+        IMongoCollection<Post> postCollection,
+        Guid accountId,
+        CancellationToken cancellationToken)
+    {
+        var filter = Builders<Post>.Filter.And(
+            Builders<Post>.Filter.Eq(x => x.AccountId, accountId),
+            Builders<Post>.Filter.Eq(x => x.IsDeleted, false));
+
+        var post = await postCollection
+            .Find(filter)
+            .SortByDescending(x => x.CreatedAt)
+            .ThenByDescending(x => x.Id)
+            .Project<Post>(PostProjection.Summary)
+            .FirstOrDefaultAsync(cancellationToken);
+
+        return post is null ? null : _mapper.Map<PostSummaryDto>(post);
     }
 
     // Followings are embedded on the account, so this is one document read rather than a

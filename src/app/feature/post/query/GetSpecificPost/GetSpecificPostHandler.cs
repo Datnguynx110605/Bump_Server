@@ -33,14 +33,24 @@ internal sealed class GetSpecificPostHandler
         if(identity is null)
             return Result.Fail(AppError.Unauthorized("Unauthorized"));
 
+        var hidden = await BlockedAccountSet.ResolveAsync(
+            _redisService,
+            _dbContext,
+            identity.Value,
+            cancellationToken);
+
         string cacheKey = CacheKey.Post(request.postId);
 
         var cachePost = await _redisService.GetAsync<PostSummaryDto>(
             cacheKey,
             cancellationToken);
 
+        // The entity cache is shared across viewers, so the check cannot live inside the
+        // cached value and has to sit on both exits.
         if(cachePost is not null)
-            return Result.Ok(await PostFeedEnricher.EnrichAsync(_dbContext, cachePost, identity.Value, cancellationToken));
+            return hidden.Contains(cachePost.AccountId)
+                ? Result.Fail(AppError.NotFound("Post not found"))
+                : Result.Ok(await PostFeedEnricher.EnrichAsync(_dbContext, cachePost, identity.Value, cancellationToken));
 
         var postCollection = _dbContext.GetCollection<Post>(CollectionName.Post);
 
@@ -50,6 +60,9 @@ internal sealed class GetSpecificPostHandler
             .FirstOrDefaultAsync(cancellationToken);
 
         if(dbPost is null)
+            return Result.Fail(AppError.NotFound("Post not found"));
+
+        if(hidden.Contains(dbPost.AccountId))
             return Result.Fail(AppError.NotFound("Post not found"));
 
         var dto = _mapper.Map<PostSummaryDto>(dbPost);

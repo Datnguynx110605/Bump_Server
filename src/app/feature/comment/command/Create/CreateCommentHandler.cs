@@ -39,6 +39,29 @@ internal sealed class CreateCommentHandler
         if(identity is null)
             return Result.Fail(AppError.Unauthorized("Unauthorized"));
 
+        var postCollection = _dbContext.GetCollection<Post>(CollectionName.Post);
+
+        // Resolved up front, before any image is uploaded: rejecting after the upload would
+        // leave orphans in R2 that nothing references. Unlike follow and reaction this
+        // handler answers synchronously, so it cannot silently drop the write.
+        var targetPost = await postCollection
+            .Find(x => x.Id == request.postId && !x.IsDeleted)
+            .Project<Post>(Builders<Post>.Projection.Include(x => x.AccountId))
+            .FirstOrDefaultAsync(cancellationToken);
+
+        // 404 for both "no such post" and "blocked", so a blocked post is indistinguishable
+        // from a deleted one and the block is not revealed — the same answer
+        // GetSpecificPostHandler gives a blocked reader.
+        if(targetPost is null)
+            return Result.Fail(AppError.NotFound("Post not found"));
+
+        if(await BlockGuard.IsBlockedAsync(
+            _dbContext.GetCollection<Account>(CollectionName.Account),
+            identity.Value,
+            targetPost.AccountId,
+            cancellationToken))
+            return Result.Fail(AppError.NotFound("Post not found"));
+
         List<string>? urls = null;
         if(request.images?.Any() == true)
         {
@@ -69,8 +92,6 @@ internal sealed class CreateCommentHandler
         await commentCollection.InsertOneAsync(
             comment,
             cancellationToken : cancellationToken);
-
-        var postCollection = _dbContext.GetCollection<Post>(CollectionName.Post);
 
         var filter = Builders<Post>.Filter.And(
             Builders<Post>.Filter.Eq(x => x.Id, comment.PostId),

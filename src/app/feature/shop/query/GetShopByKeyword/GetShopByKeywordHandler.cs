@@ -35,11 +35,14 @@ internal sealed class GetShopByKeywordHandler
         var normalizedKeyword = TextNormalizer.RemoveDiacriticsAndLower(request.keyword);
         var escapedKeyword = Regex.Escape(normalizedKeyword);
 
+        // No "i" option: TextNormalizer has already lowercased both the stored field and the
+        // keyword, so case-insensitivity cannot change a match — and it is exactly what stops
+        // MongoDB using the index on this field.
         var filter = Builders<Shop>.Filter.And(
             Builders<Shop>.Filter.Eq(x => x.IsDeleted, false),
             Builders<Shop>.Filter.Or(
-                Builders<Shop>.Filter.Regex(x => x.NameNormalized, new BsonRegularExpression(escapedKeyword, "i")),
-                Builders<Shop>.Filter.Regex(x => x.AddressNormalized, new BsonRegularExpression(escapedKeyword, "i"))));
+                Builders<Shop>.Filter.Regex(x => x.NameNormalized, new BsonRegularExpression(escapedKeyword)),
+                Builders<Shop>.Filter.Regex(x => x.AddressNormalized, new BsonRegularExpression(escapedKeyword))));
 
         var dtoPage = await CachedCursorPaginator.PaginateAsync<Shop, ShopSummaryDto>(
             _redisService,

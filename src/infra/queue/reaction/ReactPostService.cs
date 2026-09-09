@@ -41,6 +41,27 @@ public sealed class ReactPostService : IReactPostService
 
         var postCollection = _dbContext.GetCollection<Post>(CollectionName.Post);
 
+        // Read before the write rather than after it. The author id is what the guard
+        // compares against, and this read already existed below for the notification, so
+        // moving it up costs nothing.
+        var postOwnerProjection = Builders<Post>.Projection
+            .Include(x => x.AccountId)
+            .Include(x => x.ShopId);
+
+        var post = await postCollection
+            .Find(x => x.Id == postId && !x.IsDeleted)
+            .Project<Post>(postOwnerProjection)
+            .FirstOrDefaultAsync(cancellationToken);
+
+        if(post is null)
+            return Result.Fail(AppError.NotFound("Post not found"));
+
+        // Silently refused, not reported: the endpoint already answered 202, and an error
+        // here would tell the actor that the other account blocked them. A failed Result is
+        // logged by QueueConsumerHost and the message is not retried.
+        if(await BlockGuard.IsBlockedAsync(accountCollection, accountId, post.AccountId, cancellationToken))
+            return Result.Fail("Blocked by or blocking this account");
+
         var filter = Builders<Post>.Filter.And(
             Builders<Post>.Filter.Eq(x => x.Id, postId),
             Builders<Post>.Filter.Eq(x => x.IsDeleted, false),
@@ -67,18 +88,6 @@ public sealed class ReactPostService : IReactPostService
                 $"{CollectionName.Post}:reaction",
                 $"post:{postId}",
                 cancellationToken));
-
-        var postOwnerProjection = Builders<Post>.Projection
-            .Include(x => x.AccountId)
-            .Include(x => x.ShopId);
-
-        var post = await postCollection
-            .Find(x => x.Id == postId && !x.IsDeleted)
-            .Project<Post>(postOwnerProjection)
-            .FirstOrDefaultAsync(cancellationToken);
-
-        if(post is null)
-            return Result.Fail(AppError.NotFound("Post not found"));
 
         await InvalidatePostListsAsync(post.AccountId, post.ShopId, cancellationToken);
 

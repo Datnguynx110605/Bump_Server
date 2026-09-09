@@ -27,7 +27,7 @@ Bump_Server/
     ├── domain/                     [0]  no project or package dependencies at all
     │   ├── common/                 [2]  DomainResult / DomainResult<T>; TextNormalizer (diacritic folding)
     │   └── core/
-    │       ├── entity/             [15] aggregates + embedded types; private ctor, static Create factory
+    │       ├── entity/             [16] aggregates + embedded types; private ctor, static Create factory
     │       ├── enum/               [2]  Role, NotificationType
     │       └── valueobject/        [3]  Amount, Email, Name — validated wrappers over a primitive
     │
@@ -35,16 +35,18 @@ Bump_Server/
     │   ├── common/                 [3]  CollectionName, QueueName, AppError
     │   │   ├── behavior/           [3]  MediatR pipeline: Logging → Performance → Validation
     │   │   ├── cache/              [2]  CacheKey (key shapes + TTLs), ListCache (version bump/read)
-    │   │   ├── dto/                [19] response and cache shapes; PascalCase record parameters
+    │   │   ├── dto/                [20] response and cache shapes; PascalCase record parameters
     │   │   ├── interface/               contracts implemented in infra — the inversion boundary
     │   │   │   ├── persistence/    [1]  IMongoDbContext
-    │   │   │   ├── queue/          [8]  one per queue worker (IFollowService, IReactPostService, …)
+    │   │   │   ├── queue/          [9]  one per queue worker (IFollowService, IReactPostService, …)
     │   │   │   └── service/        [10] adapters (IRedisService, IR2Service, IJwtService, …)
-    │   │   ├── mapping/            [12] one AutoMapper Profile per aggregate
-    │   │   ├── membership/         [3]  per-viewer flags: ReactionMembership, SaveMembership, PostFeedEnricher
-    │   │   ├── message/            [7]  queue payload records; every one carries a MessageId
+    │   │   ├── mapping/            [13] one AutoMapper Profile per aggregate
+    │   │   ├── membership/         [5]  per-viewer flags and filters: ReactionMembership,
+    │   │   │                        SaveMembership, PostFeedEnricher, BlockedAccountSet,
+    │   │   │                        BlockGuard
+    │   │   ├── message/            [8]  queue payload records; every one carries a MessageId
     │   │   └── pagination/         [7]  cursor codec, paginators, and their cached wrappers
-    │   └── feature/                     78 use cases — one folder each, listed in full below
+    │   └── feature/                     81 use cases — one folder each, listed in full below
     │       ├── account/            [1]  AccountProjection.cs — area-shared
     │       │   ├── command/
     │       │   │   ├── ChangeAvatar/     ChangeAvatar{Command, Handler, Validator}
@@ -73,6 +75,13 @@ Bump_Server/
     │       │   └── query/
     │       │       ├── GetAllRefreshToken/       GetAllRefreshToken{Query, Handler}
     │       │       └── GetSpecificRefreshToken/  GetSpecificRefreshToken{Query, Handler}
+    │       ├── block/                   ⚠ no area-shared file; both commands publish only,
+    │       │                             every write lives in infra/queue/block/
+    │       │   ├── command/
+    │       │   │   ├── BlockAccount/     BlockAccount{Command, Handler, Validator}
+    │       │   │   └── UnblockAccount/   UnblockAccount{Command, Handler, Validator}
+    │       │   └── query/
+    │       │       └── GetMyBlockedAccount/  GetMyBlockedAccount{Query, Handler}
     │       ├── comment/            [1]  CommentProjection.cs — area-shared
     │       │   ├── command/
     │       │   │   ├── AdminDelete/      AdminDeleteComment{Command, Handler, Validator}
@@ -166,6 +175,7 @@ Bump_Server/
     │   │   └── dbcontext/          [1]  DbContext — the only IMongoDbContext implementation
     │   ├── queue/                  [1]  QueueConsumerHost<TMessage> — the single generic consumer host
     │   │   ├── account/            [1]  AccountService — the delete cascade
+    │   │   ├── block/              [1]  BlockService — both block arrays + follow/reaction severing
     │   │   ├── comment/            [1]  CommentService — create notification + delete image cleanup
     │   │   ├── follow/             [1]  FollowService — both sides of the edge + counters
     │   │   ├── post/               [1]  PostService — post images + the comment cascade
@@ -178,7 +188,7 @@ Bump_Server/
     └── api/                        [2]  Program.cs (pipeline order), DependencyInjection.cs (AddApi)
         ├── Properties/             [0]  launchSettings.json only
         ├── common/                 [4]  ResultExtensions, ResultStatusMapper, RateLimiterPolicy, ImageUpload
-        ├── controller/             [12] one per resource; bind → send → ToActionResult, no logic
+        ├── controller/             [13] one per resource; bind → send → ToActionResult, no logic
         ├── middleware/             [4]  CorrelationId + Performance, each with its UseX extension
         └── request/                [15] HTTP body records; PascalCase parameters
 ```
@@ -201,8 +211,8 @@ exists.
   that use case's folder instead.
 - **`api/common/` is for cross-controller plumbing**, not helpers for a single controller.
 
-**Structural folders are lowercase, single word.** All 40 of them: `account`, `api`, `app`, `auth`,
-`behavior`, `cache`, `command`, `comment`, `common`, `configuration`, `controller`, `core`,
+**Structural folders are lowercase, single word.** All 41 of them: `account`, `api`, `app`, `auth`,
+`behavior`, `block`, `cache`, `command`, `comment`, `common`, `configuration`, `controller`, `core`,
 `dashboard`, `dbcontext`, `domain`, `dto`, `email`, `entity`, `enum`, `feature`, `follow`, `health`,
 `hub`, `infra`, `interface`, `mapping`, `membership`, `message`, `middleware`, `notification`,
 `pagination`, `persistence`, `post`, `query`, `queue`, `reaction`, `report`, `request`, `save`,
@@ -218,15 +228,15 @@ That is the one structural inconsistency in the feature tree.
 
 ## Namespaces
 
-**File-scoped, lowercase, one per project — 369 files, zero exceptions**, and no block-bodied
+**File-scoped, lowercase, one per project — 386 files, zero exceptions**, and no block-bodied
 namespace anywhere:
 
 | Namespace | Files |
 |---|---|
-| `namespace app;` | 274 |
-| `namespace api;` | 36 |
+| `namespace app;` | 289 |
+| `namespace api;` | 37 |
 | `namespace infra;` | 37 |
-| `namespace domain;` | 22 |
+| `namespace domain;` | 23 |
 
 Namespaces are **flat**: a type in `app/feature/post/query/GetMyPost/` is still `namespace app;`.
 Folders carry no namespace meaning, so every type name must be unique within its project.
@@ -261,7 +271,7 @@ Suffixes are load-bearing and consistent:
 
 ## Type and member naming
 
-**Types are PascalCase and `sealed` by default** — 305 `sealed class`/`sealed record` declarations
+**Types are PascalCase and `sealed` by default** — 339 `sealed class`/`sealed record` declarations
 against only 4 non-sealed types, each deliberately open:
 `BaseEntity` (abstract), `DomainResult`, `DomainResult<T>` (inherited from), and `DbContext`.
 
@@ -343,7 +353,7 @@ Derived by counting the whole tree; there is no config file to cite.
 | Named arguments used for clarity on optional Mongo parameters | `cancellationToken : cancellationToken` — note the **spaces around the colon**, which is non-standard |
 | `<Nullable>enable</Nullable>` and `<ImplicitUsings>enable</ImplicitUsings>` | all five `.csproj` files |
 
-The build emits **50 nullable warnings** (CS8600/CS8604/CS8618), largely because
+The build emits **52 nullable warnings** (CS8600/CS8604/CS8618), largely because
 `DomainResult<T>.Value` is `T?` with no flow attribute, so `result.Value` after an `IsSuccess` check
 still warns. Warnings are not treated as errors.
 
@@ -372,7 +382,7 @@ identical three-file shape; comparing `post/query/GetMyPost`, `shop/query/GetAll
 2. `<UseCase>Handler.cs` — resolve identity, build a `FilterDefinition`, call
    `CachedCursorPaginator.PaginateAsync` passing `entity` and `filterSignature` (the paginator
    resolves the cache version itself), enrich if needed.
-3. A validator only if the query takes constrained input — **39 of 78 handlers have no validator**,
+3. A validator only if the query takes constrained input — **40 of 81 handlers have no validator**,
    and they are overwhelmingly queries. `GetBestShopAround` is one of the two that does have one,
    because a latitude or longitude outside its range is a bad request rather than an empty result.
 

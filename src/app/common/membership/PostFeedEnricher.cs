@@ -1,4 +1,4 @@
-using domain;
+﻿using domain;
 
 namespace app;
 
@@ -30,8 +30,13 @@ public static class PostFeedEnricher
 
         var ids = page.Items.Select(x => x.Id).ToList();
 
-        var reactedIds = await ReactionMembership.ReactedPostIdsAsync(postCollection, ids, accountId, cancellationToken);
-        var savedIds = await SaveMembership.SavedPostIdsAsync(accountCollection, accountId, ids, cancellationToken);
+        // One reads Post, the other Account, and neither needs the other's answer, so they
+        // overlap instead of costing two round trips back to back.
+        var reactedTask = ReactionMembership.ReactedPostIdsAsync(postCollection, ids, accountId, cancellationToken);
+        var savedTask = SaveMembership.SavedPostIdsAsync(accountCollection, accountId, ids, cancellationToken);
+
+        var reactedIds = await reactedTask;
+        var savedIds = await savedTask;
 
         var items = page.Items
             .Select(x => new PostFeedItemDto(x, reactedIds.Contains(x.Id), savedIds.Contains(x.Id)))

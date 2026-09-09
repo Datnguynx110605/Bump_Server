@@ -6,6 +6,7 @@ namespace app;
 public sealed record QueueName
 {
     public static string Follow = "follow";
+    public static string Block = "block";
     public static string ReactPost = "react-post";
     public static string ReactComment = "react-comment";
     public static string CreateComment = "create-comment";

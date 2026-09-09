@@ -35,6 +35,12 @@ internal sealed class GetPostByKeywordHandler
         if(identity is null)
             return Result.Fail(AppError.Unauthorized("Unauthorized"));
 
+        var hidden = await BlockedAccountSet.ResolveAsync(
+            _redisService,
+            _dbContext,
+            identity.Value,
+            cancellationToken);
+
         string filterSignature = $"keyword:{request.keyword}";
 
         var postCollection = _dbContext.GetCollection<Post>(CollectionName.Post);
@@ -42,9 +48,12 @@ internal sealed class GetPostByKeywordHandler
         var normalizedKeyword = TextNormalizer.RemoveDiacriticsAndLower(request.keyword);
         var escapedKeyword = Regex.Escape(normalizedKeyword);
 
+        // No "i" option: TextNormalizer has already lowercased both the stored field and the
+        // keyword, so case-insensitivity cannot change a match — and it is exactly what stops
+        // MongoDB using the index on this field.
         var filter = Builders<Post>.Filter.And(
             Builders<Post>.Filter.Eq(x => x.IsDeleted, false),
-            Builders<Post>.Filter.Regex(x => x.CaptionNormalized, new BsonRegularExpression(escapedKeyword, "i")));
+            Builders<Post>.Filter.Regex(x => x.CaptionNormalized, new BsonRegularExpression(escapedKeyword)));
 
         var dtoPage = await CachedCursorPaginator.PaginateAsync<Post, PostSummaryDto>(
             _redisService,
@@ -55,7 +64,9 @@ internal sealed class GetPostByKeywordHandler
             request.pageRequest,
             CollectionName.Post,
             filterSignature,
-            cancellationToken);
+            cancellationToken,
+            hidden,
+            x => x.AccountId);
 
         return Result.Ok(await PostFeedEnricher.EnrichAsync(_dbContext, dtoPage, identity.Value, cancellationToken));
     }

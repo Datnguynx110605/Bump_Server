@@ -9,14 +9,17 @@ namespace app;
 internal sealed class GetCommentByPostHandler
     : IRequestHandler<GetCommentByPostQuery, Result<CursorPageResult<CommentSummaryDto>>>
 {
+    private readonly ICurrentIdentityService _identityService;
     private readonly IRedisService _redisService;
     private readonly IMongoDbContext _dbContext;
     private readonly IMapper _mapper;
     public GetCommentByPostHandler(
+        ICurrentIdentityService identityService,
         IRedisService redisService,
         IMongoDbContext dbContext,
         IMapper mapper)
     {
+        _identityService = identityService;
         _redisService = redisService;
         _dbContext = dbContext;
         _mapper = mapper;
@@ -26,6 +29,16 @@ internal sealed class GetCommentByPostHandler
         GetCommentByPostQuery request,
         CancellationToken cancellationToken)
     {
+        var identity = _identityService.GetAccountId();
+        if(identity is null)
+            return Result.Fail(AppError.Unauthorized("Unauthorized"));
+
+        var hidden = await BlockedAccountSet.ResolveAsync(
+            _redisService,
+            _dbContext,
+            identity.Value,
+            cancellationToken);
+
         string filterSignature = $"post:{request.postId}";
 
         var commentCollection = _dbContext.GetCollection<Comment>(CollectionName.Comment);
@@ -43,7 +56,9 @@ internal sealed class GetCommentByPostHandler
             request.pageRequest,
             CollectionName.Comment,
             filterSignature,
-            cancellationToken);
+            cancellationToken,
+            hidden,
+            x => x.AccountId);
 
         return Result.Ok(dtoPage);
     }

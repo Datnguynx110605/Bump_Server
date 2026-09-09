@@ -85,6 +85,7 @@ public static class DependencyInjection
         services.AddScoped<ICommentService, CommentService>();
         services.AddScoped<ICurrentIdentityService, CurrentIdentityService>();
         services.AddScoped<IAccountService, AccountService>();
+        services.AddScoped<IBlockService, BlockService>();
         services.AddScoped<IPostService, PostService>();
         services.AddHttpClient<IEmailService, EmailService>(
             client => client.Timeout = TimeSpan.FromSeconds(10));
@@ -118,6 +119,15 @@ public static class DependencyInjection
                     .ProcessUnfollowAsync(message.FollowerId, message.FollowingId, cancellationToken)
                 : provider.GetRequiredService<IFollowService>()
                     .ProcessFollowAsync(message.FollowerId, message.FollowingId, cancellationToken));
+
+        services.AddQueueConsumer<BlockMessage>(
+            QueueName.Block,
+            message => message.MessageId,
+            (provider, message, cancellationToken) => message.IsUndo
+                ? provider.GetRequiredService<IBlockService>()
+                    .ProcessUnblockAsync(message.BlockerId, message.BlockedId, cancellationToken)
+                : provider.GetRequiredService<IBlockService>()
+                    .ProcessBlockAsync(message.BlockerId, message.BlockedId, cancellationToken));
 
         services.AddQueueConsumer<ReactionMessage>(
             QueueName.ReactPost,
