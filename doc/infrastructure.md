@@ -1,4 +1,4 @@
-﻿# Infrastructure
+# Infrastructure
 
 Every external service the system integrates with, how it is configured, and how the application is
 packaged. Runtime data flow is in [`system-design.md`](./system-design.md).
@@ -158,11 +158,11 @@ without either forcing it open during composition.
 |---|---|---|
 | `account:v1:id:{guid}`, `post:v1:id:{guid}`, `comment:v1:id:{guid}`, `report:v1:id:{guid}`, `shop:v1:id:{guid}`, `notification:v1:id:{guid}` | 7 days | Single-entity cache |
 | `account:v1:email:{email}` | 7 days | Admin lookup by email |
-| `list:v1:{entity}:{signature}:{cursor}:{size}:v{version}` | 2 minutes | Cursor page cache |
-| `list-version:{entity}:{signature}` | 1 day, sliding | List invalidation counter |
+| `list:v1:{entity}:{signature}:{cursor}:{size}:v{version}` | 2 minutes | Cursor page cache. On a block-filtered read the signature carries a trailing `:hidden:{sha256(sorted blocked ids)[..16]}`, so viewers hiding different accounts never share a page |
+| `list-version:{entity}:{signature}` | 1 day, sliding | List invalidation counter. Always the **unsuffixed** signature — writers cannot compute a viewer's hidden set, so every hidden variant of a page shares one counter and retires on a single bump |
 | `affinity:v1:account:{guid}` | 1 hour | Accounts this account reacts to most, ranked; a query input for `GetRelatedPost`, not a page of results, so no version counter governs it |
-| `otp:{email}` | 10 minutes | `{Code, Attempts, ExpiresAt}`, max 3 attempts |
-| `registration:{token}` | 10 minutes | Data-Protection-wrapped email |
+| `otp:{email}` | 10 minutes | `{Code, Attempts, ExpiresAt}`, max 3 attempts. Deleted only when the attempt cap is hit; a correct code is left to expire so a lost verify response can be retried |
+| `registration:{token}` | 10 minutes | Data-Protection-wrapped email. Read non-destructively and deleted only once the write it authorises commits |
 | `rabbitmq:idempotency:{queue}:{messageId}` | 24 hours | SHA-256 of the processed payload |
 | `bump:dataprotection-keys` | none | ASP.NET Data Protection key ring (see *Deployment topology*) |
 | `admin:v1:series:{metric}` | 24 hours | Metric history written by **Bump_Admin**, not by this server |

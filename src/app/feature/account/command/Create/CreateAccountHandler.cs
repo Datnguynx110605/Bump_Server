@@ -1,7 +1,8 @@
-﻿using AutoMapper;
+using AutoMapper;
 using domain;
 using FluentResults;
 using MediatR;
+using MongoDB.Driver;
 
 namespace app;
 
@@ -57,9 +58,25 @@ internal sealed class CreateAccountHandler
 
         var accountCollection = _dbContext.GetCollection<Account>(CollectionName.Account);
 
-        await accountCollection.InsertOneAsync(
-            account,
-            cancellationToken : cancellationToken);
+        try
+        {
+            await accountCollection.InsertOneAsync(
+                account,
+                cancellationToken : cancellationToken);
+        }
+        catch(MongoWriteException ex)
+            when (ex.WriteError.Category == ServerErrorCategory.DuplicateKey)
+        {
+            // The unique partial index on Email is the only thing standing between a
+            // retried registration and a second account. Without this the driver's
+            // exception escapes to UseExceptionHandler and the caller reads a 500
+            // instead of the same 409 send-for-register would have given them.
+            return Result.Fail(AppError.Conflict("Email already exists"));
+        }
+
+        await _registrationService.ConsumeTokenAsync(
+            request.registrationToken,
+            cancellationToken);
 
         var dto = _mapper.Map<AccountDto>(account);
         var summaryDto = _mapper.Map<AccountSummaryDto>(account);

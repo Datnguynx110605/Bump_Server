@@ -68,6 +68,10 @@ internal sealed class RecoverAccountHandler
             update,
             cancellationToken : cancellationToken);
 
+        await _registrationService.ConsumeTokenAsync(
+            request.registrationToken,
+            cancellationToken);
+
         string cacheKey = CacheKey.Account(account.Id);
 
         await _redisService.RemoveAsync(

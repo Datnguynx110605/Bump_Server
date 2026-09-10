@@ -60,10 +60,19 @@ internal sealed class ChangeAvatarHandler
             .Push(x => x.Avatars, new Avatar(url))
             .Set(x => x.UpdatedAt, DateTime.UtcNow);
 
-        var updateResult = await accountCollection.UpdateOneAsync(
-            filter,
-            update,
-            cancellationToken : cancellationToken);
+        UpdateResult updateResult;
+        try
+        {
+            updateResult = await accountCollection.UpdateOneAsync(
+                filter,
+                update,
+                cancellationToken : cancellationToken);
+        }
+        catch(MongoWriteException)
+        {
+            await _r2Service.DeleteAsync(url, CancellationToken.None);
+            throw;
+        }
 
         if(updateResult.MatchedCount != 1)
             return Result.Fail(AppError.Conflict("New avatar must be different"));

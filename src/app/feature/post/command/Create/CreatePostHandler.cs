@@ -1,4 +1,4 @@
-﻿using AutoMapper;
+using AutoMapper;
 using domain;
 using FluentResults;
 using MediatR;
@@ -86,9 +86,20 @@ internal sealed class CreatePostHandler
 
             Shop shop = shopResult.Value;
 
-            await shopCollection.InsertOneAsync(
-                shop,
-                cancellationToken : cancellationToken);
+            try
+            {
+                await shopCollection.InsertOneAsync(
+                    shop,
+                    cancellationToken : cancellationToken);
+            }
+            catch(MongoWriteException)
+            {
+                if(urls is not null)
+                    foreach(var uploaded in urls)
+                        await _r2Service.DeleteAsync(uploaded, CancellationToken.None);
+
+                throw;
+            }
 
             var shopSummaryDto = _mapper.Map<ShopSummaryDto>(shop);
 
@@ -120,9 +131,20 @@ internal sealed class CreatePostHandler
 
         var postCollection = _dbContext.GetCollection<Post>(CollectionName.Post);
 
-        await postCollection.InsertOneAsync(
-            post,
-            cancellationToken : cancellationToken);
+        try
+        {
+            await postCollection.InsertOneAsync(
+                post,
+                cancellationToken : cancellationToken);
+        }
+        catch(MongoWriteException)
+        {
+            if(urls is not null)
+                foreach(var uploaded in urls)
+                    await _r2Service.DeleteAsync(uploaded, CancellationToken.None);
+
+            throw;
+        }
 
         var dto = _mapper.Map<PostDto>(post);
         var summaryDto = _mapper.Map<PostSummaryDto>(post);

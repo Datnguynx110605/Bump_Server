@@ -1,4 +1,4 @@
-﻿# System Design
+# System Design
 
 How the running components fit together and what happens at runtime. Layering rules are in
 [`architecture.md`](./architecture.md); per-feature business rules are in
@@ -122,7 +122,7 @@ sequenceDiagram
     H->>P: PaginateAsync(entity=post, signature=keyword:{k})
     P->>R: GET list-version:post:keyword:{k}
     R-->>P: version N
-    P->>R: GET list:v1:post:keyword:{k}:{cursor}:{size}:vN
+    P->>R: GET list:v1:post:keyword:{k}[:hidden:{digest}]:{cursor}:{size}:vN
     alt cache hit
         R-->>P: cached page
     else cache miss
@@ -229,25 +229,38 @@ sequenceDiagram
 
     C->>EC: POST /Email/verify {email, otp}
     EC->>O: VerifyAsync
-    O->>R: GETDEL otp:{email}
+    O->>R: GET otp:{email}
     alt code matches
         EC->>Reg: GenerateTokenAsync(email)
         Reg->>R: SET registration:{token} = Protect(email) TTL 10 min
         EC-->>C: 200 OK {registrationToken}
     else
-        O->>R: re-SET with Attempts+1 while attempts < 3
+        O->>R: re-SET with Attempts+1, DEL at 3 attempts
         EC-->>C: 400 "Otp is incorrect"
     end
 
     C->>AC: POST /Account {registrationToken, name, password, bio}
     AC->>Reg: ExtractEmailAsync(token)
-    Reg->>R: GETDEL registration:{token}
+    Reg->>R: GET registration:{token}
     Reg->>Reg: DataProtection Unprotect
     AC->>AC: BCrypt hash, Account.Create
     AC->>M: insertOne(account)
+    AC->>Reg: ConsumeTokenAsync(token)
+    Reg->>R: DEL registration:{token}
     AC->>R: SET account:v1:id:{id} TTL 7 days
     AC-->>C: 200 OK {AccountDto}
 ```
+
+Both credentials are **read without being deleted and spent only after the work they authorise
+commits**. A registration token survives any failure between `ExtractEmailAsync` and the write —
+a domain rule, a Mongo throw — so the caller retries the same request instead of restarting from a
+new OTP; `ConsumeTokenAsync` deletes it once the write lands. A correct OTP is never deleted at all
+and expires on its own TTL, which makes a lost `/Email/verify` response recoverable by re-sending
+the same code. Neither relaxation widens brute force: the 3-attempt cap on wrong codes is unchanged,
+and both keys still expire in 10 minutes.
+
+A retried create-account whose first attempt did commit is caught by the partial unique index on
+`Account.Email` and answered 409 rather than escaping as a 500.
 
 The same registration-token mechanism is reused by `POST /Account/recover`,
 `PUT /Account/reset-password` and `PUT /Account/me/email`, with
@@ -281,9 +294,14 @@ Counts are **denormalized onto the parent document** — `Account.FollowerAmount
 and maintained with `$inc` in the same update that pushes or pulls the array element.
 
 **Caching.** Redis holds single entities (`{entity}:v1:id:{guid}`, 7-day TTL), list pages
-(`list:v1:{entity}:{signature}:{cursor}:{size}:v{version}`, 2-minute TTL), list version counters
-(`list-version:{entity}:{signature}`, 1-day sliding TTL), OTP entries, registration tokens,
+(`list:v1:{entity}:{page signature}:{cursor}:{size}:v{version}`, 2-minute TTL), list version counters
+(`list-version:{entity}:{filter signature}`, 1-day sliding TTL), OTP entries, registration tokens,
 and queue idempotency keys (24 h).
+
+The two signatures are the same string except on a block-filtered read for a viewer who has blocked
+someone: there the **page** signature gains `:hidden:{digest}` and the **counter** signature does
+not. Writers invalidate by entity and filter and cannot compute a viewer's hidden set, so a counter
+keyed by the digest would be one no bump could reach. One counter, many page keys.
 
 **Exit.** Entities map to `src/app/common/dto/*Dto.cs` records via 12 AutoMapper profiles. Note that
 DTOs still expose the `Amount` **value object** rather than a plain `int`, so

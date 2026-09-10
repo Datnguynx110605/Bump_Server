@@ -89,9 +89,20 @@ internal sealed class CreateCommentHandler
 
         var commentCollection = _dbContext.GetCollection<Comment>(CollectionName.Comment);
 
-        await commentCollection.InsertOneAsync(
-            comment,
-            cancellationToken : cancellationToken);
+        try
+        {
+            await commentCollection.InsertOneAsync(
+                comment,
+                cancellationToken : cancellationToken);
+        }
+        catch(MongoWriteException)
+        {
+            if(urls is not null)
+                foreach(var uploaded in urls)
+                    await _r2Service.DeleteAsync(uploaded, CancellationToken.None);
+
+            throw;
+        }
 
         var filter = Builders<Post>.Filter.And(
             Builders<Post>.Filter.Eq(x => x.Id, comment.PostId),

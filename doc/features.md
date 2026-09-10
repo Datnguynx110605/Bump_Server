@@ -1,4 +1,4 @@
-﻿# Features
+# Features
 
 Every capability implemented in the codebase — **all 81 use cases, each with an end-to-end flow
 diagram** running from the HTTP client, through the controller, the MediatR pipeline and the handler,
@@ -68,16 +68,22 @@ flowchart TD
     B --> C["MediatR → CreateAccountValidator<br/>token non-empty · password 10–40<br/>bio ≤2000 · name ≤200, lowercase/digits"]
     C -->|invalid| C1["400 ValidationProblemDetails"]
     C --> D["CreateAccountHandler"]
-    D --> E["RegistrationService.ExtractEmailAsync<br/>Redis GETDEL registration:{token}<br/>DataProtection.Unprotect"]
+    D --> E["RegistrationService.ExtractEmailAsync<br/>Redis GET registration:{token}<br/>DataProtection.Unprotect"]
     E -->|null| E1["401 Unauthenticated"]
     E --> F["Email.Create → BCrypt.HashPassword"]
     F --> G["Account.Create — hash must be 60 chars<br/>Role = User"]
     G --> H["Mongo insertOne(account)"]
-    H --> I["Redis SET account:v1:id:{id} 7d"]
-    I --> J["ToActionResult → 200 AccountDto"]
+    H -->|"duplicate key"| H1["409 'Email already exists'"]
+    H --> I["ConsumeTokenAsync<br/>Redis DEL registration:{token}"]
+    I --> J["Redis SET account:v1:id:{id} 7d"]
+    J --> K["ToActionResult → 200 AccountDto"]
 ```
-The email comes from the token, never the body. Duplicate emails are caught only by the partial
-unique index, which surfaces as a 500.
+The email comes from the token, never the body. Duplicate emails are caught by the partial unique
+index on `Email` and mapped to the same 409 `/Email/send-for-register` gives.
+
+The token is read without deleting and spent only after the insert commits. Every failure between
+those two points — a domain rule, a Mongo throw — leaves the token alive for its remaining TTL, so
+the caller can retry the same request instead of restarting the OTP flow.
 
 ### 2. Get my account — `GET /Account/me`
 
@@ -150,13 +156,14 @@ flowchart TD
     A["Client<br/>PUT /api/v1/Account/me/email<br/>{RegistrationToken}"] --> B["AccountController.ChangeEmail"]
     B --> C["MediatR → ChangeEmailValidator"] --> D["ChangeEmailHandler → identity"]
     D -->|null| D1["401 Unauthorized"]
-    D --> E["Redis GETDEL registration:{token}<br/>DataProtection.Unprotect"]
+    D --> E["Redis GET registration:{token}<br/>DataProtection.Unprotect"]
     E -->|null| E1["401 Unauthenticated"]
     E --> F["Email.Create"] --> G["Mongo find Id = identity, !IsDeleted<br/>project Email, IsDeleted"]
     G -->|null| G1["401 Unauthenticated"]
     G --> H["account.ChangeEmail"] -->|"same"| H1["409 must be different"]
     H --> I["Mongo $set Email, UpdatedAt"]
-    I --> J["Redis DEL account:v1:id:{id}<br/>DEL account:v1:email:{oldEmail}"] --> K["204 No Content"]
+    I --> J["ConsumeTokenAsync<br/>Redis DEL registration:{token}"]
+    J --> K["Redis DEL account:v1:id:{id}<br/>DEL account:v1:email:{oldEmail}"] --> L["204 No Content"]
 ```
 The new address is proven beforehand via `/Email/send-for-verify` + `/Email/verify`.
 
@@ -171,10 +178,13 @@ flowchart TD
     D --> E["Mongo find account, !IsDeleted<br/>project Avatars"] -->|null| E1["401 Unauthenticated"]
     E --> F["R2 PutObject {folder}/{guid}{ext}<br/>explicit ContentType"]
     F --> G["Mongo $push Avatars WHERE url absent<br/>$set UpdatedAt"]
+    G -->|"MongoWriteException"| G2["R2 DeleteObject · rethrow"]
     G -->|"MatchedCount ≠ 1"| G1["409 'New avatar must be different'"]
     G --> H["Redis DEL account:v1:id:{id}"] --> I["204 No Content"]
 ```
-The upload precedes the write, so a rejected duplicate leaves an orphan R2 object.
+The upload precedes the write. A `MongoWriteException` deletes the object it just uploaded before
+rethrowing; the `MatchedCount ≠ 1` duplicate path does not, so re-posting the same avatar still
+leaves an orphan.
 
 ### 8. Remove avatar — `DELETE /Account/me/avatar?url=`
 
@@ -251,14 +261,15 @@ deleted, not soft, because nothing can read them once the account is gone.
 flowchart TD
     A["Client<br/>POST /api/v1/Account/recover<br/>{RegistrationToken}"] --> B["AccountController.RecoverAccount"]
     B --> C["MediatR → RecoverAccountValidator"] --> D["RecoverAccountHandler"]
-    D --> E["Redis GETDEL registration:{token} → Unprotect"]
+    D --> E["Redis GET registration:{token} → Unprotect"]
     E -->|null| E1["401 Unauthenticated"]
     E --> F["Email.Create"]
     F --> G["Mongo find Email = x AND <b>IsDeleted = true</b>"]
     G -->|null| G1["404 'Account not found'"]
     G --> H["BaseEntity.Recover()<br/>IsDeleted=false · DeletedAt=null · RecoveredAt=now"]
     H --> I["Mongo $set filtered on IsDeleted = true"]
-    I --> J["Redis DEL account:v1:id:{id}"] --> K["204 No Content"]
+    I --> J["ConsumeTokenAsync<br/>Redis DEL registration:{token}"]
+    J --> K["Redis DEL account:v1:id:{id}"] --> L["204 No Content"]
 ```
 The only query in the system searching for `IsDeleted == true`. It restores the account row; content
 removed by the `delete-account` cascade stays gone.
@@ -270,12 +281,13 @@ flowchart TD
     A["Client<br/>PUT /api/v1/Account/reset-password<br/>{RegistrationToken, NewPassword}"] --> B["AccountController.ResetPassword"]
     B --> C["MediatR → ResetPasswordValidator — password 10–40"] -->|invalid| C1["400"]
     C --> D["ResetPasswordHandler"]
-    D --> E["Redis GETDEL registration:{token}"] -->|null| E1["401 Unauthenticated"]
+    D --> E["Redis GET registration:{token}"] -->|null| E1["401 Unauthenticated"]
     E --> F["Email.Create"] --> G["Mongo find Email, !IsDeleted<br/>project Password"]
     G -->|null| G1["404 'Account not found'"]
     G --> H["BCrypt hash → account.ChangePassword"]
     H --> I["Mongo $set Password, UpdatedAt"]
-    I --> J["Redis DEL account:v1:id:{id}"] --> K["204 No Content"]
+    I --> J["ConsumeTokenAsync<br/>Redis DEL registration:{token}"]
+    J --> K["Redis DEL account:v1:id:{id}"] --> L["204 No Content"]
 ```
 
 ### 12. List accounts — `GET /Account` · **admin**
@@ -454,16 +466,22 @@ flowchart TD
     A["Client<br/>POST /api/v1/Email/verify<br/>{Email, Otp}"] --> B["EmailController.Verify<br/>Email.Create"]
     B --> C["MediatR → VerifyEmailValidator<br/>EmailAddress() ≤200 · otp exactly 6 chars"] -->|invalid| C1["400"]
     C --> D["VerifyEmailHandler → OtpService.VerifyAsync"]
-    D --> E["Redis GETDEL otp:{email}"]
+    D --> E["Redis GET otp:{email}"]
     E -->|"missing / expired"| E1["400 'Otp is incorrect'"]
     E --> F{"entry.Code == otp?"}
-    F -->|no| G["attempts+1 · Redis re-SET<br/>only while attempts &lt; 3"] --> E1
-    F -->|yes| H["RegistrationService.GenerateTokenAsync<br/>32 random bytes base64url"]
-    H --> I["Redis SET registration:{token}<br/>= Protect(email) 10 min"]
-    I --> J["200 registrationToken (string)"]
+    F -->|no| G["attempts+1 · Redis re-SET<br/>DEL once attempts reach 3"] --> E1
+    F -->|yes| H["entry left in place until its TTL"]
+    H --> I["RegistrationService.GenerateTokenAsync<br/>32 random bytes base64url"]
+    I --> J["Redis SET registration:{token}<br/>= Protect(email) 10 min"]
+    J --> K["200 registrationToken (string)"]
 ```
-`GETDEL` followed by a conditional re-`SET` is not atomic. The returned token is the credential for
-#1, #6, #10 and #11.
+A correct code is **not** deleted on use; it expires on its own 10 minute TTL. Deleting it made a
+lost response unrecoverable — the caller never received the registration token the code was
+exchanged for, and the code that would have earned another was already gone. Brute force is bounded
+by the 3-attempt cap on wrong codes, which is unaffected. The read-then-`SET` on a wrong code is not
+atomic, so concurrent wrong guesses can share an attempt slot.
+
+The returned token is the credential for #1, #6, #10 and #11.
 
 ---
 
@@ -483,13 +501,27 @@ flowchart TD
     F --> G{"Mongo find Shop<br/>Name = x AND Address = y AND !IsDeleted"}
     G -->|found| H["shopId = existing.Id"]
     G -->|none| I["Shop.Create(name, address, lat, lng)<br/>→ insertOne · Redis SET shop 7d<br/>bump shop:all"] --> H
+    I -->|"MongoWriteException"| X["R2 DeleteObject per image · rethrow"]
     H --> J["Post.Create — CaptionNormalized computed"]
     J --> K["Mongo insertOne(post)"]
+    K -->|"MongoWriteException"| X
     K --> L["Redis SET post:v1:id 7d<br/>bump post:account:{me},<br/>post:shop:{id}"]
     L --> M["RabbitMQ publish recalculate-shop-rate"]
     M --> N["200 PostDto"]
     M -.-> O["ShopRateService: average live post rates<br/>$set Shop.Rate · bump shop lists"]
 ```
+Images reach R2 before either insert, so a failed write can leave objects nothing references. Each
+insert is wrapped to delete them on `MongoWriteException` and rethrow. The catch is deliberately no
+wider than that: a rejected write proves the server stored nothing, while a timeout or a cancelled
+request leaves the document's fate unknown, and deleting there could strip the images off a post
+that did land. Deletes pass `CancellationToken.None`, since `R2Service` hands its token to the AWS
+SDK and a delete on an aborted request would refuse to run.
+
+Cleanup is best-effort in one direction only: a delete that itself throws replaces the
+`MongoWriteException` the caller was about to receive, and abandons any images after it in the loop.
+The `Result.Fail` paths above — `Shop.Create` and `Post.Create` rejecting their input — orphan
+whatever was already uploaded.
+
 Shop matching uses the raw name and address, not the normalized fields, so "Cafe X" and "cafe x"
 create two shops.
 
@@ -696,6 +728,9 @@ sequenceDiagram
     end
     H->>H: Comment.Create — content ≤2000
     H->>M: insertOne(comment)
+    alt MongoWriteException
+        H->>R2: DeleteObject per uploaded image, then rethrow
+    end
     H->>M: updateOne(post, !IsDeleted) $inc CommentAmount +1
     H->>R: SET comment 7d, DEL post cache,<br/>bump comment:post:{id}, comment:account:{me}
     H->>Q: publish create-comment
@@ -1125,14 +1160,15 @@ order. One FIFO queue makes that race impossible and the operation all-or-nothin
 
 `BlockedAccountSet.ResolveAsync` reads the viewer's `Blocks` and `BlockedBy` in one projected `_id`
 lookup, unions them, sorts, caps at 300 and caches the result under `blocked-set:v1:account:{id}` for
-a day — `BlockService` deletes that key, so it is never stale, only cold. Ten read paths consult it,
-in three shapes:
+a day — `BlockService` deletes that key, so it is never stale, only cold. Seventeen read paths
+consult it, in five shapes:
 
 | Shape | Endpoints | What it does |
 |---|---|---|
 | Membership check | #22 `GetSpecificPost`, #38 `GetSpecificComment`, #14 `GetSpecificAccount`, #29 `GetPostByAccount` | Every result has one author, so a `HashSet` lookup replaces the filter. The three singles answer **404**; `GetPostByAccount` answers an empty page. No query and no cache key changes. |
 | `$nin` in Mongo | #30 `GetPostByShop`, #32 `GetPostByKeyword`, #37 `GetCommentByPost`, #15 `GetAccountByName`, #16 `GetAccountByKeyword` | Many authors, so the exclusion goes into the query and the cache signature gains a suffix. |
 | Shrink the source list | #77 `GetRelatedPost` | The feed already names its authors, so hidden ids are dropped from `sourceIds` before the `$in` rather than excluded after it. Its signature is already per-account, so nothing changes. |
+| `$nin` on the hydrating query | #61 `GetMySavedPosts` | The only two-stage read. `SavedPost` stores just `PostId` and `SavedAt`, so the author is unknown until the posts themselves are fetched and the exclusion cannot ride the paginating query. The signature gains the same suffix. **This is the one path where hiding can shorten a page** — see below. |
 | `$nin` on the unwound item | #49 `GetReactionByPost`, #50 `GetReactionByComment`, #53 `GetFollowerByAccount`, #54 `GetFollowingByAccount`, #55 `GetMyFollower`, #56 `GetMyFollowing` | Actor lists. The exclusion rides the item `$match` that `EmbeddedArrayPaginator` already runs after `$unwind` for the cursor, on the path `{array}.AccountId`. |
 
 **The cache key is a function of what is hidden, not of who is viewing.** The signature suffix is
@@ -1140,6 +1176,19 @@ in three shapes:
 returns the signature untouched, so everyone who blocks nobody keeps sharing the one cached page;
 the key changes the instant a block lands, so **no page-cache invalidation is needed on block at
 all**; and two viewers hiding the same accounts share cached pages.
+
+**The suffix goes on the page key only — the list version counter stays on the unsuffixed
+signature.** The two are separate keys: `list:v1:{entity}:{signature}:{cursor}:{pageSize}:v{n}` for
+the page, `list-version:{entity}:{signature}` for `n`. Writers invalidate by entity and filter —
+`SaveService` bumps `account:savepost` / `account:{me}`, `CreateCommentHandler` bumps `comment` /
+`post:{id}` — and none of them can compute a viewer's hidden set. A counter keyed by the digest is
+therefore one that no bump can ever reach, which would make every write invisible to precisely the
+viewers who have blocked someone until `DefaultListTTL` expired the page. One counter, many page
+keys: a single bump retires every hidden variant at once, while the page keys keep viewers isolated.
+
+The split is made in `CachedCursorPaginator`, `CachedEmbeddedArrayPaginator` and — because it is
+two-stage and uses neither — `GetMySavedPostsHandler`. Those three are the only places the suffix is
+applied, so every filtered read inherits it.
 
 Filtering happens in MongoDB rather than over the returned page, so `HasMore` and the cursor are
 computed over what the viewer can actually see and pages come back full rather than ragged.
@@ -1166,8 +1215,18 @@ profile is indistinguishable from one that does not exist — matching how owner
 answer 404 here. Their entity caches (`CacheKey.Post(id)`, `CacheKey.Account(id)`) are shared across
 viewers, so the check sits on both exits of the handler rather than inside the cached value.
 
-Because every `$nin` runs inside the query — in the item `$match` for the embedded lists, before
-`$sort` and `$limit` — no path filters a page after the fact, so none of them can return short pages.
+For ten of the eleven the `$nin` runs inside the paginating query — in the item `$match` for the
+embedded lists, before `$sort` and `$limit` — so `HasMore` and the cursor are computed over what the
+viewer can actually see and pages come back full.
+
+#61 `GetMySavedPosts` is the exception, structurally rather than by choice. It paginates
+`Account.SavePosts`, whose entries carry only `PostId` and `SavedAt`, then hydrates the posts in a
+second query — and the author only exists on that second read. So its `$nin` runs after `$limit` and
+a page can come back with fewer than `pageSize` items while still reporting `HasMore`, exactly as a
+soft-deleted saved post already makes it. Clients page until `HasMore` is false rather than counting
+items, so this shortens pages without truncating the list. Moving it into the `$match` means
+denormalizing the author onto `SavedPost`, which needs a backfill over every existing save; the
+short page is the cheaper trade until saved lists are large enough for it to matter.
 
 #55 and #56 are the viewer's *own* follower and following lists, which `BlockService` already
 severs at block time. They are filtered anyway because nothing yet stops a blocked account from
@@ -1321,18 +1380,25 @@ flowchart TD
 flowchart TD
     A["Client<br/>GET /api/v1/Save/me/post"] --> B["SaveController.GetMySavedPosts"]
     B --> C["MediatR → GetMySavedPostsHandler → identity"] -->|null| C1["401"]
-    C --> D["ListCache.VersionAsync(account:savepost, account:{me})<br/>build page key by hand"]
+    C --> C2["BlockedAccountSet.ResolveAsync<br/>sig = account:{me} + :hidden:{digest}"]
+    C2 --> D["ListCache.VersionAsync(account:savepost, sig)<br/>build page key by hand"]
     D --> E["Redis GET page key"]
     E -->|hit| Z["200 page of PostSummaryDto"]
     E -->|miss| F["EmbeddedArrayPaginator over Account.SavePosts<br/>→ page of PostIds, ordered SavedAt desc"]
-    F --> G["Mongo find posts In(ids), !IsDeleted<br/>project Summary → dictionary by Id"]
+    F --> G["Mongo find posts In(ids), !IsDeleted,<br/>AccountId $nin hidden · project Summary"]
     G --> H["re-order to match the id page · map DTO"]
     H --> I["Redis SET 2 min"] --> Z
 ```
-Two-stage lookup. Deleted posts drop out, so a page can return fewer than `pageSize` items while
-still reporting `HasMore`. The second stage projects `PostProjection.Summary` rather than reading
-whole documents, which would drag each post's entire `Reactions` array over the wire to render a
-summary.
+Two-stage lookup. Deleted posts and posts by hidden accounts both drop out at the second stage, so a
+page can return fewer than `pageSize` items while still reporting `HasMore`. The second stage
+projects `PostProjection.Summary` rather than reading whole documents, which would drag each post's
+entire `Reactions` array over the wire to render a summary.
+
+The saved list is the viewer's own, but the posts on it are other people's, so it filters like every
+other read of someone else's content. Left unfiltered it desynchronised from #22 `GetSpecificPost`,
+which answers **404** for a hidden author: a post saved before its author was blocked stayed on the
+list and then failed to open. #62 `GetMySavedShops` needs none of this — a shop has no author to
+block.
 
 ### 62. My saved shops — `GET /Save/me/shop`
 

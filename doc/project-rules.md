@@ -1,4 +1,4 @@
-﻿# Project Rules
+# Project Rules
 
 Conventions as they actually exist in the repository, measured rather than assumed. Every rule below
 is followed by the evidence it was derived from.

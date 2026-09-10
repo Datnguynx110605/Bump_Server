@@ -33,15 +33,32 @@ internal sealed class GetMySavedPostsHandler
         if(identity is null)
             return Result.Fail(AppError.Unauthorized("Unauthorized"));
 
+        var hidden = await BlockedAccountSet.ResolveAsync(
+            _redisService,
+            _dbContext,
+            identity.Value,
+            cancellationToken);
+
+        // The saved list is the viewer's own, but the posts on it are other people's, so
+        // it filters like every other read of someone else's content. Without this a post
+        // saved before its author was blocked stays on the list and then answers 404 from
+        // #22 GetSpecificPost when opened.
+        string filterSignature = $"account:{identity.Value}";
+        string? pageSignature = BlockedAccountSet.Signature(filterSignature, hidden);
+
+        // Counter unsuffixed, page suffixed — the same split the cached paginators make.
+        // SaveService bumps account:savepost/account:{me}, so reading the counter under a
+        // :hidden: suffix would mean a save never invalidating the saved list of anyone
+        // who has blocked someone.
         var version = await ListCache.VersionAsync(
             _redisService,
             $"{CollectionName.Account}:savepost",
-            $"account:{identity.Value}",
+            filterSignature,
             cancellationToken);
 
         string cacheKey = CacheKey.List(
             $"{CollectionName.Account}:savepost",
-            $"account:{identity.Value}",
+            pageSignature,
             request.pageRequest,
             version);
 
@@ -70,11 +87,26 @@ internal sealed class GetMySavedPostsHandler
 
         var postCollection = _dbContext.GetCollection<Post>(CollectionName.Post);
 
+        var postFilter = Builders<Post>.Filter.And(
+            Builders<Post>.Filter.In(x => x.Id, postIds),
+            Builders<Post>.Filter.Eq(x => x.IsDeleted, false));
+
+        // Unlike the other filtered reads, the $nin cannot ride the paginating query:
+        // SavedPost holds only PostId and SavedAt, so the author is not known until this
+        // second stage. That makes this the one path where hiding shortens a page — the
+        // same way a deleted post already does here, and for the same structural reason.
+        // Denormalizing the author onto SavedPost is what would move it into the $match,
+        // and that needs a backfill for every existing save.
+        if(hidden.Count > 0)
+            postFilter = Builders<Post>.Filter.And(
+                postFilter,
+                Builders<Post>.Filter.Nin(x => x.AccountId, hidden));
+
         // Projected, not whole documents: an unprojected read drags each post's entire
         // Reactions array over the wire, so one page of saved popular posts could pull
         // megabytes to render a summary.
         var posts = await postCollection
-            .Find(x => postIds.Contains(x.Id) && !x.IsDeleted)
+            .Find(postFilter)
             .Project<Post>(PostProjection.Summary)
             .ToListAsync(cancellationToken);
 

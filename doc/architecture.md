@@ -99,7 +99,10 @@ with different content, counts retries in an `x-retry-count` header, and dead-le
 
 **List caches are invalidated by version counter, not by key deletion.** `ListCache` bumps
 `list-version:{entity}:{signature}`; the version is a component of every page key, so all pages and
-page sizes retire together. The rule a write has to satisfy is *bump every signature whose
+page sizes retire together. That signature is always the viewer-independent one: a block-filtered
+read appends `:hidden:{digest}` to its **page** key but still reads its counter unsuffixed, because
+a writer knows the entity and filter it touched and can never know who has blocked whom. Suffixing
+the counter instead would make every bump invisible to exactly the viewers who blocked someone. The rule a write has to satisfy is *bump every signature whose
 projection carries a field this write changed*, not just the entity it wrote to: the comment
 handlers move `Post.CommentAmount`, which `PostProjection.Summary` includes, so they bump the post
 feed's signatures alongside the comment ones.

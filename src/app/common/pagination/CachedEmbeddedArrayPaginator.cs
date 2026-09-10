@@ -21,9 +21,14 @@ public static class CachedEmbeddedArrayPaginator
         IReadOnlyList<Guid>? hiddenAccountIds = null,
         Expression<Func<TItem, Guid>>? accountField = null)
     {
-        if(hiddenAccountIds is { Count: > 0 } && accountField is not null)
-            filterSignature = BlockedAccountSet.Signature(filterSignature, hiddenAccountIds);
+        var pageSignature = filterSignature;
 
+        if(hiddenAccountIds is { Count: > 0 } && accountField is not null)
+            pageSignature = BlockedAccountSet.Signature(filterSignature, hiddenAccountIds);
+
+        // Counter under the unsuffixed signature, page under the suffixed one — see the
+        // note in CachedCursorPaginator. Folding the digest into the counter key is what
+        // stops a write from ever reaching a blocking viewer's cached pages.
         var version = await ListCache.VersionAsync(
             redisService,
             entity,
@@ -32,7 +37,7 @@ public static class CachedEmbeddedArrayPaginator
 
         var cacheKey = CacheKey.List(
             entity,
-            filterSignature,
+            pageSignature,
             request,
             version);
 

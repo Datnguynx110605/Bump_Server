@@ -73,6 +73,10 @@ internal sealed class ResetPasswordHandler
             update,
             cancellationToken : cancellationToken);
 
+        await _registrationService.ConsumeTokenAsync(
+            request.registrationToken,
+            cancellationToken);
+
         string cacheKey = CacheKey.Account(account.Id);
 
         await _redisService.RemoveAsync(

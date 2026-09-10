@@ -25,15 +25,22 @@ public static class CachedCursorPaginator
         // the fact, so HasMore and the cursor are computed over what the viewer can
         // actually see and pages come back full. Both arguments absent, or an empty set,
         // leaves the filter and the cache key exactly as they were.
+        var pageSignature = filterSignature;
+
         if(hiddenAccountIds is { Count: > 0 } && authorField is not null)
         {
             filter = Builders<TEntity>.Filter.And(
                 filter,
                 Builders<TEntity>.Filter.Nin(authorField, hiddenAccountIds));
 
-            filterSignature = BlockedAccountSet.Signature(filterSignature, hiddenAccountIds);
+            pageSignature = BlockedAccountSet.Signature(filterSignature, hiddenAccountIds);
         }
 
+        // The version counter is read under the *unsuffixed* signature, the page under the
+        // suffixed one. That split is load-bearing: writers invalidate by entity and filter
+        // and cannot know any viewer's hidden set, so folding the digest into the counter
+        // key hides every bump from exactly the viewers who have blocked someone. One
+        // counter, many page keys — a single bump retires all hidden variants at once.
         var version = await ListCache.VersionAsync(
             redisService,
             entity,
@@ -42,7 +49,7 @@ public static class CachedCursorPaginator
 
         var cacheKey = CacheKey.List(
             entity,
-            filterSignature,
+            pageSignature,
             request,
             version);
 

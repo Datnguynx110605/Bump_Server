@@ -37,12 +37,16 @@ public sealed class RegistrationService : IRegistrationService
         return token;
     }
 
+    // Reads without deleting. The token is single-use, but it is only spent once the
+    // work it authorises has committed - see ConsumeTokenAsync. Deleting on read burned
+    // the token on every failure after this line (a domain validation error, a Mongo
+    // throw), leaving the caller with no account and no way back but a fresh OTP.
     public async Task<string?> ExtractEmailAsync(
         string registrationToken, 
         CancellationToken cancellationToken)
     {
         var key = BuildKey(registrationToken);
-        var protectedEmail = await _redisService.GetAndRemoveAsync<string>(
+        var protectedEmail = await _redisService.GetAsync<string>(
             key, 
             cancellationToken);
 
@@ -58,6 +62,15 @@ public sealed class RegistrationService : IRegistrationService
             return null;
         }
     }
+
+    // Called by handlers after their write commits. A token left behind by an
+    // uncommitted attempt expires on its own 10 minute TTL.
+    public Task ConsumeTokenAsync(
+        string registrationToken, 
+        CancellationToken cancellationToken) =>
+        _redisService.RemoveAsync(
+            BuildKey(registrationToken), 
+            cancellationToken);
 
     private static string BuildKey(string token) => $"registration:{token}";
 }

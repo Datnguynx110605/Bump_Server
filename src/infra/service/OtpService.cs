@@ -40,7 +40,7 @@ public sealed class OtpService : IOtpService
         CancellationToken cancellationToken)
     {
         var key = BuildKey(identifier);
-        var entry = await _redisService.GetAndRemoveAsync<OtpEntry>(
+        var entry = await _redisService.GetAsync<OtpEntry>(
             key, 
             cancellationToken);
         var remaining = entry is null ? TimeSpan.Zero : entry.ExpiresAt - DateTime.UtcNow;
@@ -48,6 +48,12 @@ public sealed class OtpService : IOtpService
         if(entry is null || remaining <= TimeSpan.Zero)
             return false;
 
+        // A correct code is deliberately left in place until its own 10 minute TTL rather
+        // than deleted here. Deleting made a lost response unrecoverable: the caller never
+        // received the registration token the code was exchanged for, and the code that
+        // would have earned another was already gone. The attempt cap below is what stops
+        // brute force; re-presenting a code the caller already proved they hold does not
+        // widen anything.
         if(entry.Code == code)
             return true;
 
@@ -57,6 +63,10 @@ public sealed class OtpService : IOtpService
                 key, 
                 entry with { Attempts = attempts }, 
                 remaining, 
+                cancellationToken);
+        else
+            await _redisService.RemoveAsync(
+                key, 
                 cancellationToken);
 
         return false;

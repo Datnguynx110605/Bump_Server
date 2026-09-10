@@ -68,6 +68,12 @@ public static class BlockedAccountSet
     // consequences: an empty set returns the caller's signature untouched, so everyone who
     // blocks nobody keeps sharing the one cached page; and a block changes the key the
     // instant it lands, so no page-cache invalidation is needed on block at all.
+    //
+    // For the PAGE key only. The list version counter must stay on the unsuffixed
+    // signature: writers invalidate by entity and filter and have no way to compute a
+    // viewer's hidden set, so a counter keyed by this digest is one no bump can ever
+    // reach — every write would then be invisible to precisely the viewers who blocked
+    // someone, until DefaultListTTL expired the page.
     public static string? Signature(string? filterSignature, IReadOnlyList<Guid> hidden)
     {
         if(hidden.Count == 0)
