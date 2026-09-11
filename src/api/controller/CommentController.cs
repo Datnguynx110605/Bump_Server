@@ -1,5 +1,6 @@
 using app;
 using domain;
+using FluentResults;
 using MediatR;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -27,11 +28,11 @@ public sealed class CommentController : ControllerBase
         [FromForm] List<IFormFile>? images,
         CancellationToken cancellationToken)
     {
-        var imageStreams = images?
-            .Select(x => (x.OpenReadStream(), x.FileName))
-            .ToList();
+        var imageResult = ImageUpload.ToStreams(images);
+        if(imageResult.IsFailed)
+            return Result.Fail(imageResult.Errors).ToActionResult();
 
-        var result = await _sender.Send(new CreateCommentCommand(postId, content, imageStreams), cancellationToken);
+        var result = await _sender.Send(new CreateCommentCommand(postId, content, imageResult.Value), cancellationToken);
         return result.ToActionResult();
     }
 

@@ -493,7 +493,7 @@ The returned token is the credential for #1, #6, #10 and #11.
 flowchart TD
     A["Client<br/>POST /api/v1/Post (multipart)<br/>shopName, shopAddress, latitude, longitude,<br/>caption, rate, images"] --> B["PostController.CreatePost<br/>Amount.Create(rate) ≥ 0"]
     B -->|invalid| B1["400"]
-    B --> C["ImageUpload.Validate<br/>≤10 files · ≤5 MB · allowlist + magic bytes"]
+    B --> C["ImageUpload.ToStreams<br/>≤10 files · ≤5 MB · allowlist + magic bytes<br/>opens the streams only on success"]
     C -->|fail| C1["400"]
     C --> D["MediatR → CreatePostValidator<br/>rate 1–5 · names ≤200 · caption ≤2000<br/>lat/lng both-or-neither, in range"] -->|invalid| D1["400"]
     D --> E["CreatePostHandler → identity"] -->|null| E1["401"]
@@ -721,6 +721,10 @@ sequenceDiagram
     participant N as NotificationService
 
     C->>Ctl: POST /api/v1/Comment (postId, content, images)
+    Ctl->>Ctl: ImageUpload.ToStreams — ≤10 files · ≤5 MB<br/>ext allowlist · magic bytes
+    alt any image rejected
+        Ctl-->>C: 400 'File type is not supported'
+    end
     Ctl->>H: MediatR → CreateCommentValidator → handler
     H->>H: identity
     loop each image

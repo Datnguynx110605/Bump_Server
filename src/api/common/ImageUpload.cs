@@ -33,7 +33,33 @@ internal static class ImageUpload
         return Result.Ok();
     }
 
-    public static Result Validate(IReadOnlyCollection<IFormFile> files)
+    /// Validates a form-file collection and, only if it passes, opens the streams the
+    /// handler will upload.
+    ///
+    /// Handing back the streams *from the check* is the point. While validating and
+    /// opening were two separate steps, an action could take the second without the
+    /// first — and `CreateComment` did exactly that, so every comment image reached R2
+    /// with no size, extension or magic-byte check while `CreatePost` next door was
+    /// guarded. There is now no way to reach the bytes that does not pass through here.
+    public static Result<List<(Stream stream, string fileName)>?> ToStreams(IReadOnlyCollection<IFormFile>? files)
+    {
+        if(files is null || files.Count == 0)
+            return Result.Ok<List<(Stream stream, string fileName)>?>(null);
+
+        var validation = Validate(files);
+        if(validation.IsFailed)
+            return Result.Fail<List<(Stream stream, string fileName)>?>(validation.Errors);
+
+        // `OpenReadStream` hands back a fresh reader over the buffered body on every call,
+        // so the header bytes the signature check consumed above are not missing here.
+        return Result.Ok<List<(Stream stream, string fileName)>?>(
+            files.Select(x => (x.OpenReadStream(), x.FileName)).ToList());
+    }
+
+    /// Private so the collection path cannot be validated without also being opened, and
+    /// cannot be opened without being validated. The single-file overload above stays
+    /// public for `ChangeAvatar`, which takes one `IFormFile` rather than a list.
+    private static Result Validate(IReadOnlyCollection<IFormFile> files)
     {
         if(files.Count > MaxFiles)
             return Result.Fail($"Too many files, maximum is {MaxFiles}");

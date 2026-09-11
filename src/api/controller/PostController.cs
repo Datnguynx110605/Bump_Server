@@ -36,18 +36,11 @@ public sealed class PostController : ControllerBase
         if(!rateResult.IsSuccess)
             return Result.Fail<PostDto>(rateResult.Error!).ToActionResult();
 
-        if(images is not null)
-        {
-            var validationResult = ImageUpload.Validate(images);
-            if(validationResult.IsFailed)
-                return validationResult.ToActionResult();
-        }
+        var imageResult = ImageUpload.ToStreams(images);
+        if(imageResult.IsFailed)
+            return Result.Fail(imageResult.Errors).ToActionResult();
 
-        var imageStreams = images?
-            .Select(x => (x.OpenReadStream(), x.FileName))
-            .ToList();
-
-        var result = await _sender.Send(new CreatePostCommand(shopName, shopAddress, latitude, longitude, caption, rateResult.Value!, imageStreams), cancellationToken);
+        var result = await _sender.Send(new CreatePostCommand(shopName, shopAddress, latitude, longitude, caption, rateResult.Value!, imageResult.Value), cancellationToken);
         return result.ToActionResult();
     }
 

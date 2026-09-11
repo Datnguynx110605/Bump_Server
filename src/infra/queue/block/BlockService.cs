@@ -181,7 +181,8 @@ public sealed class BlockService : IBlockService
                     postFilter,
                     Builders<Post>.Update
                         .PullFilter(x => x.Reactions, r => r.AccountId == reactorId)
-                        .Inc(x => x.ReactionAmount.Value, -1),
+                        .Inc(x => x.ReactionAmount.Value, -1)
+                        .Inc(x => x.CommentAmount.Value, -1),
                     cancellationToken : cancellationToken);
 
                 postIds.AddRange(matchedPosts.Select(x => x.Id));
