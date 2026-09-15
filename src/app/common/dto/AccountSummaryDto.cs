@@ -8,4 +8,5 @@ public sealed record AccountSummaryDto(
     AvatarDto? Avatar,
     string? Bio,
     Amount FollowerAmount,
-    Amount FollowingAmount);
+    Amount FollowingAmount,
+    bool IsTrusted);

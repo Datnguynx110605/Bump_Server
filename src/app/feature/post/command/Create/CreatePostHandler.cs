@@ -54,6 +54,22 @@ internal sealed class CreatePostHandler
             }
         }
 
+        // The images are in R2 before anything else can fail, and nothing references them
+        // until the post row exists — so every exit between here and that insert has to
+        // remove them. Previously only the MongoWriteException paths did, which left a
+        // failed Shop.Create or Post.Create orphaning the upload with no way to find it
+        // again: the retention sweep is Mongo-only and never looks at the bucket.
+        // CancellationToken.None because the cleanup must finish even when the request that
+        // triggered it has been cancelled.
+        async Task DiscardUploadsAsync()
+        {
+            if(urls is null)
+                return;
+
+            foreach(var uploaded in urls)
+                await _r2Service.DeleteAsync(uploaded, CancellationToken.None);
+        }
+
         var shopCollection = _dbContext.GetCollection<Shop>(CollectionName.Shop);
 
         var shopFilter = Builders<Shop>.Filter.And(
@@ -82,7 +98,10 @@ internal sealed class CreatePostHandler
                 request.latitude,
                 request.longitude);
             if(!shopResult.IsSuccess)
+            {
+                await DiscardUploadsAsync();
                 return Result.Fail(shopResult.Error);
+            }
 
             Shop shop = shopResult.Value;
 
@@ -94,10 +113,7 @@ internal sealed class CreatePostHandler
             }
             catch(MongoWriteException)
             {
-                if(urls is not null)
-                    foreach(var uploaded in urls)
-                        await _r2Service.DeleteAsync(uploaded, CancellationToken.None);
-
+                await DiscardUploadsAsync();
                 throw;
             }
 
@@ -125,7 +141,10 @@ internal sealed class CreatePostHandler
             request.rate,
             urls);
         if(!postResult.IsSuccess)
+        {
+            await DiscardUploadsAsync();
             return Result.Fail(postResult.Error);
+        }
 
         Post post = postResult.Value;
 
@@ -139,10 +158,7 @@ internal sealed class CreatePostHandler
         }
         catch(MongoWriteException)
         {
-            if(urls is not null)
-                foreach(var uploaded in urls)
-                    await _r2Service.DeleteAsync(uploaded, CancellationToken.None);
-
+            await DiscardUploadsAsync();
             throw;
         }
 

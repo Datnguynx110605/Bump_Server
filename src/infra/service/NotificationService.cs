@@ -2,6 +2,7 @@ using app;
 using domain;
 using FluentResults;
 using Microsoft.AspNetCore.SignalR;
+using Microsoft.Extensions.Logging;
 using MongoDB.Driver;
 
 namespace infra;
@@ -11,14 +12,17 @@ public sealed class NotificationService : INotificationService
     private readonly IMongoDbContext _dbContext;
     private readonly IHubContext<NotificationHub> _hubContext;
     private readonly IRedisService _redisService;
+    private readonly ILogger<NotificationService> _logger;
     public NotificationService(
         IMongoDbContext dbContext,
         IHubContext<NotificationHub> hubContext,
-        IRedisService redisService)
+        IRedisService redisService,
+        ILogger<NotificationService> logger)
     {
         _dbContext = dbContext;
         _hubContext = hubContext;
         _redisService = redisService;
+        _logger = logger;
     }
 
     public async Task<Result> CreateAsync(
@@ -63,23 +67,42 @@ public sealed class NotificationService : INotificationService
         // holds the connection, and sending to a disconnected user is a no-op. The old
         // check read a global counter but sent only to locally-held connections, so any
         // multi-replica deploy dropped the notification and still marked it sent.
-        await _hubContext.Clients
-            .User(toAccountId.ToString())
-            .SendAsync(
-                "ReceiveNotification",
-                new
-                {
-                    notification.Id,
-                    notification.Title,
-                    notification.Content,
-                    notification.CreatedAt,
-                    notification.Type,
-                    notification.TargetId,
-                    notification.ActorAccountId,
-                    notification.ActorAvatar
-                },
-                cancellationToken);
+        // The row and the list invalidation above are already committed, so the recipient
+        // will see this in their list either way. Letting a backplane failure throw here
+        // unwound the whole queue message instead: the retry re-ran the caller, whose
+        // conditional write then matched nothing and returned a failed Result, so the
+        // message was acked and MarkAsSent below never ran. The push is the only part
+        // nobody is waiting on, so it is the only part allowed to fail quietly.
+        try
+        {
+            await _hubContext.Clients
+                .User(toAccountId.ToString())
+                .SendAsync(
+                    "ReceiveNotification",
+                    new
+                    {
+                        notification.Id,
+                        notification.Title,
+                        notification.Content,
+                        notification.CreatedAt,
+                        notification.Type,
+                        notification.TargetId,
+                        notification.ActorAccountId,
+                        notification.ActorAvatar
+                    },
+                    cancellationToken);
+        }
+        catch(Exception ex)
+        {
+            _logger.LogWarning(
+                ex,
+                "Realtime push failed for notification {NotificationId} to {ToAccountId}",
+                notification.Id,
+                toAccountId);
+        }
 
+        // Marks the attempt, not a confirmed delivery: SignalR has no receipt, and the
+        // catch above means this is reached whether or not the push landed.
         var result = notification.MarkAsSent();
         if(!result.IsSuccess)
             return Result.Fail(result.Error);

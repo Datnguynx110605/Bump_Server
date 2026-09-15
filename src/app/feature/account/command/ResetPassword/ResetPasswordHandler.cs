@@ -73,6 +73,18 @@ internal sealed class ResetPasswordHandler
             update,
             cancellationToken : cancellationToken);
 
+        // Every session on the account dies with the old password. Unlike ChangePassword
+        // there is no pair to hand back — the caller is unauthenticated here and logs in
+        // with the new password next.
+        var refreshTokenCollection = _dbContext.GetCollection<RefreshToken>(CollectionName.RefreshToken);
+
+        await refreshTokenCollection.UpdateManyAsync(
+            Builders<RefreshToken>.Filter.And(
+                Builders<RefreshToken>.Filter.Eq(x => x.AccountId, account.Id),
+                Builders<RefreshToken>.Filter.Eq(x => x.IsRevoked, false)),
+            Builders<RefreshToken>.Update.Set(x => x.IsRevoked, true),
+            cancellationToken : cancellationToken);
+
         await _registrationService.ConsumeTokenAsync(
             request.registrationToken,
             cancellationToken);

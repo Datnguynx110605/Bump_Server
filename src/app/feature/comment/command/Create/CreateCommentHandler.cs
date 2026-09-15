@@ -46,7 +46,9 @@ internal sealed class CreateCommentHandler
         // handler answers synchronously, so it cannot silently drop the write.
         var targetPost = await postCollection
             .Find(x => x.Id == request.postId && !x.IsDeleted)
-            .Project<Post>(Builders<Post>.Projection.Include(x => x.AccountId))
+            .Project<Post>(Builders<Post>.Projection
+                .Include(x => x.AccountId)
+                .Include(x => x.ShopId))
             .FirstOrDefaultAsync(cancellationToken);
 
         // 404 for both "no such post" and "blocked", so a blocked post is indistinguishable
@@ -77,13 +79,27 @@ internal sealed class CreateCommentHandler
             }
         }
 
+        // See CreatePostHandler: the upload is already in R2 and nothing references it until
+        // the comment row exists, so a domain failure below has to remove it too.
+        async Task DiscardUploadsAsync()
+        {
+            if(urls is null)
+                return;
+
+            foreach(var uploaded in urls)
+                await _r2Service.DeleteAsync(uploaded, CancellationToken.None);
+        }
+
         var commentResult = Comment.Create(
             identity.Value,
             request.postId,
             request.content,
             urls);
         if(!commentResult.IsSuccess)
+        {
+            await DiscardUploadsAsync();
             return Result.Fail(commentResult.Error);
+        }
 
         Comment comment = commentResult.Value;
 
@@ -97,10 +113,7 @@ internal sealed class CreateCommentHandler
         }
         catch(MongoWriteException)
         {
-            if(urls is not null)
-                foreach(var uploaded in urls)
-                    await _r2Service.DeleteAsync(uploaded, CancellationToken.None);
-
+            await DiscardUploadsAsync();
             throw;
         }
 
@@ -130,13 +143,26 @@ internal sealed class CreateCommentHandler
             _redisService.RemoveAsync(
                 CacheKey.Post(comment.PostId),
                 cancellationToken),
-            // The admin post listing renders CommentAmount off the Post document, so moving it
-            // has to retire post:all. The account: and shop: signatures are deliberately left
-            // alone — those lists are thumbnail grids with no counts on them.
+            // CommentAmount is part of PostProjection.Summary, so every post list built from
+            // that projection carries the value this write just moved — not only post:all.
+            // The rule is the projection's, not the current UI's: a thumbnail grid that does
+            // not draw the count today still has the stale number in its cached payload.
+            // ChangeCaptionHandler and ReactPostService bump the same three for the same
+            // reason.
             ListCache.InvalidateAsync(
                 _redisService,
                 CollectionName.Post,
                 filterSignature: null,
+                cancellationToken),
+            ListCache.InvalidateAsync(
+                _redisService,
+                CollectionName.Post,
+                $"account:{targetPost.AccountId}",
+                cancellationToken),
+            ListCache.InvalidateAsync(
+                _redisService,
+                CollectionName.Post,
+                $"shop:{targetPost.ShopId}",
                 cancellationToken),
             ListCache.InvalidateAsync(
                 _redisService,

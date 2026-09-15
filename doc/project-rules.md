@@ -353,7 +353,7 @@ Derived by counting the whole tree; there is no config file to cite.
 | Named arguments used for clarity on optional Mongo parameters | `cancellationToken : cancellationToken` — note the **spaces around the colon**, which is non-standard |
 | `<Nullable>enable</Nullable>` and `<ImplicitUsings>enable</ImplicitUsings>` | all five `.csproj` files |
 
-The build emits **52 nullable warnings** (CS8600/CS8604/CS8618), largely because
+The build emits **54 nullable warnings** (CS8600/CS8604/CS8618), largely because
 `DomainResult<T>.Value` is `T?` with no flow attribute, so `result.Value` after an `IsSuccess` check
 still warns. Warnings are not treated as errors.
 

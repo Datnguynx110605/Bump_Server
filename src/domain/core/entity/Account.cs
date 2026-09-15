@@ -27,6 +27,10 @@ public sealed class Account : BaseEntity
     private List<SavedShop> _saveShops = new();
     public IReadOnlyCollection<SavedShop> SaveShops => _saveShops.AsReadOnly();
     public Role Role { get; private set; } = Role.User;
+    // Set directly via Mongo update in FollowService once follower/age/report thresholds
+    // are met, same as FollowerAmount — not routed through a domain method since nothing
+    // else in this aggregate needs to grant it yet.
+    public bool IsTrusted { get; private set; } = false;
     private Account() {}
     private Account(
         Email email, 
@@ -81,11 +85,12 @@ public sealed class Account : BaseEntity
         return Update();
     }
 
+    // Takes a hash, so it cannot check the new password differs from the old: BCrypt salts
+    // randomly and two hashes of one plaintext never compare equal. That comparison used to
+    // live here and was dead code. ChangePasswordHandler enforces the rule through
+    // VerifyPassword, which is the only place the plaintext exists.
     public DomainResult ChangePassword(string password)
     {
-        if(Password == password)
-            return DomainResult.Failure("New password must be different");
-
         if(password.Length != PasswordHashLength)
             return DomainResult.Failure("Hashing incorrect");
 

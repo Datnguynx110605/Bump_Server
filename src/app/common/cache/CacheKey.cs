@@ -1,4 +1,6 @@
-﻿using domain;
+﻿using System.Security.Cryptography;
+using System.Text;
+using domain;
 
 namespace app;
 
@@ -55,6 +57,15 @@ public sealed record CacheKey
         return $"affinity:v1:account:{accountId}";
     }
 
+    // Top trusted accounts by follower count, resolved by GetRelatedPostHandler's fallback
+    // tier. Unlike Affinity this carries no per-viewer signal — every viewer sees the same
+    // ranking — so it is cached once rather than per account.
+    public static TimeSpan DefaultTrustedTTL = TimeSpan.FromHours(1);
+    public static string TrustedAccounts()
+    {
+        return "trusted:v1:top";
+    }
+
     // The union of Blocks and BlockedBy for one viewer, resolved on every filtered read.
     // Held for a day rather than minutes because BlockService deletes the key outright on
     // every block and unblock, so it is never stale, only cold.
@@ -62,6 +73,22 @@ public sealed record CacheKey
     public static string BlockedSet(Guid accountId)
     {
         return $"blocked-set:v1:account:{accountId}";
+    }
+
+    // The keyword is user input and the key grammar is colon-delimited, so interpolating it
+    // raw let a caller address another signature's namespace. BlockedAccountSet.Signature
+    // appends ":hidden:{16 hex}", so a keyword of "foo:hidden:<16 hex>" produced a page key
+    // byte-identical to the one a blocking viewer reads — poisoning that viewer's filtered
+    // page with unfiltered rows. Hashing also caps the key at a fixed width, where the raw
+    // form grew with whatever the caller sent.
+    //
+    // Takes the NORMALIZED keyword, so searches differing only by case or diacritics share
+    // one cached page instead of one each.
+    public static string KeywordSignature(string normalizedKeyword)
+    {
+        var digest = SHA256.HashData(Encoding.UTF8.GetBytes(normalizedKeyword));
+
+        return $"keyword:{Convert.ToHexString(digest)[..16].ToLowerInvariant()}";
     }
 
     public static TimeSpan DefaultListTTL = TimeSpan.FromMinutes(2);

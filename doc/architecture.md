@@ -95,7 +95,12 @@ the state it writes, making `MatchedCount == 1` a self-healing repair of a half-
 manual ack with `prefetchCount: 1`, keys each message by a `MessageId` GUID under
 `rabbitmq:idempotency:{queue}:{id}` for 24 h, stores a SHA-256 of the payload to detect key reuse
 with different content, counts retries in an `x-retry-count` header, and dead-letters to
-`{queue}.dlq` after `MaxAttempts = 3`.
+`{queue}.dlq` after `MaxAttempts = 3`. A failed message is not re-queued directly: it is
+published to `{queue}.retry`, which has no consumer and holds it for a 30-second
+`x-message-ttl` before dead-lettering it back to the main queue. Republishing immediately
+meant all three attempts burned in milliseconds, so a brief dependency outage dead-lettered
+work the API had already answered 202 for; the delay lives in a queue rather than in the
+consumer because `prefetchCount: 1` means sleeping there would stall healthy messages too.
 
 **List caches are invalidated by version counter, not by key deletion.** `ListCache` bumps
 `list-version:{entity}:{signature}`; the version is a component of every page key, so all pages and
@@ -107,8 +112,13 @@ projection carries a field this write changed*, not just the entity it wrote to:
 handlers move `Post.CommentAmount`, which `PostProjection.Summary` includes, so they bump the post
 feed's signatures alongside the comment ones.
 
-Two signatures opt out of that rule by design, and both are per-reader: `keyword:{kw}` and
-`related:{accountId}`. No write path can know which searches or which readers a new post belongs to,
+Two signatures opt out of that rule by design, and both are per-reader:
+`keyword:{sha256(kw)[..16]}` and `related:{accountId}`. The keyword is hashed rather than
+interpolated because the key grammar is colon-delimited and the keyword is user input: a
+keyword shaped like `foo:hidden:{16 hex}` otherwise produced a page key identical to the one
+a blocking viewer reads, letting a caller seed unfiltered rows into that viewer's filtered
+page. Hashing the *normalized* keyword also collapses case and diacritic variants onto one
+cached page. No write path can know which searches or which readers a new post belongs to,
 so nothing ever bumps them and they retire on the 2-minute `DefaultListTTL` alone. For the related
 feed that is the deliberate alternative to fanning an invalidation out to every follower on each
 post.
@@ -151,7 +161,7 @@ throughout the application layer — including in shared helpers like `ReactionM
 `src/infra/serialization/` — to flatten value objects for the Redis JSON payloads.
 
 **5. Validation is spread across three layers with no single authority.**
-Value-object factories (`domain`), FluentValidation validators (`app`, 39 of 78 handlers), and
+Value-object factories (`domain`), FluentValidation validators (`app`, 44 of 81 handlers), and
 `ImageUpload` (`api`). Some rules are duplicated and have drifted: `Account.BioMaxLength` is 2000 in
 the entity and `MaximumLength(2000)` in `CreateAccountValidator`; password length (10–40) is enforced
 **only** in validators, while the entity checks only that the hash is 60 characters. Caption length

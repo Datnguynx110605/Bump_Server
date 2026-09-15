@@ -50,9 +50,12 @@ platform edge proxy such as Railway's, whose address is not fixed and so cannot 
 it the original scheme is lost and IP-partitioned rate limits see the proxy's address rather than
 the caller's. Setting either key narrows trust back to exactly those addresses.
 
-Every value is dereferenced with the null-forgiving `!` operator, so a missing variable throws at
-composition rather than reporting which key is absent. `Jwt:ExpiryMinutes` uses
-`GetValue<int>`, which silently yields `0` when unset — producing already-expired access tokens.
+Most values are dereferenced with the null-forgiving `!` operator, so a missing variable throws at
+composition rather than reporting which key is absent. The four `Jwt:*` keys are the exception:
+`AddApi` calls `RequireJwtConfiguration` before anything else and throws an
+`InvalidOperationException` naming the missing key. That check exists because `Jwt:ExpiryMinutes`
+is read with `GetValue<int>`, which silently yields `0` when unset — every access token would then
+be minted already expired, and the only symptom is that nothing authenticates.
 
 The local `.env` wraps every value in double quotes. Railway service variables must be entered
 **unquoted**: a literal `"10"` reaching `Jwt:ExpiryMinutes` fails `GetValue<int>` conversion, and a
@@ -269,7 +272,7 @@ graph TB
 
     mongo[("MongoDB<br/>7 collections")]
     redis[("Redis<br/>cache · OTP · idempotency<br/>SignalR backplane · DP keys")]
-    rabbit[["RabbitMQ<br/>10 queues + 10 DLQ"]]
+    rabbit[["RabbitMQ<br/>11 queues + 11 retry + 11 DLQ"]]
     r2[("Cloudflare R2<br/>S3 API")]
     resend["Resend<br/>api.resend.com"]
 
@@ -367,8 +370,9 @@ image registry of our own and no infrastructure-as-code: pushing the tracked bra
 2. `Jwt__SecretKey` must be a fresh, high-entropy value — HS256 forgery is a key-strength problem,
    and the local `.env` value is a hand-typed development string. It is not committed anywhere
    (`git log --all -- .env` is empty), but it should not be reused in production.
-3. Confirm `Jwt__ExpiryMinutes` is present. It is read with `GetValue<int>`, which yields `0` when
-   the key is missing, producing access tokens that are already expired.
+3. `Jwt__SecretKey`, `Jwt__Issuer`, `Jwt__Audience` and a `Jwt__ExpiryMinutes` greater than zero
+   are all validated at startup by `RequireJwtConfiguration`; a deploy missing any of them fails
+   fast with the key named, rather than starting and issuing tokens nothing will accept.
 4. Redis, MongoDB and RabbitMQ must be reachable before the container starts serving; all three are
    opened at startup and `/health` gates the release on them.
 

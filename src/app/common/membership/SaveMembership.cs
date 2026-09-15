@@ -40,6 +40,13 @@ public static class SaveMembership
         if(postIds.Count == 0)
             return new HashSet<Guid>();
 
+        // ponytail: reads the viewer's whole SavePosts array to answer a membership question
+        // about one page, and that array grows without bound. Not narrowed server-side
+        // because the obvious narrowing is wrong: an $elemMatch projection returns only the
+        // FIRST matching element, which would mark at most one post per page as saved. The
+        // correct form is a $filter aggregation expression over the array, which needs the
+        // page's ids encoded as standard-UUID binary — verify that against a live MongoDB
+        // before switching, since a translation failure takes the whole feed down.
         var projection = Builders<Account>.Projection.Include(x => x.SavePosts);
 
         var account = await accounts

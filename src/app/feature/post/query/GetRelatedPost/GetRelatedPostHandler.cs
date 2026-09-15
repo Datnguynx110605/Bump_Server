@@ -24,6 +24,9 @@ internal sealed class GetRelatedPostHandler
     // source list has to stay bounded no matter how many accounts a user follows.
     private const int MaxSourceAccounts = 300;
 
+    // Same reasoning as MaxSourceAccounts, for the trusted-account fallback's $in.
+    private const int MaxTrustedAccounts = 200;
+
     private readonly ICurrentIdentityService _identityService;
     private readonly IRedisService _redisService;
     private readonly IMongoDbContext _dbContext;
@@ -60,6 +63,12 @@ internal sealed class GetRelatedPostHandler
 
         var followingTask = GetFollowingIdsAsync(identity.Value, cancellationToken);
         var affinityTask = GetAffinityIdsAsync(postCollection, identity.Value, cancellationToken);
+
+        // Started here rather than only when tier 1 turns out empty: it is a single Redis
+        // read behind a global cache key (same list for every viewer), so overlapping it
+        // with the reads above costs nothing on the common path, but it shaves a full
+        // round trip off the fallback path below for every request that needs it.
+        var trustedTask = GetTrustedIdsAsync(cancellationToken);
 
         // Depends on nothing but the identity, so it starts here and overlaps the feed query
         // instead of trailing it. Only on the first page — the only page it can be prepended
@@ -108,36 +117,64 @@ internal sealed class GetRelatedPostHandler
 
         // An account that follows nobody and has reacted to nobody has nothing to relate to,
         // and so does one whose followed accounts have never posted. Rather than hand back an
-        // empty home, fall back to the reader's own posts, newest first.
+        // empty home, fall back to platform-trusted accounts and, failing that, the reader's
+        // own posts, newest first.
         //
         // The condition is "the page came back empty", not "sourceIds is empty", because the
         // second case is invisible to sourceIds. Testing it on every page rather than only the
         // first is what keeps the fallback pageable: CursorPaginator ends a stream with
         // NextCursor null, so a normal feed never yields an empty page mid-stream, and the
         // condition therefore re-derives the same way for page 2 as it did for page 1.
+        bool ownPostsFallback = false;
+
         if(dtoPage.Items.Count == 0)
         {
-            // Same filter and signature as GetMyPost, so the two share cached pages — and the
-            // pin below is unnecessary here: post create, edit and delete all bump
-            // "account:{id}", so a just-created post is already at the top of this stream.
-            dtoPage = await CachedCursorPaginator.PaginateAsync<Post, PostSummaryDto>(
-                _redisService,
-                _mapper,
-                postCollection,
-                Builders<Post>.Filter.And(
-                    Builders<Post>.Filter.Eq(x => x.AccountId, identity.Value),
-                    Builders<Post>.Filter.Eq(x => x.IsDeleted, false)),
-                PostProjection.Summary,
-                request.pageRequest,
-                CollectionName.Post,
-                $"account:{identity.Value}",
-                cancellationToken);
+            var trustedIds = (await trustedTask)
+                .Where(x => x != identity.Value && !hidden.Contains(x))
+                .ToList();
+
+            if(trustedIds.Count > 0)
+                dtoPage = await CachedCursorPaginator.PaginateAsync<Post, PostSummaryDto>(
+                    _redisService,
+                    _mapper,
+                    postCollection,
+                    Builders<Post>.Filter.And(
+                        Builders<Post>.Filter.In(x => x.AccountId, trustedIds),
+                        Builders<Post>.Filter.Eq(x => x.IsDeleted, false)),
+                    PostProjection.Summary,
+                    request.pageRequest,
+                    CollectionName.Post,
+                    $"trusted:{identity.Value}",
+                    cancellationToken);
+
+            if(dtoPage.Items.Count == 0)
+            {
+                ownPostsFallback = true;
+
+                // Same filter and signature as GetMyPost, so the two share cached pages — and
+                // the pin below is unnecessary here: post create, edit and delete all bump
+                // "account:{id}", so a just-created post is already at the top of this stream.
+                dtoPage = await CachedCursorPaginator.PaginateAsync<Post, PostSummaryDto>(
+                    _redisService,
+                    _mapper,
+                    postCollection,
+                    Builders<Post>.Filter.And(
+                        Builders<Post>.Filter.Eq(x => x.AccountId, identity.Value),
+                        Builders<Post>.Filter.Eq(x => x.IsDeleted, false)),
+                    PostProjection.Summary,
+                    request.pageRequest,
+                    CollectionName.Post,
+                    $"account:{identity.Value}",
+                    cancellationToken);
+            }
         }
+
         // Pinned outside the paginator on purpose: the related page is cached for
         // DefaultListTTL under a signature nothing bumps, so a post created a moment ago would
         // not show up in it. This read is uncached and one indexed lookup, which is what makes
-        // "my newest post is always first" hold.
-        else if(latestTask is not null)
+        // "my newest post is always first" hold. Skipped for the own-posts fallback, where it
+        // would duplicate the one post that feed already contains.
+        if(!ownPostsFallback && latestTask is not null)
         {
             var latest = await latestTask;
             if(latest is not null)
@@ -231,6 +268,42 @@ internal sealed class GetRelatedPostHandler
             cacheKey,
             accountIds,
             CacheKey.DefaultAffinityTTL,
+            cancellationToken);
+
+        return accountIds;
+    }
+
+    // Unlike affinity, this carries no per-viewer signal — every viewer ranks the same
+    // trusted accounts the same way — so it is resolved once behind one cache key rather
+    // than per account. The caller excludes the viewer's own id and blocked accounts
+    // afterward, which is what keeps this list reusable across every viewer.
+    private async Task<List<Guid>> GetTrustedIdsAsync(CancellationToken cancellationToken)
+    {
+        string cacheKey = CacheKey.TrustedAccounts();
+
+        var cached = await _redisService.GetAsync<List<Guid>>(cacheKey, cancellationToken);
+        if(cached is not null)
+            return cached;
+
+        var accountCollection = _dbContext.GetCollection<Account>(CollectionName.Account);
+
+        var filter = Builders<Account>.Filter.And(
+            Builders<Account>.Filter.Eq(x => x.IsTrusted, true),
+            Builders<Account>.Filter.Eq(x => x.IsDeleted, false));
+
+        var accounts = await accountCollection
+            .Find(filter)
+            .SortByDescending(x => x.FollowerAmount.Value)
+            .Limit(MaxTrustedAccounts)
+            .Project<Account>(Builders<Account>.Projection.Include(x => x.Id))
+            .ToListAsync(cancellationToken);
+
+        var accountIds = accounts.Select(x => x.Id).ToList();
+
+        await _redisService.SetAsync(
+            cacheKey,
+            accountIds,
+            CacheKey.DefaultTrustedTTL,
             cancellationToken);
 
         return accountIds;

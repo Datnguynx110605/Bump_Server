@@ -24,11 +24,13 @@ public sealed class SaveService : ISaveService
     {
         var postCollection = _dbContext.GetCollection<Post>(CollectionName.Post);
 
-        var post = await postCollection
+        // AnyAsync rather than reading the document: this only needs to know the post
+        // exists, and an unprojected read drags its entire Reactions array over the wire.
+        bool postExists = await postCollection
             .Find(x => x.Id == postId && !x.IsDeleted)
-            .FirstOrDefaultAsync(cancellationToken);
+            .AnyAsync(cancellationToken);
 
-        if(post is null)
+        if(!postExists)
             return Result.Fail(AppError.NotFound("Post not found"));
 
         var accountCollection = _dbContext.GetCollection<Account>(CollectionName.Account);
@@ -87,11 +89,11 @@ public sealed class SaveService : ISaveService
     {
         var shopCollection = _dbContext.GetCollection<Shop>(CollectionName.Shop);
 
-        var shop = await shopCollection
+        bool shopExists = await shopCollection
             .Find(x => x.Id == shopId && !x.IsDeleted)
-            .FirstOrDefaultAsync(cancellationToken);
+            .AnyAsync(cancellationToken);
 
-        if(shop is null)
+        if(!shopExists)
             return Result.Fail(AppError.NotFound("Shop not found"));
 
         var accountCollection = _dbContext.GetCollection<Account>(CollectionName.Account);

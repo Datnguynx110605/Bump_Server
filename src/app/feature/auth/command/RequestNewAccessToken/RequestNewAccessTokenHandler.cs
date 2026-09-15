@@ -46,10 +46,17 @@ internal sealed class RequestNewAccessTokenHandler
         var revokeUpdate = Builders<RefreshToken>.Update
             .Set(x => x.IsRevoked, currentToken.IsRevoked);
 
-        await refreshTokenCollection.UpdateOneAsync(
+        var revokeWrite = await refreshTokenCollection.UpdateOneAsync(
             revokeFilter,
             revokeUpdate,
             cancellationToken : cancellationToken);
+
+        // The filter is the concurrency control, not a formality: two requests presenting
+        // the same token both read it unrevoked and both reach this write, but only one
+        // matches. Without this check both were issued a fresh pair, so a stolen token
+        // could be replayed alongside the legitimate client and neither was cut off.
+        if(revokeWrite.MatchedCount != 1)
+            return Result.Fail(AppError.Unauthorized("Invalid refresh token"));
 
         var accountCollection = _dbContext.GetCollection<Account>(CollectionName.Account);
 

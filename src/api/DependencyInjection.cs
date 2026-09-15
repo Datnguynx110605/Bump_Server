@@ -16,6 +16,8 @@ public static class DependencyInjection
 {
     public static IServiceCollection AddApi(this IServiceCollection services, IConfiguration configuration)
     {
+        RequireJwtConfiguration(configuration);
+
         services.AddApp();
         services.AddInfra(configuration);
 
@@ -63,6 +65,22 @@ public static class DependencyInjection
         ConfigureRateLimiting(services);
 
         return services;
+    }
+
+    // Jwt:ExpiryMinutes was read with GetValue<int>, which yields 0 when the key is absent
+    // — every access token would then be minted already expired, and the only symptom is
+    // that nothing authenticates. The secret and the issuer/audience pair fail just as
+    // quietly. A deploy missing any of them should not start.
+    private static void RequireJwtConfiguration(IConfiguration configuration)
+    {
+        string[] required = ["Jwt:SecretKey", "Jwt:Issuer", "Jwt:Audience"];
+
+        foreach(string key in required)
+            if(string.IsNullOrWhiteSpace(configuration[key]))
+                throw new InvalidOperationException($"Configuration '{key}' is required and was not supplied");
+
+        if(configuration.GetValue<int>("Jwt:ExpiryMinutes") <= 0)
+            throw new InvalidOperationException("Configuration 'Jwt:ExpiryMinutes' is required and must be greater than zero");
     }
 
     private static void ConfigureForwardedHeaders(IServiceCollection services, IConfiguration configuration)

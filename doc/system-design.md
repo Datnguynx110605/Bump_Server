@@ -21,7 +21,7 @@ How the running components fit together and what happens at runtime. Layering ru
 ### `app` — use cases
 
 78 MediatR handlers under `src/app/feature/<area>/<command|query>/<Name>/`, each a
-`Command`/`Query` record + `Handler` + optional `Validator` (39 of 78 have one). Three pipeline
+`Command`/`Query` record + `Handler` + optional `Validator` (44 of 81 have one). Three pipeline
 behaviours run in registration order (`src/app/DependencyInjection.cs`):
 
 1. `LoggingBehavior` — logs request name, then success or the joined error messages.
@@ -40,7 +40,7 @@ wrappers, `CacheKey`, `ListCache`, `AppError`, `PostFeedEnricher`, `ReactionMemb
 |---|---|
 | `DbContext` | Wraps `IMongoDatabase`; only member is `GetCollection<T>(name)`. |
 | `RedisService` | JSON get/set/remove, `GetAndRemoveAsync` (atomic `StringGetDelete`), and raw integer `IncrementAsync`/`GetCounterAsync` for list-cache versions. |
-| `RabbitMQService` | Publish and consume with per-message idempotency, retry counting, and dead-lettering. |
+| `RabbitMQService` | Publish and consume with per-message idempotency, retry counting, a 30-second delay queue between attempts, and dead-lettering. |
 | `R2Service` | Uploads to a `{folder}/{guid}{ext}` key with an explicit `ContentType`; deletes by URL path. |
 | `EmailService` | `POST https://api.resend.com/emails`, 10 s `HttpClient` timeout. |
 | `JwtService` | HS256 access tokens carrying `accountId` and `role` claims. |

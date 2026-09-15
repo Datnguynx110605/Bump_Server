@@ -28,12 +28,12 @@ internal sealed class GetShopByKeywordHandler
         GetShopByKeywordQuery request,
         CancellationToken cancellationToken)
     {
-        string filterSignature = $"keyword:{request.keyword}";
-
         var shopCollection = _dbContext.GetCollection<Shop>(CollectionName.Shop);
 
         var normalizedKeyword = TextNormalizer.RemoveDiacriticsAndLower(request.keyword);
         var escapedKeyword = Regex.Escape(normalizedKeyword);
+
+        string filterSignature = CacheKey.KeywordSignature(normalizedKeyword);
 
         // No "i" option: TextNormalizer has already lowercased both the stored field and the
         // keyword, so case-insensitivity cannot change a match — and it is exactly what stops

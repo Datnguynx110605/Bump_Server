@@ -41,12 +41,12 @@ internal sealed class GetPostByKeywordHandler
             identity.Value,
             cancellationToken);
 
-        string filterSignature = $"keyword:{request.keyword}";
-
         var postCollection = _dbContext.GetCollection<Post>(CollectionName.Post);
 
         var normalizedKeyword = TextNormalizer.RemoveDiacriticsAndLower(request.keyword);
         var escapedKeyword = Regex.Escape(normalizedKeyword);
+
+        string filterSignature = CacheKey.KeywordSignature(normalizedKeyword);
 
         // No "i" option: TextNormalizer has already lowercased both the stored field and the
         // keyword, so case-insensitivity cannot change a match — and it is exactly what stops

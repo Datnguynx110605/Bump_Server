@@ -70,23 +70,36 @@ internal sealed class AdminDeleteCommentHandler
         var postUpdate = Builders<Post>.Update
             .Inc(x => x.CommentAmount.Value, -1);
 
-        await postCollection.UpdateOneAsync(
+        // FindOneAndUpdate rather than UpdateOne so the author and shop needed for the
+        // invalidations below come back in the same round trip as the decrement.
+        var parentPost = await postCollection.FindOneAndUpdateAsync(
             postFilter,
             postUpdate,
-            cancellationToken : cancellationToken);
+            new FindOneAndUpdateOptions<Post>
+            {
+                ReturnDocument = ReturnDocument.After,
+                Projection = Builders<Post>.Projection
+                    .Include(x => x.AccountId)
+                    .Include(x => x.ShopId)
+            },
+            cancellationToken);
 
         string cacheKey = CacheKey.Comment(comment.Id);
 
-        await Task.WhenAll(
+        var cacheInvalidations = new List<Task>
+        {
             _redisService.RemoveAsync(
                 cacheKey,
                 cancellationToken),
             _redisService.RemoveAsync(
                 CacheKey.Post(comment.PostId),
                 cancellationToken),
-            // The admin post listing renders CommentAmount off the Post document, so moving it
-            // has to retire post:all. The account: and shop: signatures are deliberately left
-            // alone — those lists are thumbnail grids with no counts on them.
+            // CommentAmount is part of PostProjection.Summary, so every post list built from
+            // that projection carries the value this write just moved — not only post:all.
+            // The rule is the projection's, not the current UI's: a thumbnail grid that does
+            // not draw the count today still has the stale number in its cached payload.
+            // The parent post may itself be soft-deleted, in which case the decrement above
+            // matched nothing and there is no author or shop list to retire.
             ListCache.InvalidateAsync(
                 _redisService,
                 CollectionName.Post,
@@ -106,7 +119,24 @@ internal sealed class AdminDeleteCommentHandler
                 _redisService,
                 CollectionName.Comment,
                 $"account:{comment.AccountId}",
+                cancellationToken)
+        };
+
+        if(parentPost is not null)
+        {
+            cacheInvalidations.Add(ListCache.InvalidateAsync(
+                _redisService,
+                CollectionName.Post,
+                $"account:{parentPost.AccountId}",
                 cancellationToken));
+            cacheInvalidations.Add(ListCache.InvalidateAsync(
+                _redisService,
+                CollectionName.Post,
+                $"shop:{parentPost.ShopId}",
+                cancellationToken));
+        }
+
+        await Task.WhenAll(cacheInvalidations);
 
         var deleteCommentMessage = new CommentMessage(
             Guid.NewGuid(),

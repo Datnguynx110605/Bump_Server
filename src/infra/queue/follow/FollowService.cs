@@ -8,6 +8,10 @@ namespace infra;
 
 public sealed class FollowService : IFollowService
 {
+    // ponytail: guessed thresholds, no production follower/engagement data yet — revisit
+    // once real distributions exist and tune from those instead of a guess.
+    private const int TrustedFollowerThreshold = 500;
+    private static readonly TimeSpan TrustedMinAccountAge = TimeSpan.FromDays(30);
     private readonly IMongoDbContext _dbContext;
     private readonly IRedisService _redisService;
     private readonly INotificationService _notificationSerivce;
@@ -36,7 +40,10 @@ public sealed class FollowService : IFollowService
 
         var projection = Builders<Account>.Projection
             .Include(x => x.Name)
-            .Include(x => x.Avatars);
+            .Include(x => x.Avatars)
+            .Include(x => x.FollowerAmount)
+            .Include(x => x.IsTrusted)
+            .Include(x => x.CreatedAt);
 
         var follower = await accountCollection
             .Find(x => x.Id == followerId && !x.IsDeleted)
@@ -98,6 +105,8 @@ public sealed class FollowService : IFollowService
                 "Follow {FollowerId} -> {FollowingId} was half-applied and has been repaired",
                 followerId,
                 followingId);
+
+        await TryGrantTrustAsync(following, followingId, cancellationToken);
 
         await Task.WhenAll(
             _redisService.RemoveAsync(
@@ -194,5 +203,43 @@ public sealed class FollowService : IFollowService
                 cancellationToken));
 
         return Result.Ok();
+    }
+
+    // Only the follow path grants trust: it is the sole event that moves FollowerAmount
+    // toward the threshold. Unfollow/block never revoke it once granted — a stable badge
+    // is the point, and revocation (if ever needed) is an admin action, not automatic.
+    private async Task TryGrantTrustAsync(
+        Account following,
+        Guid followingId,
+        CancellationToken cancellationToken)
+    {
+        if(following.IsTrusted)
+            return;
+
+        int newFollowerCount = following.FollowerAmount.Value + 1;
+
+        if(newFollowerCount < TrustedFollowerThreshold)
+            return;
+
+        if(DateTime.UtcNow - following.CreatedAt < TrustedMinAccountAge)
+            return;
+
+        var reportCollection = _dbContext.GetCollection<Report>(CollectionName.Report);
+
+        bool hasReports = await reportCollection
+            .Find(r => r.AccountId == followingId && !r.IsDeleted)
+            .AnyAsync(cancellationToken);
+
+        if(hasReports)
+            return;
+
+        var accountCollection = _dbContext.GetCollection<Account>(CollectionName.Account);
+
+        await accountCollection.UpdateOneAsync(
+            Builders<Account>.Filter.And(
+                Builders<Account>.Filter.Eq(x => x.Id, followingId),
+                Builders<Account>.Filter.Eq(x => x.IsTrusted, false)),
+            Builders<Account>.Update.Set(x => x.IsTrusted, true),
+            cancellationToken : cancellationToken);
     }
 }

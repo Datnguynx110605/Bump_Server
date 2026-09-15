@@ -10,5 +10,6 @@ public sealed record AccountProjection
         .Include(x => x.Avatars)
         .Include(x => x.Bio)
         .Include(x => x.FollowerAmount)
-        .Include(x => x.FollowingAmount);
+        .Include(x => x.FollowingAmount)
+        .Include(x => x.IsTrusted);
 }

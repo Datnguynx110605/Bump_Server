@@ -1,4 +1,4 @@
-﻿using app;
+using app;
 using domain;
 using Microsoft.Extensions.Configuration;
 using MongoDB.Driver;
@@ -68,6 +68,17 @@ public static class IndexConfiguration
                     new CreateIndexOptions<Account>
                     {
                         PartialFilterExpression = Builders<Account>.Filter.Eq(x => x.IsDeleted, true)
+                    }),
+                // Backs GetRelatedPostHandler's trusted-account fallback tier, which filters
+                // IsTrusted and sorts by follower count. Partial so it only carries trusted
+                // rows instead of the whole collection.
+                new CreateIndexModel<Account>(
+                    keys.Descending("FollowerAmount.Value"),
+                    new CreateIndexOptions<Account>
+                    {
+                        PartialFilterExpression = Builders<Account>.Filter.And(
+                            Builders<Account>.Filter.Eq(x => x.IsTrusted, true),
+                            Builders<Account>.Filter.Eq(x => x.IsDeleted, false))
                     })
             },
             cancellationToken);
@@ -273,6 +284,12 @@ public static class IndexConfiguration
                     keys.Ascending(x => x.IsDeleted)
                         .Descending(x => x.CreatedAt)
                         .Descending(x => x.Id)),
+                // Backs the per-account revocation in ChangePassword and ResetPassword and
+                // the delete cascade in AccountService, all of which filter on AccountId
+                // plus IsRevoked and would otherwise scan the collection.
+                new CreateIndexModel<RefreshToken>(
+                    keys.Ascending(x => x.AccountId)
+                        .Ascending(x => x.IsRevoked)),
                 // Backs the revoked-token sweep in SoftDeletePurgeHost.
                 new CreateIndexModel<RefreshToken>(
                     keys.Ascending(x => x.IsRevoked),

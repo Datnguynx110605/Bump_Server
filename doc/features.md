@@ -142,12 +142,25 @@ flowchart TD
     E -->|null| E1["401 Unauthenticated"]
     E --> F{"BCrypt.Verify(current, hash)"}
     F -->|no| F1["400 'Current password is incorrect'"]
-    F -->|yes| G["BCrypt.HashPassword(new)"]
-    G --> H["account.ChangePassword"] -->|"equals old hash"| H1["409 must be different"]
-    H --> I["Mongo $set Password, UpdatedAt"]
-    I --> J["Redis DEL account:v1:id:{id}"] --> K["204 No Content"]
+    F --> F2{"BCrypt.Verify(new, hash)"}
+    F2 -->|yes| F3["409 'New password must be different'"]
+    F2 -->|no| G["BCrypt.HashPassword(new)"]
+    G --> H["account.ChangePassword"] --> I["Mongo $set Password, UpdatedAt"]
+    I --> J["Mongo $set IsRevoked on every<br/>refresh token for this account"]
+    J --> K["Insert replacement RefreshToken<br/>+ mint access token"]
+    K --> L["Redis DEL account:v1:id:{id}"] --> M["200 OK {AccessToken, RefreshToken}"]
 ```
-Existing refresh tokens survive a password change.
+**Answers 200 with a fresh pair, not 204.** Changing the password revokes every refresh token on
+the account, the caller's own included, so the response has to carry a replacement or the user is
+silently logged out the moment their current access token expires. A client that ignores the body
+degrades to exactly that — it keeps a revoked token and is logged out at its next refresh.
+
+Eviction is bounded by `Jwt:ExpiryMinutes`, not immediate: JWTs are not revocable, so access
+tokens already issued stay valid until they expire.
+
+"New password must be different" is checked with `BCrypt.Verify(new, storedHash)` in the handler.
+It used to live on `Account.ChangePassword` as `Password == password`, comparing two BCrypt
+hashes — random salts mean two hashes of one plaintext never match, so the rule never fired.
 
 ### 6. Change email — `PUT /Account/me/email`
 
@@ -286,9 +299,14 @@ flowchart TD
     G -->|null| G1["404 'Account not found'"]
     G --> H["BCrypt hash → account.ChangePassword"]
     H --> I["Mongo $set Password, UpdatedAt"]
-    I --> J["ConsumeTokenAsync<br/>Redis DEL registration:{token}"]
+    I --> I2["Mongo $set IsRevoked on every<br/>refresh token for this account"]
+    I2 --> J["ConsumeTokenAsync<br/>Redis DEL registration:{token}"]
     J --> K["Redis DEL account:v1:id:{id}"] --> L["204 No Content"]
 ```
+Every session on the account is revoked, which is the point of the recovery flow — an attacker
+holding a refresh token is cut off. No replacement pair is returned here, unlike #5: the caller is
+unauthenticated at this point and logs in with the new password next. Eviction is bounded by
+`Jwt:ExpiryMinutes` for access tokens already in circulation.
 
 ### 12. List accounts — `GET /Account` · **admin**
 
@@ -353,11 +371,12 @@ flowchart TD
     A["Client<br/>GET /api/v1/Account/search?keyword="] --> B["AccountController.GetAccountByKeyword"]
     B --> C["MediatR → GetAccountByKeywordHandler"]
     C --> D["Regex.Escape(keyword)<br/><b>no TextNormalizer</b>"]
-    D --> E["filter: !IsDeleted AND Name.Value =~ /kw/i<br/>sig = keyword:{kw}"]
+    D --> E["filter: !IsDeleted AND Name.Value =~ /kw/<br/>sig = keyword:{sha256(kw)[..16]}"]
     E --> F["CachedCursorPaginator"] --> G["200 page of AccountSummaryDto"]
 ```
-Post and shop search normalize the keyword first; this one does not. Stored names are already
-lowercase alphanumeric, so an accented keyword never matches.
+All three searches normalize the keyword first and validate it: `NotEmpty`, because an empty
+keyword escapes to a match-everything regex, and a 100-character cap, because the keyword reaches
+both a MongoDB regex and — through `CacheKey.KeywordSignature` — a Redis key.
 
 ---
 
@@ -662,7 +681,7 @@ flowchart TD
     A["Client<br/>GET /api/v1/Post/search?keyword="] --> B["PostController.GetPostByKeyword"]
     B --> C["MediatR → GetPostByKeywordHandler → identity"] -->|null| C1["401"]
     C --> D["TextNormalizer.RemoveDiacriticsAndLower<br/>then Regex.Escape"]
-    D --> E["filter: !IsDeleted AND<br/>CaptionNormalized =~ /kw/i<br/>sig = keyword:{kw}"]
+    D --> E["filter: !IsDeleted AND<br/>CaptionNormalized =~ /kw/<br/>sig = keyword:{sha256(kw)[..16]}"]
     E --> F["CachedCursorPaginator"] --> G["PostFeedEnricher · +2 Mongo reads"]
     G --> H["200 page of PostFeedItemDto"]
 ```
@@ -788,10 +807,11 @@ flowchart TD
 ```
 The soft delete, the parent's `CommentAmount` decrement and the cache invalidations stay in the
 request because a caller returning before those land would serve stale reads. `CommentAmount` is
-projected into `PostSummaryDto`, but no post list version is bumped here: `post:account:{id}` and
-`post:shop:{id}` are thumbnail grids that carry no counts, and the post document cache is deleted
-outright. Only the image
-deletes move to the queue — nobody is waiting on object storage.
+projected into `PostSummaryDto`, so `post:`, `post:account:{id}` and `post:shop:{id}` are all
+bumped — the rule is the projection's, not the current UI's, and a grid that does not draw the
+count today still holds the stale number in its cached payload. The author and shop come back from
+the `FindOneAndUpdate` that performs the decrement, so this costs no extra round trip. Only the
+image deletes move to the queue — nobody is waiting on object storage.
 
 ### 36. Get comment — `GET /Comment/{commentId}`
 
@@ -880,7 +900,7 @@ flowchart TD
     A["Client<br/>GET /api/v1/Shop/search?keyword="] --> B["ShopController.GetShopByKeyword"]
     B --> C["MediatR → GetShopByKeywordHandler"]
     C --> D["TextNormalizer → Regex.Escape"]
-    D --> E["filter: !IsDeleted AND <b>OR</b>(<br/>NameNormalized =~ /kw/i,<br/>AddressNormalized =~ /kw/i)<br/>sig = keyword:{kw}"]
+    D --> E["filter: !IsDeleted AND <b>OR</b>(<br/>NameNormalized =~ /kw/,<br/>AddressNormalized =~ /kw/)<br/>sig = keyword:{sha256(kw)[..16]}"]
     E --> F["CachedCursorPaginator"] --> G["200 page of ShopSummaryDto"]
 ```
 The only search matching two fields with `OR`.
@@ -1688,7 +1708,10 @@ MongoDB from using the index. Each field now has a supporting index. The regexes
 so the planner scans index keys rather than seeking a range: far cheaper than fetching every
 document, still linear in collection size. Anchoring with `^` would make it a range seek at the cost
 of turning "contains" into "starts with", and a `$text` index would give word-level seeking at the
-cost of partial-word matching — neither is applied.
+cost of partial-word matching — neither is applied. The page signature is
+`keyword:{sha256(normalized)[..16]}` rather than the raw keyword: the key grammar is
+colon-delimited, so an interpolated keyword shaped like `foo:hidden:{16 hex}` collided with the
+page key a blocking viewer reads. A `MaximumLength(100)` validator now bounds the input as well.
 
 **Ownership failures answer 404, not 403**, because ownership is folded into the lookup filter —
 #25, #26, #27, #34, #35.

@@ -64,8 +64,10 @@ public sealed class AccountController : ControllerBase
         return result.ToActionResult();
     }
 
+    // Answers 200 with a fresh token pair rather than 204: the handler revokes every
+    // refresh token on the account, so the caller's own session needs replacing.
     [HttpPut("me/password")]
-    public async Task<ActionResult> ChangePassword(
+    public async Task<ActionResult<AuthResult>> ChangePassword(
         ChangePasswordRequest request,
         CancellationToken cancellationToken)
     {

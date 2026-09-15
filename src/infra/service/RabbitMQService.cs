@@ -12,6 +12,21 @@ public sealed class RabbitMQService : IRabbitMQService
     private const string RetryCountHeader = "x-retry-count";
     private static readonly TimeSpan IdempotencyTtl = TimeSpan.FromHours(24);
 
+    // A failed message used to be republished to its own queue immediately, so with
+    // prefetchCount 1 all three attempts burned in milliseconds: a two-second Mongo or
+    // Redis blip dead-lettered work the API had already answered 202 for. It now waits in
+    // {queue}.retry, which holds nothing and expires everything back to the main queue.
+    //
+    // Held in a queue rather than by delaying in the consumer because this consumer takes
+    // one message at a time — sleeping here would stall every healthy message behind the
+    // failing one.
+    //
+    // ponytail: one fixed delay rather than an escalating 5s/30s/2m ladder. Per-message
+    // TTL expires in queue order, so a ladder needs one retry queue per tier; three tiers
+    // across ten queues is 30 queues to save 60 seconds. Add tiers if a dependency turns
+    // out to need longer than 90s to recover.
+    private static readonly TimeSpan RetryDelay = TimeSpan.FromSeconds(30);
+
     private readonly IConnection _connection;
     private readonly IRedisService _redisService;
 
@@ -62,6 +77,22 @@ public sealed class RabbitMQService : IRabbitMQService
             durable: true,
             exclusive: false,
             autoDelete: false,
+            cancellationToken: cancellationToken);
+
+        // Nothing consumes this queue. Messages sit here until x-message-ttl expires them,
+        // and the dead-letter pair routes them through the default exchange back to the
+        // main queue — which is what turns the TTL into the retry delay.
+        await channel.QueueDeclareAsync(
+            queue: RetryQueueName(queueName),
+            durable: true,
+            exclusive: false,
+            autoDelete: false,
+            arguments: new Dictionary<string, object?>
+            {
+                ["x-message-ttl"] = (int)RetryDelay.TotalMilliseconds,
+                ["x-dead-letter-exchange"] = string.Empty,
+                ["x-dead-letter-routing-key"] = queueName
+            },
             cancellationToken: cancellationToken);
         await channel.BasicQosAsync(
             prefetchSize: 0, 
@@ -136,7 +167,9 @@ public sealed class RabbitMQService : IRabbitMQService
             catch
             {
                 var nextAttempt = retryCount + 1;
-                var targetQueue = nextAttempt >= MaxAttempts ? DeadLetterQueueName(queueName) : queueName;
+                var targetQueue = nextAttempt >= MaxAttempts
+                    ? DeadLetterQueueName(queueName)
+                    : RetryQueueName(queueName);
 
                 await PublishRawAsync(
                     channel,
@@ -205,6 +238,8 @@ public sealed class RabbitMQService : IRabbitMQService
     }
 
     private static string DeadLetterQueueName(string queueName) => $"{queueName}.dlq";
+
+    private static string RetryQueueName(string queueName) => $"{queueName}.retry";
 
     private static string BuildIdempotencyKey(
         string queueName, 
