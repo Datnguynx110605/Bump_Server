@@ -19,7 +19,7 @@ Bump_Server/
 ├── railway.json                    the only platform config — builder, health check, restart policy
 ├── .dockerignore                   build-context excludes; tracked, and must stay tracked
 ├── .gitignore                      root ignores only .DS_Store, .dockerignore, .claude/, .env
-├── .env                            untracked; 16 secrets in A__B form
+├── .env                            untracked; 20 required + 5 optional variables in A__B form
 ├── doc/                            project documentation
 └── src/
     ├── Bump.sln                    solution — 4 projects
@@ -35,7 +35,7 @@ Bump_Server/
     │   ├── common/                 [3]  CollectionName, QueueName, AppError
     │   │   ├── behavior/           [3]  MediatR pipeline: Logging → Performance → Validation
     │   │   ├── cache/              [2]  CacheKey (key shapes + TTLs), ListCache (version bump/read)
-    │   │   ├── dto/                [20] response and cache shapes; PascalCase record parameters
+    │   │   ├── dto/                [21] response and cache shapes; PascalCase record parameters
     │   │   ├── interface/               contracts implemented in infra — the inversion boundary
     │   │   │   ├── persistence/    [1]  IMongoDbContext
     │   │   │   ├── queue/          [9]  one per queue worker (IFollowService, IReactPostService, …)
@@ -46,7 +46,7 @@ Bump_Server/
     │   │   │                        BlockGuard
     │   │   ├── message/            [8]  queue payload records; every one carries a MessageId
     │   │   └── pagination/         [7]  cursor codec, paginators, and their cached wrappers
-    │   └── feature/                     81 use cases — one folder each, listed in full below
+    │   └── feature/                     83 use cases — one folder each, listed in full below
     │       ├── account/            [1]  AccountProjection.cs — area-shared
     │       │   ├── command/
     │       │   │   ├── ChangeAvatar/     ChangeAvatar{Command, Handler, Validator}
@@ -160,7 +160,6 @@ Bump_Server/
     │       │       └── GetMySavedShops/      GetMySavedShops{Query, Handler}
     │       └── shop/               [1]  ShopProjection.cs — area-shared
     │           ├── command/
-    │           │   ├── Create/           ⚠ empty, untracked
     │           │   └── Delete/           DeleteShop{Command, Handler, Validator}
     │           └── query/
     │               ├── GetAllShop/           GetAllShop{Query, Handler}
@@ -174,7 +173,8 @@ Bump_Server/
     │   ├── health/                 [3]  one IHealthCheck per backing service, surfaced at /health
     │   ├── hub/                    [2]  NotificationHub, AccountIdUserIdProvider (accountId → connection)
     │   ├── persistence/
-    │   │   ├── configuration/      [5]  BSON class maps, backing-field serializer, indexes, initializers
+    │   │   ├── configuration/      [7]  BSON class maps, backing-field serializer, index models,
+    │   │                            initializers, admin seeder, retention purge host
     │   │   └── dbcontext/          [1]  DbContext — the only IMongoDbContext implementation
     │   ├── queue/                  [1]  QueueConsumerHost<TMessage> — the single generic consumer host
     │   │   ├── account/            [1]  AccountService — the delete cascade
@@ -193,7 +193,7 @@ Bump_Server/
         ├── common/                 [4]  ResultExtensions, ResultStatusMapper, RateLimiterPolicy, ImageUpload
         ├── controller/             [13] one per resource; bind → send → ToActionResult, no logic
         ├── middleware/             [4]  CorrelationId + Performance, each with its UseX extension
-        └── request/                [15] HTTP body records; PascalCase parameters
+        └── request/                [16] HTTP body records; PascalCase parameters
 ```
 
 One folder holds no `.cs` files: `api/Properties/`, which exists for `launchSettings.json`. The
@@ -214,7 +214,7 @@ exists.
   that use case's folder instead.
 - **`api/common/` is for cross-controller plumbing**, not helpers for a single controller.
 
-**Structural folders are lowercase, single word.** All 41 of them: `account`, `api`, `app`, `auth`,
+**Structural folders are lowercase, single word.** All 44 of them: `account`, `api`, `app`, `auth`,
 `behavior`, `block`, `cache`, `command`, `comment`, `common`, `configuration`, `controller`, `core`,
 `dashboard`, `dbcontext`, `domain`, `dto`, `email`, `entity`, `enum`, `feature`, `follow`, `health`,
 `hub`, `infra`, `interface`, `mapping`, `membership`, `message`, `middleware`, `notification`,
@@ -231,15 +231,15 @@ That is the one structural inconsistency in the feature tree.
 
 ## Namespaces
 
-**File-scoped, lowercase, one per project — 386 files, zero exceptions**, and no block-bodied
+**File-scoped, lowercase, one per project — 406 of the 407 `.cs` files**, and no block-bodied
 namespace anywhere:
 
 | Namespace | Files |
 |---|---|
-| `namespace app;` | 289 |
-| `namespace api;` | 37 |
-| `namespace infra;` | 37 |
-| `namespace domain;` | 23 |
+| `namespace app;` | 303 |
+| `namespace api;` | 38 |
+| `namespace infra;` | 40 |
+| `namespace domain;` | 25 |
 
 Namespaces are **flat**: a type in `app/feature/post/query/GetMyPost/` is still `namespace app;`.
 Folders carry no namespace meaning, so every type name must be unique within its project.
@@ -274,7 +274,7 @@ Suffixes are load-bearing and consistent:
 
 ## Type and member naming
 
-**Types are PascalCase and `sealed` by default** — 339 `sealed class`/`sealed record` declarations
+**Types are PascalCase and `sealed` by default** — 354 `sealed class` / `sealed record` declarations
 against only 4 non-sealed types, each deliberately open:
 `BaseEntity` (abstract), `DomainResult`, `DomainResult<T>` (inherited from), and `DbContext`.
 
@@ -349,14 +349,14 @@ Derived by counting the whole tree; there is no config file to cite.
 |---|---|
 | 4-space indentation, **no tabs** | 0 files contain a leading tab |
 | **Allman braces** — `{` always on its own line | 0 occurrences of `) {` at end of line |
-| **No space after control keywords**: `if(`, `foreach(` | `if(` 258 / `if (` 0; `foreach(` 21 / `foreach (` 0 |
-| File-scoped namespaces | 352 / 0 |
+| **No space after control keywords**: `if(`, `foreach(` | `if(` 357 / `if (` 0; `foreach(` 31 / `foreach (` 0 |
+| File-scoped namespaces | 406 / 0 — only `Program.cs`, which uses top-level statements, declares none |
 | `using` directives at file top, framework and package usings mixed, roughly alphabetical | e.g. `using app; using AutoMapper; using domain; using FluentResults;` |
 | Multi-line argument lists: one argument per line, closing `)` on the last argument's line | pervasive in handlers |
 | Named arguments used for clarity on optional Mongo parameters | `cancellationToken : cancellationToken` — note the **spaces around the colon**, which is non-standard |
 | `<Nullable>enable</Nullable>` and `<ImplicitUsings>enable</ImplicitUsings>` | all five `.csproj` files |
 
-The build emits **54 nullable warnings** (CS8600/CS8604/CS8618), largely because
+The build emits **55 nullable warnings** (CS8600/CS8604/CS8618), largely because
 `DomainResult<T>.Value` is `T?` with no flow attribute, so `result.Value` after an `IsSuccess` check
 still warns. Warnings are not treated as errors.
 
@@ -385,7 +385,7 @@ identical three-file shape; comparing `post/query/GetMyPost`, `shop/query/GetAll
 2. `<UseCase>Handler.cs` — resolve identity, build a `FilterDefinition`, call
    `CachedCursorPaginator.PaginateAsync` passing `entity` and `filterSignature` (the paginator
    resolves the cache version itself), enrich if needed.
-3. A validator only if the query takes constrained input — **40 of 81 handlers have no validator**,
+3. A validator only if the query takes constrained input — **37 of 83 handlers have no validator**,
    and they are overwhelmingly queries. `GetBestShopAround` is one of the two that does have one,
    because a latitude or longitude outside its range is a bad request rather than an empty result.
 
@@ -404,29 +404,41 @@ queued work — add a `QueueName` entry, a `*Message` record, an interface in
 
 ## Git conventions
 
-Branches present: `main` (default), `development-v1`, `update-v1`.
+Branches: `main` (default), `release-v1.0`, `fix-v1.0`.
 
-Commit subjects show an **inconsistently applied scope-prefix convention**, `<scope> summary`, where
-scope is a project name or `repo`:
+Commit subjects follow **Conventional Commits** — `type(scope): summary` — consistently across the
+whole history. The scope is optional and is a comma-separated list of project names.
+
+| Type | Used for | Share of history |
+|---|---|---|
+| `feat` | A new capability | 18 |
+| `fix` | Corrected behaviour | 5 |
+| `refactor` | Restructuring with no behaviour change | 2 |
+| `chore` | Documentation, scaffolding, deployment config | 2 |
 
 ```
-<app, infra> fix Redis list-cache invalidation gaps in comment edit and account delete cascade
-<infra> soft delete account owner's posts on account deletion and invalidate their cache
-<repo> update documentation
+feat(domain,app,infra): deliver notifications to backgrounded clients over APNs
+fix(app,api): correct SendEmailForVerify and RecoverAccount flows; add ResetPassword
+refactor: rename queue service interfaces for clarity; update cache invalidation
+chore: scaffold solution structure and domain primitives
 ```
+
+Subjects are lowercase after the colon, written in the imperative, and use `;` to join two related
+changes rather than splitting into a second commit.
 
 ## Repository hygiene
 
-There are **two** ignore files. The repository root `.gitignore` is a hand-written 4-liner —
-`.DS_Store`, `.dockerignore`, `.claude/`, `.env`. `src/.gitignore` is the full
-`dotnet new gitignore` template, which is what actually covers `[Bb]in/` and `[Oo]bj/`. No
-`.DS_Store` files are tracked, though several exist on disk.
+There are **two** ignore files:
 
-The `.dockerignore` entry in the root `.gitignore` is a **no-op**: the file was committed before the
-entry was added, so git keeps tracking it. That is the outcome we want — Railway builds from the
-repository, so an untracked `.dockerignore` would let the host's `bin/` and `obj/` into the build
-context. `.dockerignore` excludes `.git/`, `.claude/`, `doc/`, `*.md`, `.DS_Store` and the Dockerfile
-itself.
+| File | Contents |
+|---|---|
+| `.gitignore` (root) | Hand-written 4-liner: `.DS_Store`, `.dockerignore`, `.claude/`, `.env` |
+| `src/.gitignore` | The full `dotnet new gitignore` template, which is what actually covers `[Bb]in/` and `[Oo]bj/` |
 
-`src/api/api.http` still contains the project template's `GET /weatherforecast/` request, which
-matches no route in this codebase.
+The `.dockerignore` entry in the root `.gitignore` has **no effect**: the file was committed before
+the entry was added, so git keeps tracking it. That is the outcome the build needs — the build context
+is the whole repository, so an untracked `.dockerignore` would let the host's `bin/` and `obj/`
+directories into that context and can break `dotnet restore` inside the SDK image.
+
+`.dockerignore` excludes `**/bin/`, `**/obj/`, `**/.vs/`, `**/.vscode/`, `**/*.user`, `.git/`,
+`.gitignore`, `.dockerignore`, `.claude/`, `doc/`, `*.md`, `.DS_Store` and the `Dockerfile` itself.

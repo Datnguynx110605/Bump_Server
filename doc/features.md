@@ -1,10 +1,10 @@
 # Features
 
-Every capability implemented in the codebase — **all 81 use cases, each with an end-to-end flow
+Every capability implemented in the codebase — **all 83 use cases, each with an end-to-end flow
 diagram** running from the HTTP client, through the controller, the MediatR pipeline and the handler,
 out to MongoDB / Redis / RabbitMQ / R2, and back to the HTTP response.
 
-Endpoint count equals handler count: 13 controllers → 81 actions → 81 handlers (40 commands,
+Endpoint count equals handler count: 13 controllers → 83 actions → 83 handlers (42 commands,
 41 queries). All routes are prefixed `api/v1/[controller]`.
 
 ## How to read these diagrams
@@ -23,10 +23,10 @@ Each diagram then covers four stages:
    `Amount.Create` before the request is sent. A failure here short-circuits to a `ProblemDetails`
    response without ever reaching MediatR.
 3. **MediatR pipeline** — `LoggingBehavior` → `PerformanceBehavior` → `ValidationBehavior`, then the
-   handler. The validator is named where one exists: 39 of 40 commands have one (only
-   `DeleteAccount`, which takes no parameters, does not), and among queries only
-   `GetReportByTarget` and `GetBestShopAround` do — the two that take constrained input
-   rather than an id or a free-text term.
+   handler. The validator is named where one exists: **41 of 42 commands** have one (only
+   `DeleteAccount`, which takes no parameters, does not), and **5 of 41 queries** —
+   `GetAccountByKeyword`, `GetPostByKeyword`, `GetShopByKeyword`, `GetReportByTarget` and
+   `GetBestShopAround` — the ones taking constrained input rather than an id alone.
 4. **Handler → infrastructure → response** — the work itself, then
    `ResultExtensions.ToActionResult()` (200 with a body, or 204) or `ToAcceptedResult()` (202).
    Failures pass through `ResultStatusMapper`, which reads the `status` metadata attached by
@@ -1541,7 +1541,7 @@ Each item carries `Type` and `TargetId`, which together give the client its dest
 notification queries share this projection, so the SignalR push payload and the list agree on the
 fields a client needs to deep-link.
 
-### 77. Register device — `POST /Notification/device`
+### 82. Register device — `POST /Notification/device`
 
 ```mermaid
 flowchart TD
@@ -1562,7 +1562,7 @@ on every launch.
 `isSandbox` records which APNs host the token is valid against, because Xcode builds and TestFlight
 builds register against the same server.
 
-### 78. Unregister device — `DELETE /Notification/device/{token}`
+### 83. Unregister device — `DELETE /Notification/device/{token}`
 
 ```mermaid
 flowchart TD
@@ -1596,10 +1596,6 @@ flowchart TD
     G --> H["200 DashboardStatsDto"]
 ```
 Uncached; three counts run on every call.
-
----
-
-## Cross-cutting observations
 
 ---
 

@@ -1,20 +1,25 @@
 # Infrastructure
 
-Every external service the system integrates with, how it is configured, and how the application is
-packaged. Runtime data flow is in [`system-design.md`](./system-design.md).
+Every external service the system integrates with, how it is configured, how the application is
+packaged, and how it is deployed and observed. Runtime data flow is in
+[`system-design.md`](./system-design.md).
 
-## Configuration mechanism
+## Configuration
 
 All configuration is read through `IConfiguration` with colon-separated keys
-(`configuration["MongoDB:ConnectionString"]`). The repository holds a **gitignored `.env` at the root**
-(`.gitignore:4`) using ASP.NET's double-underscore nesting, where `A__B` maps to `A:B`.
+(`configuration["MongoDB:ConnectionString"]`). The default ASP.NET provider chain reads **process
+environment variables**, where ASP.NET's double-underscore nesting maps `A__B` to `A:B`.
 
-Configuration is loaded by the default ASP.NET provider chain, which reads process environment
-variables. Nothing in the repository parses `.env` — locally it is sourced by the shell or the IDE
-run configuration; in production the same 16 names are set as **Railway service variables**, which
-the platform injects into the container environment directly.
+A gitignored `.env` at the repository root holds these for local work. Nothing in the repository
+parses it — locally the shell or the IDE run configuration sources it; in production the platform
+supplies the same names as service variables. `api.csproj` also declares a `UserSecretsId`, so local
+values may come from .NET user secrets instead.
 
-### Variables (names only — values are secrets and are not reproduced here)
+Committed settings files carry **no secrets**: `appsettings.json` holds Serilog minimum levels and
+`AllowedHosts: "*"`; `appsettings.Development.json` only lowers the log level to `Debug`. The console
+sink itself is configured in `Program.cs` (see *Logging and monitoring*).
+
+### Required variables — 20
 
 | Variable | Configuration key | Consumed by |
 |---|---|---|
@@ -28,194 +33,205 @@ the platform injects into the container environment directly.
 | `R2__BucketName` | `R2:BucketName` | `R2Service` |
 | `R2__FolderName` | `R2:FolderName` | Object key prefix |
 | `R2__PublicUrl` | `R2:PublicUrl` | Public URL returned after upload |
-| `Jwt__SecretKey` | `Jwt:SecretKey` | HS256 signing key, `JwtService` + `TokenValidationParameters` |
+| `Jwt__SecretKey` | `Jwt:SecretKey` | HS256 signing key — `JwtService` and `TokenValidationParameters` |
 | `Jwt__Issuer` | `Jwt:Issuer` | Token issuance and validation |
 | `Jwt__Audience` | `Jwt:Audience` | Token issuance and validation |
 | `Jwt__ExpiryMinutes` | `Jwt:ExpiryMinutes` | Access token lifetime |
 | `Email__ApiKey` | `Email:ApiKey` | Resend bearer token |
 | `Email__Address` | `Email:Address` | Resend `from` address |
-| `Apns__TeamId` | `Apns:TeamId` | `ApnsTokenProvider`, the provider JWT's `iss` claim |
-| `Apns__KeyId` | `Apns:KeyId` | `ApnsTokenProvider`, the provider JWT's `kid` header |
-| `Apns__PrivateKey` | `Apns:PrivateKey` | `ApnsTokenProvider`; base64 of the whole `.p8` file, so the multi-line PEM survives as a single-line variable |
-| `Apns__BundleId` | `Apns:BundleId` | `ApnsService`, the `apns-topic` header; must equal the app's `PRODUCT_BUNDLE_IDENTIFIER` |
+| `Apns__TeamId` | `Apns:TeamId` | `ApnsTokenProvider` — the provider JWT's `iss` claim |
+| `Apns__KeyId` | `Apns:KeyId` | `ApnsTokenProvider` — the provider JWT's `kid` header |
+| `Apns__PrivateKey` | `Apns:PrivateKey` | `ApnsTokenProvider` — base64 of the whole `.p8` file, so the multi-line PEM survives as a single-line variable |
+| `Apns__BundleId` | `Apns:BundleId` | `ApnsService` — the `apns-topic` header; must equal the iOS app's `PRODUCT_BUNDLE_IDENTIFIER` |
 
-Committed settings files carry **no secrets** — `appsettings.json` holds only Serilog minimum levels
-and `AllowedHosts: "*"`; `appsettings.Development.json` only lowers the log level to `Debug`. The
-console sink itself is configured in `Program.cs` rather than in configuration (see *Logging and
-monitoring*).
-`api.csproj` declares a `UserSecretsId`, so local values may also come from .NET user secrets.
+### Optional variables — 5
 
-The four `Apns__*` variables are read in `AddInfra` at startup rather than on first use, so a
-missing one fails the deploy. Push failures are swallowed by design in `NotificationService`, which
-would otherwise make a misconfigured APNs indistinguishable from a working one. There is no
-`Apns__UseSandbox`: the host is chosen per token from `DeviceToken.Environment`, because one
-deployment serves Xcode builds and TestFlight builds at the same time.
+| Variable | Effect when set | Effect when unset |
+|---|---|---|
+| `Admin__Email` + `Admin__Password` | `AdminSeeder` creates the account, or promotes an existing one to `Role.Admin` | Seeding is skipped and logged at `Information` |
+| `Admin__Name` | Display name for a newly seeded administrator | Defaults to `admin` |
+| `ForwardedHeaders__KnownProxies__0` | Pins `X-Forwarded-*` trust to a specific proxy IP | Trust is open to whatever can reach the container |
+| `ForwardedHeaders__KnownNetworks__0` | Pins trust to a CIDR range | Same |
 
-Two configuration keys are read but **absent from `.env`**:
-`ForwardedHeaders:KnownProxies` and `ForwardedHeaders:KnownNetworks` (string arrays,
-`api/DependencyInjection.cs`). `ConfigureForwardedHeaders` clears the framework's loopback-only
-defaults before applying them, so with both unset the middleware honours `X-Forwarded-For` and
-`X-Forwarded-Proto` from whatever fronts the container. That is the required behaviour behind a
-platform edge proxy such as Railway's, whose address is not fixed and so cannot be pinned; without
-it the original scheme is lost and IP-partitioned rate limits see the proxy's address rather than
-the caller's. Setting either key narrows trust back to exactly those addresses.
+### Two behaviours to know before a deploy
 
-Most values are dereferenced with the null-forgiving `!` operator, so a missing variable throws at
-composition rather than reporting which key is absent. The four `Jwt:*` keys are the exception:
-`AddApi` calls `RequireJwtConfiguration` before anything else and throws an
-`InvalidOperationException` naming the missing key. That check exists because `Jwt:ExpiryMinutes`
-is read with `GetValue<int>`, which silently yields `0` when unset — every access token would then
-be minted already expired, and the only symptom is that nothing authenticates.
+**Fail-fast on JWT and APNs, fail-obscurely on everything else.** Most values are dereferenced with
+the null-forgiving `!` operator, so a missing variable throws at composition without naming the key.
+Two groups are exceptions:
 
-The local `.env` wraps every value in double quotes. Railway service variables must be entered
-**unquoted**: a literal `"10"` reaching `Jwt:ExpiryMinutes` fails `GetValue<int>` conversion, and a
-quoted connection string is passed to the driver with the quotes included.
+- `AddApi` calls `RequireJwtConfiguration` before anything else and throws an
+  `InvalidOperationException` naming the missing key. That check exists because `Jwt:ExpiryMinutes` is
+  read with `GetValue<int>`, which silently yields `0` when unset — every access token would then be
+  minted already expired, and the only symptom is that nothing authenticates.
+- The four `Apns__*` keys are read eagerly in `AddInfra`, because a push failure is swallowed by
+  design and a misconfigured key would otherwise be indistinguishable from a working one.
+
+**Values must be supplied unquoted.** The local `.env` wraps values in double quotes as a file
+convention. Whatever supplies them as container environment variables must not: a literal `"10"`
+reaching `Jwt:ExpiryMinutes` fails `GetValue<int>` conversion, and a quoted connection string is
+passed to the driver with the quotes included.
+
+### Forwarded-headers trust
+
+`ConfigureForwardedHeaders` ([src/api/DependencyInjection.cs](../src/api/DependencyInjection.cs))
+clears the framework's loopback-only defaults before applying `ForwardedHeaders:KnownProxies` and
+`KnownNetworks`. With both unset the middleware honours `X-Forwarded-For` and `X-Forwarded-Proto` from
+whatever fronts the container.
+
+That is necessary when the edge proxy's address is not fixed: without it the original scheme is lost —
+leaving `UseHttpsRedirection` to act on a plain-HTTP request — and every IP-partitioned rate limit
+sees the proxy's address instead of the caller's. It also means those headers are trusted from
+anything able to reach the container, which holds only while the container publishes no port of its
+own. When the proxy address or its subnet is fixed and known, setting either key narrows trust back to
+exactly that.
+
+`app.UseHttpsRedirection()` runs after `UseForwardedHeaders`, so `X-Forwarded-Proto: https` makes the
+request scheme `https` and the redirect is a no-op behind a TLS-terminating edge; it still protects a
+deployment that receives plain HTTP directly.
 
 ## Integrated services
 
-### MongoDB — primary datastore
+### MongoDB — system of record
 
 Registered as an `IMongoClient` singleton; `DbContext` resolves the database by name and exposes
-`GetCollection<T>`. Seven collections (`src/app/common/CollectionName.cs`): `account`, `post`,
-`comment`, `report`, `shop`, `refreshtoken`, `notification`.
+`GetCollection<T>`. Eight collections
+([src/app/common/CollectionName.cs](../src/app/common/CollectionName.cs)): `account`, `post`,
+`comment`, `report`, `shop`, `refreshtoken`, `devicetoken`, `notification`.
 
-Indexes are declared in `src/infra/persistence/configuration/IndexConfiguration.cs` and created by
-`IndexInitializer`, a `BackgroundService` so builds never block startup:
+#### Indexes
 
-- **account** — unique `Email` partial on `IsDeleted: false`; `(Name, IsDeleted, CreatedAt desc, Id desc)`; `(IsDeleted, CreatedAt desc, Id desc)`; multikey `Followers.AccountId`, `Followings.AccountId`, `SavePosts.PostId`, `SaveShops.ShopId`; `DeletedAt` partial on `IsDeleted: true`
-- **post** — by `AccountId`, by `ShopId`, by `IsDeleted`, by `CaptionNormalized`; multikey `Reactions.AccountId` backing both `ReactionMembership` and the affinity ranking in `GetRelatedPost`; `DeletedAt` partial on `IsDeleted: true`
-- **comment** — `(PostId, IsDeleted, CreatedAt desc, Id desc)`; `(AccountId, IsDeleted, CreatedAt desc, Id desc)`; `(IsDeleted, CreatedAt desc, Id desc)` backing the unfiltered administrator listing; multikey `Reactions.AccountId`; `DeletedAt` partial on `IsDeleted: true`
-- **shop** — unique `(Name, Address)` partial on `IsDeleted: false`; by `Name`, `Address`, `NameNormalized`, `AddressNormalized`, `IsDeleted`; **2dsphere on `Location`** backing `GetBestShopAround`; `DeletedAt` partial on `IsDeleted: true`
-- **report** — by `IsDeleted`, `PostId`, `CommentId`, `AccountId`, `ReporterId`
-- **notification** — `(ToAccountId, IsDeleted, CreatedAt desc, Id desc)`, backing both the recipient's listing and the per-account delete in `AccountService`
-- **refreshtoken** — unique `Token`; **TTL index on `ExpiryDate` with `ExpireAfter = TimeSpan.Zero`**; by `IsDeleted`; `IsRevoked` partial on `IsRevoked: true`
+**42 index models** are declared in
+[src/infra/persistence/configuration/IndexConfiguration.cs](../src/infra/persistence/configuration/IndexConfiguration.cs)
+and created by `IndexInitializer`, a `BackgroundService` so builds never block startup.
 
-The four `DeletedAt` indexes and the `IsRevoked` index exist only to back the retention sweep; the
+| Collection | Indexes |
+|---|---|
+| `account` | Unique `Email` partial on `IsDeleted: false`; `(Name, IsDeleted, CreatedAt desc, Id desc)`; `(IsDeleted, CreatedAt desc, Id desc)`; multikey `Followers.AccountId`, `Followings.AccountId`, `SavePosts.PostId`, `SaveShops.ShopId`; `DeletedAt` partial on `IsDeleted: true` |
+| `post` | By `AccountId`, `ShopId`, `IsDeleted`, `CaptionNormalized`; multikey `Reactions.AccountId` backing both `ReactionMembership` and the affinity ranking in `GetRelatedPost`; `DeletedAt` partial on `IsDeleted: true` |
+| `comment` | `(PostId, IsDeleted, CreatedAt desc, Id desc)`; `(AccountId, IsDeleted, CreatedAt desc, Id desc)`; `(IsDeleted, CreatedAt desc, Id desc)` backing the unfiltered administrator listing; multikey `Reactions.AccountId`; `DeletedAt` partial on `IsDeleted: true` |
+| `shop` | Unique `(Name, Address)` partial on `IsDeleted: false`; by `Name`, `Address`, `NameNormalized`, `AddressNormalized`, `IsDeleted`; **2dsphere on `Location`** backing `GetBestShopAround`; `DeletedAt` partial on `IsDeleted: true` |
+| `report` | By `IsDeleted`, `PostId`, `CommentId`, `AccountId`, `ReporterId` |
+| `notification` | `(ToAccountId, IsDeleted, CreatedAt desc, Id desc)`, backing both the recipient's listing and the per-account delete in `AccountService` |
+| `refreshtoken` | Unique `Token`; **TTL on `ExpiryDate` with `ExpireAfter = TimeSpan.Zero`**; by `IsDeleted`; `IsRevoked` partial on `IsRevoked: true` |
+| `devicetoken` | Unique `Token`, the key `RegisterDeviceHandler` upserts on; `(AccountId, IsDeleted)` backing the per-account lookup `ApnsService` runs once per notification |
+
+The four `DeletedAt` indexes and the `IsRevoked` index exist only to back the retention sweep; their
 partial filters keep them holding soft-deleted rows rather than whole collections.
 
 A 2dsphere index is sparse over its geo field, and `BsonConfiguration` sets `IgnoreIfNull` on
-`Shop.Location` so a shop posted without a place pick omits the field entirely rather than writing
+`Shop.Location`, so a shop posted without a place pick omits the field entirely rather than writing
 `null`. Both together are what let `GetBestShopAround` skip coordinate-less shops instead of failing
 to extract a geo key from them.
 
-`NormalizedFieldBackfillInitializer` is a second `BackgroundService` that fills
-`Shop.NameNormalized`/`AddressNormalized` and `Post.CaptionNormalized` for documents missing them,
-scanning with a cursor and applying `BulkWriteAsync` per batch.
+`NormalizedFieldBackfillInitializer` is a second `BackgroundService` that fills `Shop.NameNormalized`
+/ `AddressNormalized` and `Post.CaptionNormalized` for documents missing them, scanning with a cursor
+and applying `BulkWriteAsync` per batch.
 
 #### Retention — `SoftDeletePurgeHost`
 
-Soft deletes are not permanent: `BaseEntity.Delete` sets `IsDeleted`/`DeletedAt` and `Recover`
-clears them again. `SoftDeletePurgeHost` is the `BackgroundService` that makes them permanent once
-the window has passed — **accounts, posts, comments and shops whose `DeletedAt` is more than 30 days
-old are hard-deleted**, and revoked refresh tokens are dropped on sight (the `ExpiryDate` TTL index
-would reach them within 7 days anyway).
+Soft deletes are not permanent: `BaseEntity.Delete` sets `IsDeleted` / `DeletedAt` and `Recover`
+clears them. `SoftDeletePurgeHost` makes them permanent once the window has passed. There is no
+scheduler dependency.
 
-There is no scheduler dependency. The first sweep is held back 10 minutes so a deploy never pays
-for it during startup, and `PeriodicTimer` runs it every 6 hours after that; a delay short enough
-to survive frequent Railway restarts, which a once-a-day timer would not. Each collection is
-purged in batches of 500 ids with a 200 ms pause between batches, so a large backlog never lands as
-one long write burst. A sweep resolves its own DI scope, and failures are logged without stopping
-the loop.
+| Setting | Value | Why |
+|---|---|---|
+| `Retention` | 30 days after `DeletedAt` | Also the window `Recover()` has to run in |
+| `StartupDelay` | 10 minutes | So a deploy never pays for a sweep during startup |
+| `SweepInterval` | 6 hours, on a `PeriodicTimer` | Short enough to survive frequent redeploys, which a once-a-day timer would not |
+| `BatchSize` | 500 ids per delete | |
+| `BatchDelay` | 200 ms between batches | So a large backlog never lands as one long write burst |
 
-R2 objects are removed at soft-delete time. Post and comment images are never deleted inside the
-request: `PostService` owns post images and `CommentService.ProcessAfterDeleteAsync` owns
-comment images, and
-every path — the two self-service handlers, the two administrator handlers, the account cascade and
-`PostService` itself for the comments it takes down — reaches them by publishing to
-`delete-post` and `delete-comment`. **Avatars are the exception and are still deleted
-inline**, by `RemoveAvatarHandler` in the request and by `AccountService` in the cascade; both
-are bounded by one account's avatar count, so neither was moved. Either way the sweep itself is pure
-Mongo work.
+Accounts, posts, comments, shops and device tokens are hard-deleted once past retention; revoked
+refresh tokens are dropped on sight, since the `ExpiryDate` TTL index would reach them within 7 days
+anyway. A sweep resolves its own DI scope, and failures are logged without stopping the loop.
 
-Cascade soft-deletes go through the driver rather than `BaseEntity.Delete`, so each one has to
-stamp `DeletedAt` itself or the row would never expire. Rows written before that was true have
+Cascade soft-deletes go through the driver rather than `BaseEntity.Delete`, so each one stamps
+`DeletedAt` itself or the row would never expire. Rows written before that was true carry
 `IsDeleted: true` with no `DeletedAt`; every sweep stamps those first, which starts their 30-day
 window at the sweep that finds them rather than purging them immediately.
 
-Notifications addressed to a deleted account are **hard-deleted immediately** by
-`AccountService`, not left for the sweep: once the account is soft-deleted nothing can read
-its notifications again, and the collection has no retention of its own. That delete is permanent
-even if the account is later recovered. Notifications where the deleted account is the *actor*
-survive in other people's inboxes, carrying an `ActorAccountId` that eventually resolves to nothing.
+R2 objects are removed at soft-delete time, so the sweep itself is pure Mongo work. Post and comment
+images are never deleted inside the request: `PostService` owns post images and
+`CommentService.ProcessAfterDeleteAsync` owns comment images, and every path — the two self-service
+handlers, the two administrator handlers, the account cascade, and `PostService` itself for the
+comments it takes down — reaches them by publishing to `delete-post` and `delete-comment`. **Avatars
+are the exception and are deleted inline**, by `RemoveAvatarHandler` in the request and by
+`AccountService` in the cascade; both are bounded by one account's avatar count.
 
-Reports, and notifications pointing at a purged **post or comment**, are left behind — the sweep
-does not make that worse, since they already dangle for the 30 days the row spends soft-deleted.
+Three cascade consequences are deliberate:
 
-`AccountService` publishes one `delete-post` message per post and one `delete-comment` message
-per comment instead of doing that work inline. Two reasons: comments other accounts left on the
-account's posts are not covered by the cascade's own filter and would otherwise outlive the post as
-live rows, and an account's post and comment counts are unbounded — inline, one message's cost
-scales with them, and a failure near the end replays all of it.
-
-A purged shop leaves posts holding its `ShopId` and accounts holding it in `SaveShops`; nothing
-cascades on shop deletion, so those references already dangle for the 30 days the shop spends
-soft-deleted. `report` carries the same `IsDeleted`/`DeletedAt` fields but is not swept.
+- **Notifications addressed to a deleted account are hard-deleted immediately** by `AccountService`,
+  not left for the sweep: once the account is soft-deleted nothing can read its notifications again,
+  and the collection has no retention of its own. That delete is permanent even if the account is
+  later recovered. Notifications where the deleted account is the *actor* survive in other people's
+  inboxes, carrying an `ActorAccountId` that eventually resolves to nothing.
+- **`AccountService` publishes one `delete-post` message per post and one `delete-comment` per
+  comment** rather than doing that work inline, because comments other accounts left on the account's
+  posts are not covered by the cascade's own filter and would otherwise outlive the post as live rows
+  — and because an account's post and comment counts are unbounded, so inline work would scale with
+  them and a failure near the end would replay all of it.
+- **A purged shop leaves posts holding its `ShopId` and accounts holding it in `SaveShops`.** Nothing
+  cascades on shop deletion, so those references already dangle for the 30 days the shop spends
+  soft-deleted. `report` carries the same `IsDeleted` / `DeletedAt` fields but is not swept.
 
 ### Redis — cache, ephemeral state, SignalR backplane
 
-The multiplexer is built from `ConfigurationOptions.Parse(…)` with **`AbortOnConnectFail = false`**.
+The multiplexer is built from `ConfigurationOptions.Parse(...)` with **`AbortOnConnectFail = false`**.
 The default `true` makes `Connect` throw outright when Redis is momentarily unreachable, and because
-the `Lazy<T>` would cache that exception for the process lifetime, one blip would leave every Redis
-call failing until the container was restarted. With it disabled the multiplexer returns immediately
-and reconnects in the background; individual operations fail while the connection is down, and
+the `Lazy<T>` caches that exception for the process lifetime, one blip would leave every Redis call
+failing until the container restarted. With it disabled the multiplexer returns immediately and
+reconnects in the background; individual operations fail while the connection is down, and
 `RedisHealthCheck` reports the outage through `/health`.
 
-One `IConnectionMultiplexer` serves four consumers: `RedisService` (JSON values and raw counters),
-`NotificationHub` via the SignalR backplane
-(`AddSignalR().AddStackExchangeRedis(configuration["Redis:ConnectionString"]!)`), the Data Protection
-key ring, and `RedisHealthCheck`. It is created through a `Lazy<IConnectionMultiplexer>` in
-`AddInfra` so the singleton registration and the Data Protection key repository share one connection
-without either forcing it open during composition.
+One `IConnectionMultiplexer` serves four consumers: `RedisService`, the SignalR backplane, the Data
+Protection key ring, and `RedisHealthCheck`. It is created through a `Lazy<IConnectionMultiplexer>` in
+`AddInfra` so the singleton registration and the key repository share one connection without either
+forcing it open during composition.
 
 | Key pattern | TTL | Purpose |
 |---|---|---|
 | `account:v1:id:{guid}`, `post:v1:id:{guid}`, `comment:v1:id:{guid}`, `report:v1:id:{guid}`, `shop:v1:id:{guid}`, `notification:v1:id:{guid}` | 7 days | Single-entity cache |
-| `account:v1:email:{email}` | 7 days | Admin lookup by email |
+| `account:v1:email:{email}` | 7 days | Administrator lookup by email |
 | `list:v1:{entity}:{signature}:{cursor}:{size}:v{version}` | 2 minutes | Cursor page cache. On a block-filtered read the signature carries a trailing `:hidden:{sha256(sorted blocked ids)[..16]}`, so viewers hiding different accounts never share a page |
 | `list-version:{entity}:{signature}` | 1 day, sliding | List invalidation counter. Always the **unsuffixed** signature — writers cannot compute a viewer's hidden set, so every hidden variant of a page shares one counter and retires on a single bump |
-| `affinity:v1:account:{guid}` | 1 hour | Accounts this account reacts to most, ranked; a query input for `GetRelatedPost`, not a page of results, so no version counter governs it |
+| `affinity:v1:account:{guid}` | 1 hour | Accounts this account reacts to most, ranked; a query input for `GetRelatedPost` rather than a page of results, so no version counter governs it |
 | `otp:{email}` | 10 minutes | `{Code, Attempts, ExpiresAt}`, max 3 attempts. Deleted only when the attempt cap is hit; a correct code is left to expire so a lost verify response can be retried |
 | `registration:{token}` | 10 minutes | Data-Protection-wrapped email. Read non-destructively and deleted only once the write it authorises commits |
 | `rabbitmq:idempotency:{queue}:{messageId}` | 24 hours | SHA-256 of the processed payload |
 | `bump:dataprotection-keys` | none | ASP.NET Data Protection key ring (see *Deployment topology*) |
-| `admin:v1:series:{metric}` | 24 hours | Metric history written by **Bump_Admin**, not by this server |
+| `admin:v1:series:{metric}` | 24 hours | Metric history written by the separate **Bump_Admin** panel, never by this server |
 
-The backplane is required for correctness, not scale: without it a replica can only push to hub
+The backplane is required for **correctness, not scale**: without it a replica can only push to hub
 connections it holds itself, so notifications for users connected to another replica are dropped.
 
-The `admin:v1:` prefix is written by the separate `Bump_Admin` operations panel, which reuses this
-Redis instance rather than provisioning its own to hold the metric history no provider retains for
-us — self-measured uptime and latency in particular. Nothing in this repository reads or writes those
-keys, and the distinct prefix is what keeps the two uses from ever colliding. They are sorted sets
-trimmed to a 24-hour window with an expiry, so they cannot grow without bound.
+The `admin:v1:` prefix belongs to the Bump_Admin operations panel, which reuses this Redis instance
+rather than provisioning its own to hold self-measured uptime and latency history. Nothing in this
+repository reads or writes those keys, and the distinct prefix is what keeps the two uses from
+colliding. They are sorted sets trimmed to a 24-hour window with an expiry, so they cannot grow
+without bound.
 
 ### RabbitMQ — asynchronous work
 
-The client library is `RabbitMQ.Client` 7.2.2, but **the deployed broker is
-LavinMQ** (CloudAMQP serves both; the `lmq` in the instance hostname identifies
-it). LavinMQ speaks AMQP 0-9-1, so the client is unaffected — but anything
-reading the management HTTP API is: LavinMQ reports `product_name` /
-`lavinmq_version` where RabbitMQ reports `cluster_name` / `rabbitmq_version`, and
-counts deliveries under `deliver` rather than `deliver_get`. Verified against the
-live instance: LavinMQ 2.9.1.
+One `IConnection` singleton built with `RequestedHeartbeat = 30s`, `AutomaticRecoveryEnabled = true`
+and `NetworkRecoveryInterval = 5s`. The factory blocks on
+`.CreateConnectionAsync().GetAwaiter().GetResult()`, so **the broker must be reachable at startup** —
+unlike Redis, there is no non-blocking fallback.
 
-One `IConnection` singleton built with `RequestedHeartbeat = 30s`,
-`AutomaticRecoveryEnabled = true`, `NetworkRecoveryInterval = 5s`. The factory blocks on
-`.CreateConnectionAsync().GetAwaiter().GetResult()`, so the broker must be reachable at startup.
+11 durable, non-exclusive, non-auto-delete queues, each declared alongside a `.retry` queue (which
+holds nothing, and whose fixed `x-message-ttl` expires messages back to the main queue as the retry
+delay) and a `.dlq` — **33 queues in total**. Consumers use `prefetchCount: 1` with manual ack. Each
+of the 11 `QueueConsumerHost<TMessage>` instances restarts its consume loop after a 5-second delay if
+it throws.
 
-14 durable, non-exclusive, non-auto-delete queues plus a `{queue}.dlq` for each. Consumers use
-`prefetchCount: 1` with manual ack. Each of the 10 `QueueConsumerHost<TMessage>` instances restarts
-its consume loop after a 5-second delay if it throws.
+Messages are published with `Persistent = true` onto durable queues, so a broker restart does not lose
+them. The queue table, message payloads and worker mappings are in
+[`developer-guide.md`](./developer-guide.md#32-the-11-queues); the ordering rationale is in
+[`system-design.md`](./system-design.md#43-sequential-ordering-for-inverse-operation-pairs).
 
-Queues: `follow`, `react-post`, `react-comment`, `create-comment`, `recalculate-shop-rate`,
-`save-post`, `save-shop`, `delete-account`, `delete-post`, `delete-comment`.
-
-**Each inverse pair shares one queue.** Follow and unfollow, react and unreact, save and unsave all
-publish to the same queue with an `IsUndo` flag on the message, because a queue consumed by one
-consumer at `prefetchCount: 1` is FIFO. On separate queues they were consumed concurrently, so a
-rapid follow-then-unfollow could apply backwards: the unfollow matches nothing, fails, is logged and
-acked, and the follow then lands — leaving the user following someone they just unfollowed. Ordering
-only holds on the happy path; a retry republishes to the tail of the queue, behind newer messages.
+`RabbitMQService.PublishAsync` opens a channel, re-declares the queue, publishes, then disposes the
+channel — three broker round trips per published message. Broker latency therefore adds directly to
+the latency of every endpoint that publishes, which makes co-locating the broker with the application
+a correctness-adjacent concern rather than a tuning detail.
 
 ### Cloudflare R2 — object storage
 
@@ -230,9 +246,12 @@ ResponseChecksumValidation = ResponseChecksumValidation.WHEN_REQUIRED
 
 The two checksum settings and `UseChunkEncoding = false` on `PutObjectRequest` are R2 compatibility
 requirements. Objects are keyed `{R2:FolderName}/{guid}{extension}` with an explicit `ContentType`
-resolved from the extension, defaulting to `application/octet-stream` for anything outside the
-image allowlist. `DeleteAsync` derives the key from `new Uri(url).AbsolutePath.TrimStart('/')`, which
-assumes `R2:PublicUrl` has no path segment of its own.
+resolved from the extension, defaulting to `application/octet-stream` for anything outside the image
+allowlist.
+
+`DeleteAsync` derives the key from `new Uri(url).AbsolutePath.TrimStart('/')`, which **assumes
+`R2:PublicUrl` has no path segment of its own.** A public URL such as `https://cdn.example.com/media`
+would make every derived key wrong.
 
 Stores avatars, post images and comment images. Deletions are best-effort and not transactional with
 MongoDB.
@@ -244,8 +263,23 @@ MongoDB.
 and account verification. A `text` part is derived from the HTML by stripping tags with
 `Regex.Replace(htmlBody, "<.*?>", string.Empty)`.
 
-`SendWelcomeEmailAsync` is declared on `IEmailService` and implemented, but **no caller exists** —
-dead code.
+### Apple APNs — push notifications
+
+`AddHttpClient<IApnsService, ApnsService>` with a 10-second timeout,
+`DefaultRequestVersion = HttpVersion.Version20` and `RequestVersionExact` — **APNs refuses HTTP/1.1
+and `HttpClient` downgrades silently unless told not to.** No `BaseAddress` is set: the host belongs
+to the device token, not to the client.
+
+`ApnsTokenProvider` mints the ES256 provider JWT from the base64-decoded `.p8` key, caching it for
+**45 minutes** with a **20-minute** minimum reissue interval — inside Apple's 20–60 minute window. The
+JWS signature is the IEEE P1363 `r||s` pair (exactly 64 bytes for P-256), not DER.
+
+`ApnsService` sends one `alert` push per live `DeviceToken`, with headers `apns-topic`
+(`Apns:BundleId`), `apns-push-type: alert`, `apns-priority: 10`, an `apns-expiration`, and the
+notification id as `apns-id`. The host is chosen **per token** from `DeviceToken.Environment`, because
+one deployment serves Xcode (sandbox) and TestFlight (production) builds at the same time — which is
+why there is no single `Apns__UseSandbox` switch. A token answered `410 Unregistered` or
+`400 BadDeviceToken` is soft-deleted.
 
 ### Health checks
 
@@ -258,63 +292,19 @@ singleton:
 | `redis` | `IDatabase.PingAsync()` |
 | `rabbitmq` | `IsOpen` check, then opens and disposes a channel |
 
-The endpoint is **not** excluded from the global 200-requests-per-minute rate limiter. None of the
-three checks catches exceptions itself, but `HealthCheckService` wraps every registered check, so a
-connection failure is reported as `Unhealthy` with the exception attached rather than escaping
+None of the three catches exceptions itself, but `HealthCheckService` wraps every registered check, so
+a connection failure is reported as `Unhealthy` with the exception attached rather than escaping
 unhandled.
 
-`/health` is a single aggregate endpoint covering all three checks, so any one backing service being
-down fails the whole endpoint. `railway.json` points Railway's deploy health check at it, which makes
-that coupling deliberate: a release is not promoted while Mongo, Redis or RabbitMQ is unreachable.
-There is no separate liveness endpoint that would answer without touching them.
+**The endpoint is deliberately one aggregate**, so any single backing service being down fails the
+whole endpoint: `railway.json` points the deploy health check at it, which makes that coupling the
+point — a release is not promoted while Mongo, Redis or RabbitMQ is unreachable. Two consequences
+follow:
 
-## Deployment topology
-
-```mermaid
-graph TB
-    client["Clients<br/>HTTP + WebSocket"]
-    proxy["Railway edge proxy<br/>TLS termination<br/>X-Forwarded-For / -Proto trusted"]
-
-    subgraph container["Railway service — mcr.microsoft.com/dotnet/aspnet:9.0<br/>USER $APP_UID · binds $PORT (8080 fallback)"]
-        api["api.dll<br/>controllers + SignalR hub"]
-        hosted["14 hosted services<br/>10 queue consumers<br/>IndexInitializer<br/>NormalizedFieldBackfill<br/>AdminSeeder<br/>SoftDeletePurgeHost"]
-    end
-
-    mongo[("MongoDB<br/>7 collections")]
-    redis[("Redis<br/>cache · OTP · idempotency<br/>SignalR backplane · DP keys")]
-    rabbit[["RabbitMQ<br/>11 queues + 11 retry + 11 DLQ"]]
-    r2[("Cloudflare R2<br/>S3 API")]
-    resend["Resend<br/>api.resend.com"]
-
-    client --> proxy --> api
-    api --- hosted
-    api -->|"wire protocol"| mongo
-    api -->|"RESP"| redis
-    api -->|"AMQP publish"| rabbit
-    rabbit -->|"AMQP consume"| hosted
-    hosted --> mongo
-    hosted --> redis
-    api -->|"HTTPS S3"| r2
-    api -->|"HTTPS REST"| resend
-
-    style container fill:#e3f2fd,stroke:#1565c0
-```
-
-**All four backing services are external and unmanaged by this repository** — no compose file,
-manifest or IaC provisions them; on Railway they are separate services (or external providers) whose
-connection strings arrive as service variables.
-
-The API container is **stateless**. ASP.NET Data Protection keys — which protect the registration
-token payload and therefore gate registration, recovery, password reset and email change — are
-persisted to Redis under `bump:dataprotection-keys` with a fixed application name of `Bump`
-(`AddDataProtection().SetApplicationName("Bump").PersistKeysToStackExchangeRedis(…)`). The default
-filesystem key ring would be discarded on every Railway deploy and never shared between replicas, so
-a token issued before a deploy, or by another replica, would fail to unprotect with no error the
-caller could act on.
-
-The API and all 10 queue consumers run **in the same process**; there is no separate worker
-deployment. Scaling the API therefore scales consumers too, and each replica competes for the same
-queues.
+- The health-check timeout must cover container start plus three connection attempts, including the
+  blocking RabbitMQ connect.
+- `/health` is **not** excluded from the global 200-requests-per-minute rate limiter, so an uptime
+  poller must stay well inside that budget.
 
 ## Container image
 
@@ -325,36 +315,89 @@ Restore targets `api/api.csproj` rather than the solution, which pulls exactly t
 that *is* copied (`infra` → `app` → `domain`). Restoring `Bump.sln` instead would fail with MSB3202
 for any solution member whose `.csproj` the image does not copy.
 
-Runs as `USER $APP_UID` (non-root, provided by the base image) and serves plain HTTP — TLS
-terminates upstream at the platform edge. The entrypoint binds the port Railway injects and falls
-back to the `EXPOSE`d `8080` for a plain `docker run`:
+The image runs as `USER $APP_UID` (non-root, provided by the base image) and serves plain HTTP — TLS
+terminates upstream at the platform edge.
 
 ```dockerfile
 ENTRYPOINT ["sh", "-c", "exec dotnet api.dll --urls \"http://0.0.0.0:${PORT:-8080}\""]
 ```
 
-`exec` keeps `dotnet` as PID 1 so `SIGTERM` reaches the host and the 10 queue consumers shut down
-through their `stoppingToken` rather than being killed.
-
-The application also calls `app.UseHttpsRedirection()`. Because `UseForwardedHeaders` runs first and
-now trusts the platform proxy, `X-Forwarded-Proto: https` makes the request scheme `https` and the
-redirect is a no-op; it still protects any deployment that receives plain HTTP directly.
+The entrypoint binds `$PORT` when the environment sets it and falls back to the `EXPOSE`d `8080` for a
+plain `docker run`, so no target port needs to be configured on a platform that injects `PORT`. `exec`
+keeps `dotnet` as PID 1 so `SIGTERM` reaches the host and the 11 queue consumers shut down through
+their `stoppingToken` rather than being killed.
 
 `.dockerignore` excludes `bin/`, `obj/`, `.vs/`, `.vscode/`, `*.user`, `.git/`, `.claude/`, `doc/`,
-`*.md`, `.DS_Store` and the `Dockerfile`. It is tracked by git despite being listed in the root
-`.gitignore` — the entry was added after the file was already committed, so it has no effect — and it
-must stay tracked: Railway builds from the repository, and without it the host's `bin/` and `obj/`
-directories enter the build context and can break `dotnet restore` inside the SDK image.
+`*.md`, `.DS_Store` and the `Dockerfile` itself. It is tracked by git despite appearing in the root
+`.gitignore` — the entry was added after the file was already committed — and **it must stay
+tracked**: the build context is the whole repository, and without it the host's `bin/` and `obj/`
+directories enter that context and can break `dotnet restore` inside the SDK image.
 
-## Deployment — Railway
+## Deployment topology
 
-Deployment is **Railway building this repository's `Dockerfile`**. There is no CI/CD pipeline, no
-image registry of our own and no infrastructure-as-code: pushing the tracked branch is the deploy.
+```mermaid
+graph TB
+    client["Clients<br/>HTTP + WebSocket"]
+    proxy["Platform edge proxy<br/>TLS termination<br/>X-Forwarded-For / -Proto"]
 
-`railway.json` at the repository root is the only platform configuration:
+    subgraph container["Container — mcr.microsoft.com/dotnet/aspnet:9.0<br/>USER $APP_UID · binds $PORT (8080 fallback)"]
+        api["api.dll<br/>13 controllers + SignalR hub"]
+        hosted["15 hosted services<br/>11 queue consumers<br/>IndexInitializer<br/>NormalizedFieldBackfill<br/>AdminSeeder<br/>SoftDeletePurgeHost"]
+    end
+
+    mongo[("MongoDB<br/>8 collections")]
+    redis[("Redis<br/>cache · OTP · idempotency<br/>SignalR backplane · DP keys")]
+    rabbit[["RabbitMQ<br/>11 + 11 retry + 11 dlq"]]
+    r2[("Cloudflare R2<br/>S3 API")]
+    resend["Resend<br/>api.resend.com"]
+    apns["Apple APNs"]
+
+    client --> proxy --> api
+    api --- hosted
+    api -->|"wire protocol"| mongo
+    api -->|"RESP"| redis
+    api -->|"AMQP publish"| rabbit
+    rabbit -->|"AMQP consume"| hosted
+    hosted --> mongo
+    hosted --> redis
+    hosted -->|"HTTP/2"| apns
+    api -->|"HTTPS S3"| r2
+    api -->|"HTTPS REST"| resend
+
+    style container fill:#e3f2fd,stroke:#1565c0
+```
+
+**Every backing service is external to this repository.** No compose file, manifest or IaC provisions
+any of them; each arrives as a connection string or API key in a service variable.
+
+**The API container is stateless.** ASP.NET Data Protection keys — which protect the registration
+token payload and therefore gate registration, recovery, password reset and email change — are
+persisted to Redis under `bump:dataprotection-keys` with a fixed application name of `Bump`:
+
+```csharp
+AddDataProtection()
+    .SetApplicationName("Bump")
+    .PersistKeysToStackExchangeRedis(() => redisConnection.Value.GetDatabase(), "bump:dataprotection-keys");
+```
+
+The default filesystem key ring would be discarded on every deploy and never shared between replicas,
+so a token issued before a deploy, or by another replica, would fail to unprotect with no error the
+caller could act on. **Redis persistence is therefore a hard requirement, not a cache optimisation.**
+
+**The API and all 11 queue consumers run in the same process**; there is no separate worker
+deployment. Scaling the API scales consumers too, and each replica competes for the same queues. It
+also means the process must stay resident: a platform that scales to zero would stop the consumers,
+`SoftDeletePurgeHost` and the initializers along with the HTTP surface.
+
+### Platform configuration — `railway.json`
+
+The only platform configuration file in the repository. The builder is not configured because the root
+`Dockerfile` is detected automatically; the build context is the whole repository, which is why
+`.dockerignore` must stay tracked.
 
 ```json
 {
+  "$schema": "https://railway.com/railway.schema.json",
   "deploy": {
     "healthcheckPath": "/health",
     "healthcheckTimeout": 60,
@@ -364,76 +407,65 @@ image registry of our own and no infrastructure-as-code: pushing the tracked bra
 }
 ```
 
-- **Build** — not configured, because Railway already detects the root `Dockerfile` on its own. The
-  build context is the whole repository, which is why `.dockerignore` must stay tracked.
-- **Health check** — a release is only promoted once `/health` returns healthy, so a deploy that
-  cannot reach Mongo, Redis or RabbitMQ rolls back instead of taking traffic. The 60-second timeout
-  has to cover container start plus the three connection attempts; the RabbitMQ `IConnection` is
-  built with a blocking `.GetAwaiter().GetResult()`, so a broker that is slow to accept connections
-  delays startup directly.
-- **Port** — Railway injects `PORT`; the entrypoint binds `0.0.0.0:$PORT`. No target port needs to
-  be set in the service settings.
-
 ### Deployment checklist
 
-1. Set all 16 variables from the table above as Railway service variables, **unquoted**.
-2. `Jwt__SecretKey` must be a fresh, high-entropy value — HS256 forgery is a key-strength problem,
-   and the local `.env` value is a hand-typed development string. It is not committed anywhere
-   (`git log --all -- .env` is empty), but it should not be reused in production.
-3. `Jwt__SecretKey`, `Jwt__Issuer`, `Jwt__Audience` and a `Jwt__ExpiryMinutes` greater than zero
-   are all validated at startup by `RequireJwtConfiguration`; a deploy missing any of them fails
-   fast with the key named, rather than starting and issuing tokens nothing will accept.
-4. Redis, MongoDB and RabbitMQ must be reachable before the container starts serving; all three are
-   opened at startup and `/health` gates the release on them.
+1. Set all **20 required variables** as service variables, **unquoted**. Add `Admin__Email` and
+   `Admin__Password` if an administrator should be provisioned on boot.
+2. `Jwt__SecretKey` must be a fresh, high-entropy value — HS256 forgery is a key-strength problem, and
+   a hand-typed development string must not be reused in production. All four `Jwt:*` keys are
+   validated at startup, so a deploy missing any of them fails fast with the key named.
+3. `R2__PublicUrl` must have no path segment, or `R2Service.DeleteAsync` derives the wrong key.
+4. `Apns__BundleId` must equal the iOS app's `PRODUCT_BUNDLE_IDENTIFIER`, and `Apns__PrivateKey` must
+   be the base64 of the entire `.p8` file on one line.
+5. MongoDB, Redis and RabbitMQ must all be reachable before the container serves traffic; all three
+   are opened at startup and `/health` gates the release on them.
 
 ### Verified commands
 
 ```bash
-dotnet build src/Bump.sln -c Release   # verified: 0 errors, 50 warnings
-docker build .                         # not verified — Docker is not installed in this environment
+dotnet build src/Bump.sln -c Release
 ```
+
+Last run: **0 errors, 55 warnings** — all `CS8600` / `CS8604` / `CS8618` nullable warnings. Warnings
+are not treated as errors.
 
 ## Logging and monitoring
 
-Serilog writes to **the console only**, which is exactly right for Railway: the platform captures
-everything on stdout/stderr and no file sink or log directory is involved.
+Serilog writes to **the console only** — no file sink or log directory — which suits a containerized
+deployment: everything on stdout and stderr is captured by whatever runs the container, with no
+further setup.
 
 The console sink is configured in `Program.cs` with an `ExpressionTemplate` (`Serilog.Expressions`)
-that emits one single-line JSON object per event in the shape Railway's log explorer parses — a
-`message` field, a `level` field mapped to Railway's `debug`/`info`/`warn`/`error` vocabulary, and
-every Serilog property flattened alongside them:
+emitting one single-line JSON object per event, in a shape any JSON-aware collector can parse — a
+`message` field, a `level` field in the `debug` / `info` / `warn` / `error` vocabulary, and every
+Serilog property flattened alongside them:
 
 ```json
 {"timestamp":"2026-09-05T07:08:18.90Z","level":"warn","message":"GET /api/v1/Post/search took 812 ms","Method":"GET","Path":"/api/v1/Post/search","ElapsedMilliseconds":812,"CorrelationId":"abc-123"}
 ```
 
-The template is a `const` in `Program.cs` rather than a `WriteTo` entry in `appsettings.json`
-because the **bootstrap logger needs the identical shape**: everything logged before `UseSerilog`
-takes over — including the `Log.Fatal` in the startup `catch` — is startup-phase output, which is
-exactly what gets read when a deploy crash-loops. `appsettings.json` keeps `MinimumLevel` only. This
-does not stop a second sink being added purely through configuration: `ReadFrom.Configuration` still
-runs, so a `WriteTo` entry there is appended to the console sink rather than replacing it.
+The template is a `const` in `Program.cs` rather than a `WriteTo` entry in `appsettings.json` because
+**the bootstrap logger needs the identical shape**: everything logged before `UseSerilog` takes over —
+including the `Log.Fatal` in the startup `catch` — is startup-phase output, which is exactly what gets
+read when a deploy crash-loops. `appsettings.json` keeps `MinimumLevel` only.
 
-Because the properties are flattened, they are queryable in Railway as `@CorrelationId:abc-123`,
-`@ElapsedMilliseconds:>1000`, `@RequestName:CreatePostCommand`. That turns the three log sources the
-application already produces into something searchable rather than flat text:
+Because properties are flattened rather than nested, any tool that indexes JSON fields can filter on
+them directly:
 
-| Source | Emits | Useful query |
+| Source | Emits | Filter on |
 |---|---|---|
-| `UseSerilogRequestLogging` | one summary per HTTP request with method, path, status, elapsed | `@StatusCode:>=500` |
-| `PerformanceMiddleware` / `PerformanceBehavior` | a warning above 500 ms, at the HTTP and MediatR layers | `level:warn @ElapsedMilliseconds:>2000` |
-| `CorrelationIdMiddleware` | `CorrelationId` on every event in a request scope | `@CorrelationId:<id>` to reconstruct one request |
+| `UseSerilogRequestLogging` | One summary per HTTP request: method, path, status, elapsed | `StatusCode >= 500` |
+| `PerformanceMiddleware` / `PerformanceBehavior` | A warning above 500 ms, at the HTTP and MediatR layers | `level: warn`, `ElapsedMilliseconds > 2000` |
+| `CorrelationIdMiddleware` | `CorrelationId` on every event in a request scope | `CorrelationId: <id>` to reconstruct one request |
+| `QueueConsumerHost` | A warning per message that does not apply, and an error when a consume loop restarts | `QueueName: react-post` + `level: error` to isolate one queue |
 
-`QueueConsumerHost` logs a warning per message that does not apply and an error when a consumer loop
-restarts, so `@QueueName:react-post level:error` isolates one queue's failures.
+`ReadFrom.Configuration` still runs, so a second sink can be added purely through `appsettings.json` —
+a package reference plus a `WriteTo` entry, no code change. Seq, Better Stack, Axiom, Grafana Loki and
+Datadog all publish first-party Serilog sinks.
 
-**Retention is the limit to plan around.** Railway keeps logs for 3 days (Free), 7 (Trial/Hobby),
-30 (Pro) or up to 90 (Enterprise), and drops messages above 500 lines per second per replica.
-Anything that must outlive that window, or that needs alerting rather than searching, needs a
-destination outside Railway. Because Serilog reads its sinks from `appsettings.json`
-(`ReadFrom.Configuration`), adding one is a package reference plus a `WriteTo` entry — no code
-change. Seq, Better Stack, Axiom, Grafana Loki and Datadog all have first-party Serilog sinks.
+**Retention is a limit to plan around.** Nothing in this repository persists logs beyond the process
+lifetime; the console sink relies entirely on whatever captures stdout and stderr, and that capture's
+retention window is outside this repository's control.
 
 Uptime alerting is a separate concern from log aggregation: an external checker polling `/health`
-answers *is it down*, while the logs answer *why*. Note that `/health` is not excluded from the
-global 200-requests-per-minute rate limiter, so a poller must stay well inside that budget.
+answers *is it down*, while the logs answer *why*.
