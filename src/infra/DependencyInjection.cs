@@ -1,3 +1,4 @@
+using System.Net;
 using Amazon.Runtime;
 using Amazon.S3;
 using app;
@@ -81,6 +82,20 @@ public static class DependencyInjection
             .AddCheck<RedisHealthCheck>("redis")
             .AddCheck<RabbitMQHealthCheck>("rabbitmq");
 
+        // Constructed here rather than by the container so the APNs configuration is read
+        // at startup. A push failure is swallowed by design, so a misconfigured key would
+        // otherwise be indistinguishable from a working one until someone noticed the
+        // silence.
+        services.AddSingleton(new ApnsTokenProvider(configuration));
+
+        // APNs refuses HTTP/1.1 and HttpClient downgrades silently unless told not to. No
+        // BaseAddress: the host belongs to the device token, not to the client.
+        services.AddHttpClient<IApnsService, ApnsService>(client =>
+        {
+            client.Timeout = TimeSpan.FromSeconds(10);
+            client.DefaultRequestVersion = HttpVersion.Version20;
+            client.DefaultVersionPolicy = HttpVersionPolicy.RequestVersionExact;
+        });
         services.AddScoped<IBcryptService, BCryptService>();
         services.AddScoped<ICommentService, CommentService>();
         services.AddScoped<ICurrentIdentityService, CurrentIdentityService>();

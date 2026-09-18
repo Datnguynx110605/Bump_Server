@@ -76,6 +76,8 @@ public static class BsonConfiguration
 
         BsonClassMap.RegisterClassMap<RefreshToken>(map => map.AutoMap());
 
+        BsonClassMap.RegisterClassMap<DeviceToken>(map => map.AutoMap());
+
         BsonClassMap.RegisterClassMap<Report>(map => map.AutoMap());
 
         BsonClassMap.RegisterClassMap<Shop>(map =>

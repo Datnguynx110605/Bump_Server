@@ -197,6 +197,13 @@ public sealed class AccountService : IAccountService
             Builders<Notification>.Filter.Eq(x => x.ToAccountId, account.Id),
             cancellationToken);
 
+        // Hard-deleted for the same reason the notifications above are: a deleted account's
+        // tokens are worthless, and leaving them would keep the phone receiving pushes until
+        // APNs happened to answer with a 410, which it may never do.
+        await _dbContext.GetCollection<DeviceToken>(CollectionName.DeviceToken).DeleteManyAsync(
+            Builders<DeviceToken>.Filter.Eq(x => x.AccountId, account.Id),
+            cancellationToken);
+
         var commentCountByPost = ownerComments
             .GroupBy(x => x.PostId)
             .ToList();

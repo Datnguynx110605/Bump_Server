@@ -21,6 +21,7 @@ public static class IndexConfiguration
         await CreateReportIndexAsync(database, cancellationToken);
         await CreateRefreshTokenIndexAsync(database, cancellationToken);
         await CreateNotificationIndexAsync(database, cancellationToken);
+        await CreateDeviceTokenIndexAsync(database, cancellationToken);
     }
 
     private static Task CreateAccountIndexAsync(IMongoDatabase database, CancellationToken cancellationToken)
@@ -264,6 +265,27 @@ public static class IndexConfiguration
                     .Ascending(x => x.IsDeleted)
                     .Descending(x => x.CreatedAt)
                     .Descending(x => x.Id)),
+            cancellationToken : cancellationToken);
+    }
+
+    private static Task CreateDeviceTokenIndexAsync(IMongoDatabase database, CancellationToken cancellationToken)
+    {
+        var keys = Builders<DeviceToken>.IndexKeys;
+
+        return database.GetCollection<DeviceToken>(CollectionName.DeviceToken).Indexes.CreateManyAsync(
+            new[]
+            {
+                // One row per physical device, and the key RegisterDeviceHandler upserts on.
+                // Without the uniqueness, signing a second account in on the same phone would
+                // insert a rival row and both accounts would receive each other's pushes.
+                new CreateIndexModel<DeviceToken>(
+                    keys.Ascending(x => x.Token),
+                    new CreateIndexOptions { Unique = true }),
+                // Backs the per-account lookup ApnsService runs once per notification.
+                new CreateIndexModel<DeviceToken>(
+                    keys.Ascending(x => x.AccountId)
+                        .Ascending(x => x.IsDeleted))
+            },
             cancellationToken : cancellationToken);
     }
 

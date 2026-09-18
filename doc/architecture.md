@@ -151,6 +151,9 @@ in `src/app/common/interface/queue/`, so `app` declares the contract while `infr
 (SignalR), `AccountIdUserIdProvider` (`HubConnectionContext`), and `CurrentIdentityService`
 (`IHttpContextAccessor`). The hub is defined in `infra` but routed from `api`'s `Program.cs`.
 
+`ApnsService` and `ApnsTokenProvider` sit beside them, adapting Apple's push service over HTTP/2 so
+notifications reach a client whose process is not running.
+
 **3. Persistence technology reaches into `app`.** Because there is no repository, MongoDB types appear
 throughout the application layer — including in shared helpers like `ReactionMembership` and
 `SaveMembership`, which take `IMongoCollection<T>` parameters directly.
@@ -216,8 +219,10 @@ graph LR
 ```
 
 `AddApi` → `AddApp` → `AddInfra` is the registration chain. Lifetimes: `IConnectionMultiplexer`,
-`IMongoClient`, `IAmazonS3` and `IConnection` are **singletons**; 17 services are registered
-`AddScoped` and `IEmailService` via `AddHttpClient` (also scoped); `AddInfra` contributes **14
+`IMongoClient`, `IAmazonS3`, `IConnection` and `ApnsTokenProvider` are **singletons** (the provider
+is constructed eagerly at registration so its configuration is validated at startup); 17 services
+are registered `AddScoped`, and `IEmailService` and `IApnsService` via `AddHttpClient` (also
+scoped); `AddInfra` contributes **14
 hosted services** — 10 queue consumers plus `IndexInitializer`,
 `NormalizedFieldBackfillInitializer`, `AdminSeeder` and `SoftDeletePurgeHost` — which resolve to 16
 `IHostedService` descriptors in total once the framework's own Data Protection and health-check

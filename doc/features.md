@@ -51,7 +51,7 @@ behind cache versioning, queue idempotency and retry, see [`system-design.md`](.
 | [Auth](#auth) | 4 | [Follow](#follow) | 6 |
 | [Email](#email) | 3 | [Save](#save) | 6 |
 | [Post](#post) | 10 | [Report](#report) | 4 |
-| [Comment](#comment) | 6 | [Notification](#notification) | 2 |
+| [Comment](#comment) | 6 | [Notification](#notification) | 4 |
 | [Shop](#shop) | 7 | [Dashboard](#dashboard) | 1 |
 | [Administrator additions](#administrator-additions) | 7 | [Block](#block) | 3 |
 
@@ -992,7 +992,7 @@ sequenceDiagram
         alt actor is the post author
             S-->>Q: Ok, no notification
         else
-            S->>N: PostReaction notification → SignalR push
+            S->>N: PostReaction notification → SignalR + APNs push
         end
     end
 ```
@@ -1025,7 +1025,7 @@ flowchart TD
     G --> H["Redis DEL comment cache<br/>bump comment:reaction:{id}"]
     H --> I["re-read comment → PostId, AccountId<br/>bump comment:post, comment:account"]
     I --> J{"actor is the comment author?"}
-    J -->|no| K["CommentReaction notification<br/><b>TargetId = PostId</b> → SignalR"]
+    J -->|no| K["CommentReaction notification<br/><b>TargetId = PostId</b> → SignalR + APNs"]
 ```
 The notification's `TargetId` is the post, so clients deep-link to the post rather than the comment.
 
@@ -1100,7 +1100,7 @@ sequenceDiagram
         S->>S: log warning — half-applied, now repaired
     end
     S->>R: DEL both account caches ·<br/>bump account:following:{follower},<br/>account:follower:{following}
-    S->>N: Follow notification → SignalR push
+    S->>N: Follow notification → SignalR + APNs push
 ```
 `MatchedCount == 1` means the other side was already correct, so the write repaired a previously
 half-applied follow and is treated as success.
@@ -1540,6 +1540,44 @@ Each item carries `Type` and `TargetId`, which together give the client its dest
 `Follow` → the actor's account, `PostReaction`/`Comment`/`CommentReaction` → the post. Both
 notification queries share this projection, so the SignalR push payload and the list agree on the
 fields a client needs to deep-link.
+
+### 77. Register device — `POST /Notification/device`
+
+```mermaid
+flowchart TD
+    A["Client<br/>POST /api/v1/Notification/device<br/>{ token, isSandbox }"] --> B["NotificationController.RegisterDevice"]
+    B --> C["RegisterDeviceValidator<br/>64-200 hex characters"] -->|fail| C1["400"]
+    C --> D["MediatR → RegisterDeviceHandler → identity"] -->|null| D1["401"]
+    D --> E["DeviceToken.Create — mints Id and CreatedAt"]
+    E --> F["Mongo <b>upsert</b> matched on Token<br/>set AccountId, Environment, IsDeleted = false"]
+    F --> G["204 No Content"]
+```
+The token is validated because it is interpolated into the APNs request path. The write is an
+**upsert matched on the token, not an insert**: iOS hands the same device token to whoever signs in
+on that phone, so an insert would collide with the unique index and leave the new owner's pushes
+going to the previous one. Clearing `IsDeleted` revives a row the APNs pruning retired, which is
+what a reinstall on the same device looks like. Repeat calls are no-ops, and the client re-registers
+on every launch.
+
+`isSandbox` records which APNs host the token is valid against, because Xcode builds and TestFlight
+builds register against the same server.
+
+### 78. Unregister device — `DELETE /Notification/device/{token}`
+
+```mermaid
+flowchart TD
+    A["Client<br/>DELETE /api/v1/Notification/device/{token}"] --> B["NotificationController.UnregisterDevice"]
+    B --> C["MediatR → UnregisterDeviceHandler → identity"] -->|null| C1["401"]
+    C --> D["Mongo updateOne<br/>Token AND <b>AccountId = me</b> AND !IsDeleted<br/>set IsDeleted, DeletedAt"]
+    D --> E["204 No Content"]
+```
+Matched on the account as well as the token, or any signed-in account could retire another
+account's device. A miss still answers 204: the caller wanted this device to stop receiving pushes,
+and it already does.
+
+The client calls this **before** clearing its access token on sign-out, or the request arrives
+unauthenticated and the row survives. Device tokens are also retired by `ChangePassword`,
+`ResetPassword`, the account-delete cascade, and by `ApnsService` when APNs reports the token dead.
 
 ---
 

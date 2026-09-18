@@ -12,16 +12,19 @@ public sealed class NotificationService : INotificationService
     private readonly IMongoDbContext _dbContext;
     private readonly IHubContext<NotificationHub> _hubContext;
     private readonly IRedisService _redisService;
+    private readonly IApnsService _apnsService;
     private readonly ILogger<NotificationService> _logger;
     public NotificationService(
         IMongoDbContext dbContext,
         IHubContext<NotificationHub> hubContext,
         IRedisService redisService,
+        IApnsService apnsService,
         ILogger<NotificationService> logger)
     {
         _dbContext = dbContext;
         _hubContext = hubContext;
         _redisService = redisService;
+        _apnsService = apnsService;
         _logger = logger;
     }
 
@@ -97,6 +100,30 @@ public sealed class NotificationService : INotificationService
             _logger.LogWarning(
                 ex,
                 "Realtime push failed for notification {NotificationId} to {ToAccountId}",
+                notification.Id,
+                toAccountId);
+        }
+
+        // The hub only reaches an app that is running and on screen: iOS drops the socket
+        // seconds after backgrounding and kills the process on force-quit. APNs is the only
+        // thing that can wake a client from those states, so it runs unconditionally rather
+        // than as a fallback. Same fail-quiet policy, for the same reason as above.
+        try
+        {
+            await _apnsService.SendAsync(
+                toAccountId,
+                notification.Title,
+                notification.Content,
+                type,
+                targetId,
+                notification.Id,
+                cancellationToken);
+        }
+        catch(Exception ex)
+        {
+            _logger.LogWarning(
+                ex,
+                "APNs push failed for notification {NotificationId} to {ToAccountId}",
                 notification.Id,
                 toAccountId);
         }

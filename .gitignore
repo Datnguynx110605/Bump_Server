@@ -2,3 +2,4 @@
 .dockerignore
 .claude/
 .env
+*.p8

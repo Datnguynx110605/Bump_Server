@@ -67,6 +67,7 @@ internal sealed class SoftDeletePurgeHost : BackgroundService
         var commentCollection = dbContext.GetCollection<Comment>(CollectionName.Comment);
         var shopCollection = dbContext.GetCollection<Shop>(CollectionName.Shop);
         var refreshTokenCollection = dbContext.GetCollection<RefreshToken>(CollectionName.RefreshToken);
+        var deviceTokenCollection = dbContext.GetCollection<DeviceToken>(CollectionName.DeviceToken);
 
         // Rows soft-deleted by a cascade before DeletedAt was stamped there have no clock
         // to expire on. Give them one: they start their retention window at the first sweep
@@ -90,14 +91,20 @@ internal sealed class SoftDeletePurgeHost : BackgroundService
             Builders<RefreshToken>.Filter.Eq(x => x.IsRevoked, true),
             cancellationToken);
 
-        if(accounts + posts + comments + shops + refreshTokens > 0)
+        var deviceTokens = await PurgeAsync(
+            deviceTokenCollection,
+            ExpiredFilter<DeviceToken>(cutoff),
+            cancellationToken);
+
+        if(accounts + posts + comments + shops + refreshTokens + deviceTokens > 0)
             _logger.LogInformation(
-                "Soft-delete purge removed {Accounts} accounts, {Posts} posts, {Comments} comments, {Shops} shops, {RefreshTokens} refresh tokens",
+                "Soft-delete purge removed {Accounts} accounts, {Posts} posts, {Comments} comments, {Shops} shops, {RefreshTokens} refresh tokens, {DeviceTokens} device tokens",
                 accounts,
                 posts,
                 comments,
                 shops,
-                refreshTokens);
+                refreshTokens,
+                deviceTokens);
     }
 
     private static FilterDefinition<T> ExpiredFilter<T>(DateTime cutoff) where T : BaseEntity

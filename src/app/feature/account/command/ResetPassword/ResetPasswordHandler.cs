@@ -85,6 +85,20 @@ internal sealed class ResetPasswordHandler
             Builders<RefreshToken>.Update.Set(x => x.IsRevoked, true),
             cancellationToken : cancellationToken);
 
+        // A credential reset means some device is no longer trusted, and a device that can
+        // no longer authenticate should not keep receiving notification text on its lock
+        // screen. The legitimate device re-registers on its next launch.
+        var deviceTokenCollection = _dbContext.GetCollection<DeviceToken>(CollectionName.DeviceToken);
+
+        await deviceTokenCollection.UpdateManyAsync(
+            Builders<DeviceToken>.Filter.And(
+                Builders<DeviceToken>.Filter.Eq(x => x.AccountId, account.Id),
+                Builders<DeviceToken>.Filter.Eq(x => x.IsDeleted, false)),
+            Builders<DeviceToken>.Update
+                .Set(x => x.IsDeleted, true)
+                .Set(x => x.DeletedAt, DateTime.UtcNow),
+            cancellationToken : cancellationToken);
+
         await _registrationService.ConsumeTokenAsync(
             request.registrationToken,
             cancellationToken);

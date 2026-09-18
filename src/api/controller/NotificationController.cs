@@ -26,6 +26,29 @@ public sealed class NotificationController : ControllerBase
         return result.ToActionResult();
     }
 
+    [HttpPost("device")]
+    public async Task<ActionResult> RegisterDevice(
+        [FromBody] RegisterDeviceRequest request,
+        CancellationToken cancellationToken)
+    {
+        var result = await _sender.Send(
+            new RegisterDeviceCommand(request.Token, request.IsSandbox),
+            cancellationToken);
+
+        return result.ToActionResult();
+    }
+
+    // The token travels in the path rather than a body because a DELETE with a body is
+    // awkward for most HTTP clients, and the token is a plain hex string.
+    [HttpDelete("device/{token}")]
+    public async Task<ActionResult> UnregisterDevice(
+        string token,
+        CancellationToken cancellationToken)
+    {
+        var result = await _sender.Send(new UnregisterDeviceCommand(token), cancellationToken);
+        return result.ToActionResult();
+    }
+
     [HttpGet("mine")]
     public async Task<ActionResult<CursorPageResult<NotificationSummaryDto>>> GetMyNotification(
         [FromQuery] string? cursor,

@@ -34,12 +34,22 @@ the platform injects into the container environment directly.
 | `Jwt__ExpiryMinutes` | `Jwt:ExpiryMinutes` | Access token lifetime |
 | `Email__ApiKey` | `Email:ApiKey` | Resend bearer token |
 | `Email__Address` | `Email:Address` | Resend `from` address |
+| `Apns__TeamId` | `Apns:TeamId` | `ApnsTokenProvider`, the provider JWT's `iss` claim |
+| `Apns__KeyId` | `Apns:KeyId` | `ApnsTokenProvider`, the provider JWT's `kid` header |
+| `Apns__PrivateKey` | `Apns:PrivateKey` | `ApnsTokenProvider`; base64 of the whole `.p8` file, so the multi-line PEM survives as a single-line variable |
+| `Apns__BundleId` | `Apns:BundleId` | `ApnsService`, the `apns-topic` header; must equal the app's `PRODUCT_BUNDLE_IDENTIFIER` |
 
 Committed settings files carry **no secrets** — `appsettings.json` holds only Serilog minimum levels
 and `AllowedHosts: "*"`; `appsettings.Development.json` only lowers the log level to `Debug`. The
 console sink itself is configured in `Program.cs` rather than in configuration (see *Logging and
 monitoring*).
 `api.csproj` declares a `UserSecretsId`, so local values may also come from .NET user secrets.
+
+The four `Apns__*` variables are read in `AddInfra` at startup rather than on first use, so a
+missing one fails the deploy. Push failures are swallowed by design in `NotificationService`, which
+would otherwise make a misconfigured APNs indistinguishable from a working one. There is no
+`Apns__UseSandbox`: the host is chosen per token from `DeviceToken.Environment`, because one
+deployment serves Xcode builds and TestFlight builds at the same time.
 
 Two configuration keys are read but **absent from `.env`**:
 `ForwardedHeaders:KnownProxies` and `ForwardedHeaders:KnownNetworks` (string arrays,

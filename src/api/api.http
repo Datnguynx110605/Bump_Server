@@ -4,3 +4,22 @@ GET {{api_HostAddress}}/weatherforecast/
 Accept: application/json
 
 ###
+
+@accessToken = paste-a-bearer-token-here
+@deviceToken = paste-the-hex-token-the-app-logs-here
+
+POST {{api_HostAddress}}/api/v1/Notification/device
+Authorization: Bearer {{accessToken}}
+Content-Type: application/json
+
+{
+  "token": "{{deviceToken}}",
+  "isSandbox": true
+}
+
+###
+
+DELETE {{api_HostAddress}}/api/v1/Notification/device/{{deviceToken}}
+Authorization: Bearer {{accessToken}}
+
+###

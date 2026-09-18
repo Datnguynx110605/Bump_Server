@@ -27,8 +27,8 @@ Bump_Server/
     ├── domain/                     [0]  no project or package dependencies at all
     │   ├── common/                 [2]  DomainResult / DomainResult<T>; TextNormalizer (diacritic folding)
     │   └── core/
-    │       ├── entity/             [16] aggregates + embedded types; private ctor, static Create factory
-    │       ├── enum/               [2]  Role, NotificationType
+    │       ├── entity/             [17] aggregates + embedded types; private ctor, static Create factory
+    │       ├── enum/               [3]  Role, NotificationType, ApnsEnvironment
     │       └── valueobject/        [3]  Amount, Email, Name — validated wrappers over a primitive
     │
     ├── app/                        [1]  DependencyInjection.cs — AddApp: MediatR, AutoMapper, validators
@@ -39,7 +39,7 @@ Bump_Server/
     │   │   ├── interface/               contracts implemented in infra — the inversion boundary
     │   │   │   ├── persistence/    [1]  IMongoDbContext
     │   │   │   ├── queue/          [9]  one per queue worker (IFollowService, IReactPostService, …)
-    │   │   │   └── service/        [10] adapters (IRedisService, IR2Service, IJwtService, …)
+    │   │   │   └── service/        [11] adapters (IRedisService, IR2Service, IJwtService, IApnsService, …)
     │   │   ├── mapping/            [13] one AutoMapper Profile per aggregate
     │   │   ├── membership/         [5]  per-viewer flags and filters: ReactionMembership,
     │   │   │                        SaveMembership, PostFeedEnricher, BlockedAccountSet,
@@ -111,6 +111,9 @@ Bump_Server/
     │       │       ├── GetMyFollower/          GetMyFollower{Query, Handler}
     │       │       └── GetMyFollowing/         GetMyFollowing{Query, Handler}
     │       ├── notification/       [1]  NotificationProjection.cs — area-shared
+    │       │   ├── command/
+    │       │   │   ├── RegisterDevice/      RegisterDevice{Command, Handler, Validator}
+    │       │   │   └── UnregisterDevice/    UnregisterDevice{Command, Handler, Validator}
     │       │   └── query/
     │       │       ├── GetMyNotification/       GetMyNotification{Query, Handler}
     │       │       └── GetSpecificNotification/ GetSpecificNotification{Query, Handler}
@@ -183,7 +186,7 @@ Bump_Server/
     │   │   ├── save/               [1]  SaveService — save/unsave post and shop
     │   │   └── shop/               [1]  ShopRateService — rate recalculation
     │   ├── serialization/          [4]  value-object JSON converters + DomainJsonOptions
-    │   └── service/                [10] adapters: Redis, RabbitMQ, R2, email, JWT, BCrypt, OTP, identity…
+    │   └── service/                [12] adapters: Redis, RabbitMQ, R2, email, JWT, BCrypt, OTP, identity, APNs…
     │
     └── api/                        [2]  Program.cs (pipeline order), DependencyInjection.cs (AddApi)
         ├── Properties/             [0]  launchSettings.json only

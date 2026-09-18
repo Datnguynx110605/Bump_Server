@@ -45,12 +45,14 @@ wrappers, `CacheKey`, `ListCache`, `AppError`, `PostFeedEnricher`, `ReactionMemb
 | `EmailService` | `POST https://api.resend.com/emails`, 10 s `HttpClient` timeout. |
 | `JwtService` | HS256 access tokens carrying `accountId` and `role` claims. |
 | `BCryptService`, `OtpService`, `RegistrationService`, `CurrentIdentityService` | Hashing; 6-digit OTP with 10 min TTL and 3 attempts; Data-Protection-wrapped registration tokens with 10 min TTL; `accountId` claim reader. |
-| `NotificationService` | Persists a `Notification`, invalidates the recipient's list, pushes over SignalR, marks sent. |
-| `NotificationHub` | `[Authorize]` SignalR hub at `/hubs/notification`; empty body — identity comes from `AccountIdUserIdProvider`. |
+| `NotificationService` | Persists a `Notification`, invalidates the recipient's list, pushes over SignalR **and APNs**, marks sent. Both pushes are wrapped in their own `try`/`catch`: the row is already committed, so a transport failure must not unwind the queue message. |
+| `NotificationHub` | `[Authorize]` SignalR hub at `/hubs/notification`; empty body — identity comes from `AccountIdUserIdProvider`. Keeps the in-app list live; it cannot reach a backgrounded or force-quit app. |
+| `ApnsService` | One `alert` push per live `DeviceToken`, HTTP/2 to `api.push.apple.com` or `api.sandbox.push.apple.com` per the token's `Environment`. Soft-deletes a token on 410 `Unregistered` or 400 `BadDeviceToken`. |
+| `ApnsTokenProvider` | Singleton; mints the ES256 provider JWT from the `.p8` key and caches it for 45 min, inside Apple's 20–60 min window. Reads its configuration at startup so a missing key fails the deploy. |
 | 8 queue services | `FollowService`, `ReactPostService`, `ReactCommentService`, `SaveService`, `CommentService`, `ShopRateService`, `AccountService`, `PostService` — the actual work behind queued messages. A service is split when its halves write to different collections (reactions touch `post` and `comment`) and kept whole when they do not (`SaveService`'s four operations all write `account`). |
 | `QueueConsumerHost<TMessage>` | One generic `BackgroundService`, registered 10 times, one per queue. Each inverse pair (follow/unfollow, react/unreact, save/unsave) shares a queue and branches on the message's `IsUndo` flag, so the two operations cannot reorder. |
 | `IndexInitializer`, `NormalizedFieldBackfillInitializer`, `AdminSeeder` | `BackgroundService`s that build indexes, backfill normalized search fields and seed the administrator account without blocking startup. |
-| `SoftDeletePurgeHost` | `BackgroundService` on a `PeriodicTimer`; hard-deletes accounts, posts, comments and shops soft-deleted more than 30 days ago, plus revoked refresh tokens. |
+| `SoftDeletePurgeHost` | `BackgroundService` on a `PeriodicTimer`; hard-deletes accounts, posts, comments, shops and device tokens soft-deleted more than 30 days ago, plus revoked refresh tokens. |
 
 ## Component interaction
 
@@ -167,6 +169,7 @@ sequenceDiagram
     participant R as Redis
     participant N as NotificationService
     participant Hub as SignalR
+    participant A as APNs
 
     C->>Ctl: POST /api/v1/Reaction/post/{postId}
     Ctl->>H: ReactPostCommand
@@ -188,6 +191,8 @@ sequenceDiagram
             S->>N: CreateAsync(PostReaction)
             N->>M: insert Notification
             N->>Hub: SendAsync("ReceiveNotification")
+            N->>M: find live DeviceTokens for recipient
+            N->>A: POST /3/device/{token} (alert push)
             N->>M: MarkAsSent
         end
         Host->>R: SET idempotency key, TTL 24 h
@@ -278,7 +283,7 @@ Handlers build MongoDB `FilterDefinition`/`UpdateDefinition`/`ProjectionDefiniti
 and call `IMongoDbContext.GetCollection<T>()`.
 
 **Persistence.** MongoDB is the system of record, one collection per aggregate:
-`account`, `post`, `comment`, `report`, `shop`, `refreshtoken`, `notification`
+`account`, `post`, `comment`, `report`, `shop`, `refreshtoken`, `notification`, `devicetoken`
 (`src/app/common/CollectionName.cs`). Deletion is **soft** everywhere: `BaseEntity` carries
 `IsDeleted`, `DeletedAt`, `RecoveredAt`, and effectively every read filters `!x.IsDeleted`.
 `SoftDeletePurgeHost` turns a soft delete permanent 30 days after `DeletedAt`.
@@ -317,7 +322,8 @@ in `DomainJsonOptions`) exists to flatten them for the Redis JSON payloads.
 | RabbitMQ | out (publish) / in (consume) | AMQP 0-9-1 | `IConnection` singleton → `RabbitMQService` | 10 queues + 10 `.dlq` |
 | Cloudflare R2 | out | S3 API over HTTPS | `IAmazonS3` singleton, `ForcePathStyle = true` | Avatars, post and comment images |
 | Resend | out | HTTPS REST | `AddHttpClient<IEmailService, EmailService>` | OTP and welcome emails |
-| SignalR clients | in/out | WebSocket | `MapHub<NotificationHub>("/hubs/notification")` | Live notification push |
+| SignalR clients | in/out | WebSocket | `MapHub<NotificationHub>("/hubs/notification")` | Live in-app notification list |
+| Apple APNs | out | HTTP/2 + JSON | `AddHttpClient<IApnsService, ApnsService>` | Banners on backgrounded and force-quit iOS clients |
 
 The 10 queues (`src/app/common/QueueName.cs`): `follow`, `react-post`, `react-comment`,
 `create-comment`, `recalculate-shop-rate`, `save-post`, `save-shop`, `delete-account`,
