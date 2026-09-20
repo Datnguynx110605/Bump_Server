@@ -67,16 +67,16 @@ internal sealed class CreateCommentHandler
         List<string>? urls = null;
         if(request.images?.Any() == true)
         {
-            urls = new List<string>();
-            foreach(var image in request.images)
-            {
-                var url = await _r2Service.UploadAsync(
+            // Uploaded together rather than one after another. Up to ten files at a couple
+            // of hundred milliseconds each is seconds of wall clock inside a request the
+            // P95 budget gives 500ms, and R2 has no reason to be fed serially. Ordering is
+            // preserved because Task.WhenAll returns results in the order the tasks were
+            // created, which matters: the images array is what the client renders.
+            urls = (await Task.WhenAll(request.images.Select(image =>
+                _r2Service.UploadAsync(
                     image.stream,
                     image.fileName,
-                    cancellationToken);
-
-                urls.Add(url);
-            }
+                    cancellationToken)))).ToList();
         }
 
         // See CreatePostHandler: the upload is already in R2 and nothing references it until
