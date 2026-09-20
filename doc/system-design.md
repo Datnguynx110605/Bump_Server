@@ -52,7 +52,7 @@ The three infrastructure dependencies are **not equal** in how their loss degrad
 |---|---|---|
 | **Document store** | Total outage — nothing can be read or written | Driver-level retry; health endpoint reports unhealthy |
 | **Cache** | Degraded, not down — reads fall through to the document store; however, registration, recovery, password reset and email change **fail**, because the key material protecting those tokens lives in the cache | Connection is non-blocking by design: the client returns immediately and reconnects in the background, so a transient blip does not permanently poison the process |
-| **Message broker** | Engagement features (reactions, follows, blocks, saves, comment creation) **stop accepting writes**, because those endpoints publish rather than persist | The broker connection is established synchronously at startup, so an unreachable broker prevents the instance from starting at all |
+| **Message broker** | Engagement features (reactions, follows, blocks, saves) **stop accepting writes**, because those endpoints publish rather than persist; comment creation and every delete persist first and then fail to dispatch their follow-up work | The broker connection is established synchronously at startup, so an unreachable broker prevents the instance from starting at all |
 
 That last row is the single most consequential availability property in the system and is treated as
 a deliberate trade-off in §6.
@@ -60,7 +60,8 @@ a deliberate trade-off in §6.
 ### 1.4 Concurrency expectations
 
 - **Request concurrency** is bounded at the edge by a global fixed-window budget per principal, with
-  tighter sliding windows on authentication, email dispatch, search and upload.
+  tighter sliding windows on authentication, email dispatch, search, upload and reporting, plus
+  per-recipient budgets in the application core where the edge has no partition key for them (§5.2).
 - **Worker concurrency is intentionally serialised**: each queue is consumed one message at a time
   per instance. This trades throughput for ordering (§4.3). Throughput scales by adding instances,
   which adds one competing consumer per queue.
@@ -331,7 +332,8 @@ stateDiagram-v2
 | Retention window | **30 days** from deletion — also the window in which recovery is possible |
 | Sweep cadence | Every **6 hours**, deferred **10 minutes** after start so a deploy never pays for a sweep |
 | Batching | Bounded batches with a pause between them, so a large backlog never lands as one sustained write burst |
-| Binary objects | Released at **soft-delete** time, not at purge, so the sweep is pure document-store work |
+| Binary objects | Released at **soft-delete** time, not at purge, so the sweep is pure document-store work — but only if the cascade carrying that release actually ran (§4.2). One that exhausts its retries leaves objects the purge then makes unreachable, and nothing reconciles that |
+| Sweeper election | One replica per interval, claimed through the cache. Every instance runs the sweep because the worker engine is co-located with the request surface (§2.2), so without a claim the paced batches would run once per replica, concurrently |
 | Revoked credentials | Dropped on sight; expiry is additionally enforced by a store-level TTL index |
 
 Two lifecycle rules are asymmetric by design and worth stating explicitly:
@@ -354,8 +356,18 @@ The decision rule is **read-back requirement**, not operation cost:
 
 | Class | Operations | Response | Rationale |
 |---|---|---|---|
-| **Synchronous** | Account, post and report creation; all content edits | 200/201 with the created representation | The client must immediately render or navigate to the result |
-| **Asynchronous** | Reactions, follows, blocks, saves, comment creation, rating recalculation, delete cascades | **202 Accepted** | The client renders the outcome optimistically; the write fans out to counters, notifications and cache invalidation |
+| **Synchronous** | Account, post, **comment** and report creation; all content edits | 200/201 with the created representation | The client must immediately render or navigate to the result |
+| **Asynchronous** | Reactions, follows, blocks, saves, rating recalculation, delete cascades, **profile fan-out** | **202 Accepted** | The client renders the outcome optimistically; the write fans out to counters, notifications and cache invalidation |
+
+Comment creation sits on the synchronous side despite appearing in the asynchronous list in earlier
+revisions of this document: the row is inserted in the request and the representation is returned.
+Only the notification it raises is deferred.
+
+**Profile fan-out** is the one deferred operation with no inverse and no ordering requirement. A
+display name and avatar are copied into the other party's document by follow, block and react, so
+changing either leaves stale copies in an unbounded number of documents. The worker re-reads the
+account's current values rather than carrying them in the message, which is what makes two rapid
+changes converge on the latest one regardless of consumption order.
 
 For the asynchronous class, **the endpoint publishes a message and returns without touching the
 document store.** The write exists only once a worker applies it. This is what makes broker
@@ -392,6 +404,15 @@ graph TB
 | Retry delay | **30 seconds**, held in a consumer-less delay queue that expires messages back to the work queue | A transient dependency blip must not consume all attempts |
 | Attempt ceiling | **3**, then dead-letter | Bounds the cost of a permanently failing message |
 | Durability | Persistent messages on durable queues | A broker restart does not lose accepted work |
+
+**The retry and dead-letter tiers are reached by thrown exceptions only.** A consumer that reports a
+refusal as a failed result is acknowledged and recorded as processed, because every such refusal is
+terminal by construction — already following, already reacted, the row deleted since the caller was
+answered. Nothing is lost by that, but it means queue depth and dead-letter depth stay at zero when
+a worker begins refusing systematically, so those two signals cannot be the only ones watched; the
+refusal is logged for that reason. It is logged at **warning** level, not error: those refusals ride
+the normal path on any double tap, so raising them would page on ordinary user behaviour. What
+indicates a fault is the rate of that warning per queue, not any single line.
 
 **Why the retry delay lives in a queue rather than in the consumer.** Because a consumer processes one
 message at a time, sleeping inside it would stall every healthy message behind the failing one.
@@ -499,6 +520,18 @@ or individually expensive:
 | Email dispatch | 5 / minute | Outbound cost and third-party reputation |
 | Search | 20 / minute | Query cost against text and geospatial indexes |
 | Upload | 10 / minute | Bandwidth and object-storage cost |
+| Report | 10 / minute | Cheap to file, and a live report suppresses the target's trust eligibility |
+
+The search budget covers every read of that cost shape, not only the endpoints named "search":
+proximity, exact-name and exact-address lookups and the affinity-ranked feed carry it too, since
+routing them to the global budget was a tenfold wider door to the same query.
+
+**One class of limit cannot live at the edge.** Every policy above partitions by authenticated
+principal or by client address, while one-time passcodes are keyed by email address — so no edge
+budget bounds how many passcodes a single address can be issued, or how many wrong guesses it can
+absorb in total, once a caller rotates addresses. Per-recipient generation and failure counters are
+therefore enforced in the application core alongside the passcode itself. A three-guess cap per code
+is only meaningful if the number of codes is also finite.
 
 Correct attribution depends on the edge forwarding the original client address and scheme. Because a
 managed edge does not have a fixed, pinnable address, the service accepts these headers from whatever
@@ -582,7 +615,7 @@ connection is established synchronously at startup.
 
 | Aspect | Assessment |
 |---|---|
-| **Consequence** | A broker outage stops reactions, follows, blocks, saves and comment creation from being accepted; an outage at start prevents the instance from starting at all |
+| **Consequence** | A broker outage stops reactions, follows, blocks and saves from being accepted; an outage at start prevents the instance from starting at all. Operations that persist first and then publish — comment creation, every delete, a profile change — commit their row and then fail, which is the more damaging shape: the follow-up work is never dispatched and nothing retries it |
 | **Mitigation in place** | Failures surface to the caller as errors rather than silent data loss; messages are persistent on durable queues, so a broker *restart* loses nothing |
 | **Revisit when** | The broker is a shared or best-effort tier, or availability targets exceed what a synchronously-acquired dependency can support. The fix is to make broker acquisition lazy and retrying, so the service starts and serves reads while the broker is unavailable |
 
@@ -634,7 +667,10 @@ sent.
 ### 6.6 Denormalised counters have no reconciliation path
 
 Counters are maintained atomically alongside the arrays they summarise, so they cannot drift under
-normal operation.
+normal operation. The exception is any counter whose array lives in **another** collection — a post's
+comment count is the only one — where the increment and the decrement are necessarily separate
+writes. Those decrements carry a floor in their filter so a drift cannot be compounded into a
+negative, which the domain refuses to represent at all.
 
 | Aspect | Assessment |
 |---|---|

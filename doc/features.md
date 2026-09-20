@@ -22,8 +22,10 @@ Each diagram then covers four stages:
 2. **Controller** — model binding, plus any value object built with `Email.Create` / `Name.Create` /
    `Amount.Create` before the request is sent. A failure here short-circuits to a `ProblemDetails`
    response without ever reaching MediatR.
-3. **MediatR pipeline** — `LoggingBehavior` → `PerformanceBehavior` → `ValidationBehavior`, then the
-   handler. The validator is named where one exists: **41 of 42 commands** have one (only
+3. **MediatR pipeline** — `LoggingBehavior` → `PerformanceBehavior` → `ValidationBehavior` →
+   `WriteCancellationBehavior`, then the handler. The last one substitutes
+   `CancellationToken.None` for every `*Command`, so a command that has begun writing finishes
+   even if the caller disconnects; queries keep the caller's token. The validator is named where one exists: **41 of 42 commands** have one (only
    `DeleteAccount`, which takes no parameters, does not), and **5 of 41 queries** —
    `GetAccountByKeyword`, `GetPostByKeyword`, `GetShopByKeyword`, `GetReportByTarget` and
    `GetBestShopAround` — the ones taking constrained input rather than an id alone.
@@ -34,7 +36,8 @@ Each diagram then covers four stages:
 
 **Legend.** **anon** = `[AllowAnonymous]`; **admin** = `[Authorize(Roles = nameof(Role.Admin))]`;
 otherwise a valid JWT is required. Rate-limit policies in brackets: `[auth]` 10/min, `[email]` 5/min,
-`[search]` 20/min, `[upload]` 10/min, over a global 200/min window.
+`[search]` 20/min, `[upload]` 10/min, `[report]` 10/min, over a global 200/min window. `[auth]` and
+`[email]` partition by client address; the rest partition by account where a session exists.
 
 **Notation.** `identity` is `ICurrentIdentityService.GetAccountId()`, read from the `accountId` JWT
 claim. `bump <entity>:<sig>` is `ListCache.InvalidateAsync`, which increments
@@ -114,8 +117,12 @@ flowchart TD
     E --> F["account.ChangeName"]
     F -->|"same value"| F1["409 'New name must be different'"]
     F --> G["Mongo $set Name, UpdatedAt"]
-    G --> H["Redis DEL account:v1:id:{id}"] --> I["ToActionResult → 204 No Content"]
+    G --> H["Redis DEL account:v1:id:{id}"]
+    H --> I["publish profile-changed {AccountId}"] --> J["ToActionResult → 204 No Content"]
 ```
+The account row is not the only copy of the name: follow, block and react each embed it in the
+other party's document. `ProfileService` refreshes those; see #3 in
+[`developer-guide.md`](./developer-guide.md) for the arrays it touches.
 
 ### 4. Change bio — `PUT /Account/me/bio`
 
@@ -146,14 +153,20 @@ flowchart TD
     F2 -->|yes| F3["409 'New password must be different'"]
     F2 -->|no| G["BCrypt.HashPassword(new)"]
     G --> H["account.ChangePassword"] --> I["Mongo $set Password, UpdatedAt"]
-    I --> J["Mongo $set IsRevoked on every<br/>refresh token for this account"]
+    I --> J["Mongo deleteMany every live<br/>refresh token for this account"]
     J --> K["Insert replacement RefreshToken<br/>+ mint access token"]
     K --> L["Redis DEL account:v1:id:{id}"] --> M["200 OK {AccessToken, RefreshToken}"]
 ```
-**Answers 200 with a fresh pair, not 204.** Changing the password revokes every refresh token on
+**Answers 200 with a fresh pair, not 204.** Changing the password drops every refresh token on
 the account, the caller's own included, so the response has to carry a replacement or the user is
 silently logged out the moment their current access token expires. A client that ignores the body
-degrades to exactly that — it keeps a revoked token and is logged out at its next refresh.
+degrades to exactly that — it holds a token that no longer exists and is logged out at its next
+refresh.
+
+Those rows are **deleted, not marked revoked**. A revoked row is the signal #18 uses to detect a
+replayed token, and a credential change is not a replay: marking them left every other device
+holding something indistinguishable from a stolen token, so the next device to refresh would cut
+the session this endpoint had just issued. Deletion makes that path a plain 401 instead.
 
 Eviction is bounded by `Jwt:ExpiryMinutes`, not immediate: JWTs are not revocable, so access
 tokens already issued stay valid until they expire.
@@ -166,19 +179,27 @@ hashes — random salts mean two hashes of one plaintext never match, so the rul
 
 ```mermaid
 flowchart TD
-    A["Client<br/>PUT /api/v1/Account/me/email<br/>{RegistrationToken}"] --> B["AccountController.ChangeEmail"]
-    B --> C["MediatR → ChangeEmailValidator"] --> D["ChangeEmailHandler → identity"]
+    A["Client<br/>PUT /api/v1/Account/me/email<br/>{RegistrationToken, CurrentPassword}"] --> B["AccountController.ChangeEmail"]
+    B --> C["MediatR → ChangeEmailValidator<br/>both fields non-empty"] --> D["ChangeEmailHandler → identity"]
     D -->|null| D1["401 Unauthorized"]
     D --> E["Redis GET registration:{token}<br/>DataProtection.Unprotect"]
     E -->|null| E1["401 Unauthenticated"]
-    E --> F["Email.Create"] --> G["Mongo find Id = identity, !IsDeleted<br/>project Email, IsDeleted"]
+    E --> F["Email.Create"] --> G["Mongo find Id = identity, !IsDeleted<br/>project Email, Password, IsDeleted"]
     G -->|null| G1["401 Unauthenticated"]
-    G --> H["account.ChangeEmail"] -->|"same"| H1["409 must be different"]
-    H --> I["Mongo $set Email, UpdatedAt"]
-    I --> J["ConsumeTokenAsync<br/>Redis DEL registration:{token}"]
-    J --> K["Redis DEL account:v1:id:{id}<br/>DEL account:v1:email:{oldEmail}"] --> L["204 No Content"]
+    G --> H["BCrypt.Verify(CurrentPassword)"]
+    H -->|fail| H2["401 'Current password is incorrect'"]
+    H --> I["account.ChangeEmail"] -->|"same"| I1["409 must be different"]
+    I --> J["Mongo $set Email, UpdatedAt"]
+    J -->|"DuplicateKey"| J1["409 'Email already exists'"]
+    J --> K["ConsumeTokenAsync<br/>Redis DEL registration:{token}"]
+    K --> L["Redis DEL account:v1:id:{id}<br/>DEL account:v1:email:{oldEmail}"] --> M["204 No Content"]
 ```
 The new address is proven beforehand via `/Email/send-for-verify` + `/Email/verify`.
+
+**The current password is required**, as it is for #5. This endpoint decides which address can
+later prove ownership through #11, so it is a credential change in everything but name: without the
+check, an access token on its own was enough to move the account to an attacker-controlled address
+and then reset the password from there.
 
 ### 7. Change avatar — `POST /Account/me/avatar` `[upload]`
 
@@ -190,14 +211,20 @@ flowchart TD
     D -->|null| D1["401"]
     D --> E["Mongo find account, !IsDeleted<br/>project Avatars"] -->|null| E1["401 Unauthenticated"]
     E --> F["R2 PutObject {folder}/{guid}{ext}<br/>explicit ContentType"]
-    F --> G["Mongo $push Avatars WHERE url absent<br/>$set UpdatedAt"]
+    F --> G["Mongo $set Avatars = [new] · $set UpdatedAt"]
     G -->|"MongoWriteException"| G2["R2 DeleteObject · rethrow"]
-    G -->|"MatchedCount ≠ 1"| G1["409 'New avatar must be different'"]
-    G --> H["Redis DEL account:v1:id:{id}"] --> I["204 No Content"]
+    G -->|"MatchedCount ≠ 1"| G1["R2 DeleteObject · 404 'Account not found'"]
+    G --> H["R2 DeleteObject for each superseded avatar"]
+    H --> I["Redis DEL account:v1:id:{id}"]
+    I --> J["publish profile-changed {AccountId}"] --> K["204 No Content"]
 ```
-The upload precedes the write. A `MongoWriteException` deletes the object it just uploaded before
-rethrowing; the `MatchedCount ≠ 1` duplicate path does not, so re-posting the same avatar still
-leaves an orphan.
+The array is **replaced, not appended to**. Every reader takes `Avatars.LastOrDefault()`, so earlier
+entries were never current and never readable — they only grew the document and kept their R2
+objects alive, one leaked image per change. The superseded objects are released only after the row
+has stopped naming them, so no failure path can leave the account pointing at a deleted object.
+
+Every exit after the upload removes it: both the write failure and the account-vanished path now
+delete, where the second used to return and orphan the object.
 
 ### 8. Remove avatar — `DELETE /Account/me/avatar?url=`
 
@@ -210,10 +237,12 @@ flowchart TD
     E --> F["Mongo $pull Avatars WHERE Url = url<br/>filter scoped to my account"]
     F -->|"MatchedCount ≠ 1"| F1["404 'Avatar not found'"]
     F --> G["R2 DeleteObject by URL path"]
-    G --> H["Redis DEL account:v1:id:{id}"] --> I["204 No Content"]
+    G --> H["Redis DEL account:v1:id:{id}"]
+    H --> I["publish profile-changed {AccountId}"] --> J["204 No Content"]
 ```
 Ownership is proven by the filter before the R2 delete, so an arbitrary URL cannot remove another
-account's object.
+account's object. The fan-out clears the avatar from the denormalized copies as well, which
+otherwise keep rendering an image whose object no longer exists.
 
 ### 9. Delete account — `DELETE /Account/me`
 
@@ -245,7 +274,7 @@ sequenceDiagram
         S->>R2: DeleteObject
     end
     par one fan-out
-        S->>M: revoke unrevoked refresh tokens
+        S->>M: delete live refresh tokens
         S->>M: $pull my reactions from posts, $inc −1
         S->>M: soft-delete my posts
         S->>M: $pull my reactions from comments, $inc −1
@@ -253,6 +282,7 @@ sequenceDiagram
         S->>M: $pull me from others' Followers, $inc −1
         S->>M: $pull me from others' Followings, $inc −1
     end
+    S->>M: re-read my posts and comments WHERE IsDeleted
     loop each of my posts
         S->>Q: publish delete-post
     end
@@ -267,6 +297,18 @@ The only command without a validator. The cascade is retry-safe: each `$pull` + 
 an `ElemMatch` that stops matching once applied. Post and comment cleanup is fanned out rather than
 inlined, so no single message's cost scales with how much the account posted; notifications are hard
 deleted, not soft, because nothing can read them once the account is gone.
+
+**The publish list is re-read after the flip, on `IsDeleted == true`.** Taking it before the flip on
+`IsDeleted == false` looked equivalent and was not: the pre-flip list is empty on every redelivery,
+because the first attempt already flipped the rows. A crash or a broker blip between the fan-out and
+the publish loop therefore lost the cascade permanently — the images stayed in R2 with no document
+left to name them, and other accounts' comments survived pointing at a post the retention sweep
+would hard-delete. Reading the post-state is what lets a retry finish the job. `PostService` had the
+same shape and the same fix.
+
+The counter decrements still read their list **before** the flip, for the opposite reason: those
+must apply exactly once, and an empty list on redelivery is precisely what stops them double-
+applying. The two lists answer different questions and are deliberately taken at different moments.
 
 ### 10. Recover account — `POST /Account/recover` · **anon** `[auth]`
 
@@ -299,12 +341,12 @@ flowchart TD
     G -->|null| G1["404 'Account not found'"]
     G --> H["BCrypt hash → account.ChangePassword"]
     H --> I["Mongo $set Password, UpdatedAt"]
-    I --> I2["Mongo $set IsRevoked on every<br/>refresh token for this account"]
+    I --> I2["Mongo deleteMany every live<br/>refresh token for this account"]
     I2 --> J["ConsumeTokenAsync<br/>Redis DEL registration:{token}"]
     J --> K["Redis DEL account:v1:id:{id}"] --> L["204 No Content"]
 ```
-Every session on the account is revoked, which is the point of the recovery flow — an attacker
-holding a refresh token is cut off. No replacement pair is returned here, unlike #5: the caller is
+Every session on the account is dropped, which is the point of the recovery flow — an attacker
+holding a refresh token is cut off. Deleted rather than marked revoked, for the reason #5 gives. No replacement pair is returned here, unlike #5: the caller is
 unauthenticated at this point and logs in with the new password next. Eviction is bounded by
 `Jwt:ExpiryMinutes` for access tokens already in circulation.
 
@@ -351,7 +393,7 @@ flowchart TD
 ```
 The only consumer of the `account:v1:email:*` key, invalidated on email change (#6).
 
-### 15. Get accounts by name — `GET /Account/by-name?name=`
+### 15. Get accounts by name — `GET /Account/by-name?name=` `[search]`
 
 ```mermaid
 flowchart TD
@@ -408,8 +450,10 @@ flowchart TD
     A["Client<br/>POST /api/v1/Auth/refresh<br/>{RefreshToken}"] --> B["AuthController.RequestNewAccessToken"]
     B --> C["MediatR → RequestNewAccessTokenValidator"] --> D["RequestNewAccessTokenHandler"]
     D --> E["Mongo find by Token"] -->|null| E1["401 'Invalid refresh token'"]
-    E --> F["currentToken.Validate()<br/>revoked? past ExpiryDate?"]
-    F -->|fail| F1["401 revoked / Expired"]
+    E --> R{"IsRevoked?"}
+    R -->|yes| R1["Mongo $set IsRevoked on every live<br/>token for AccountId → 401"]
+    R -->|no| F["currentToken.Validate()<br/>past ExpiryDate?"]
+    F -->|fail| F1["401 Expired"]
     F --> G["currentToken.Revoke()"]
     G --> H["Mongo $set IsRevoked WHERE not revoked"]
     H --> I["Mongo find account, !IsDeleted · project Role"]
@@ -417,8 +461,19 @@ flowchart TD
     I --> J["new access token + new RefreshToken<br/>Mongo insertOne"]
     J --> K["200 AuthResult (rotated pair)"]
 ```
-Single-use rotation; a replayed revoked token returns 401 without invalidating the family. A TTL
-index on `ExpiryDate` purges expired rows, and `SoftDeletePurgeHost` drops revoked ones sooner.
+Single-use rotation. **Presenting an already-revoked token revokes every live token on the account**
+— rotation has already replaced it, so whoever holds it either kept a copy or stole one, and there
+is no way to tell which side is which. Cutting all sessions is the only certainly-correct answer:
+the thief loses access and the legitimate holder signs in again with credentials the thief lacks.
+Scoped to the account rather than a lineage because rotation inserts an independent row and carries
+no parent, so the two sets are the same.
+
+This is why the bulk-credential paths — #5, #11 and the delete cascade in #9 — **delete** the tokens they
+retire instead of marking them. `IsRevoked` means *this token was rotated or an administrator cut
+it*, and only those two cases should trip the reuse response. A token that is simply gone answers
+401 and ends there, so changing a password on one device no longer arms every other device to
+destroy the session that change just created. A TTL index on `ExpiryDate` purges expired rows, and
+`SoftDeletePurgeHost` drops revoked ones sooner.
 
 ### 19. List refresh tokens — `GET /Auth/refresh-token` · **admin**
 
@@ -458,10 +513,14 @@ flowchart TD
     D --> E{"Mongo any account Email = x<br/><b>AND !IsDeleted</b>"}
     E -->|yes| E1["409 'Email already exists'"]
     E -->|no| F["OtpService.GenerateAsync<br/>RandomNumberGenerator 6 digits"]
-    F --> G["Redis SET otp:{email} 10 min<br/>{Code, Attempts:0, ExpiresAt}"]
+    F -->|"budget spent or locked"| F1["429 Too Many Requests"]
+    F --> G["Redis INCR otp:gen:{email} 1 h<br/>SET otp:{email} 10 min"]
     G --> H["Resend POST /emails · HttpClient 10 s timeout"]
     H --> I["204 No Content"]
 ```
+The 409 is kept rather than made opaque: the registration screen needs to say the address is taken,
+and the caller learns the same fact from #1 regardless. The disclosure that mattered was on the
+reset path — see #22.
 
 ### 22. Send verification OTP — `POST /Email/send-for-verify` · **anon** `[email]`
 
@@ -470,13 +529,23 @@ flowchart TD
     A["Client<br/>POST /api/v1/Email/send-for-verify<br/>{Email}"] --> B["EmailController.SendForVerify<br/>Email.Create"]
     B --> C["MediatR → SendEmailForVerifyValidator<br/>EmailAddress() ≤200"] --> D["SendEmailForVerifyHandler"]
     D --> E{"Mongo any account Email = x<br/><b>no IsDeleted filter</b>"}
-    E -->|no| E1["404 'Email not found'"]
+    E -->|no| I["204 No Content"]
     E -->|yes| F["OtpService.GenerateAsync"]
-    F --> G["Redis SET otp:{email} 10 min"]
-    G --> H["Resend POST /emails"] --> I["204 No Content"]
+    F -->|"budget spent or locked"| I
+    F --> G["Redis INCR otp:gen:{email} 1 h<br/>SET otp:{email} 10 min"]
+    G --> H["Resend POST /emails"] --> I
 ```
 Deliberately omits `!IsDeleted` so a soft-deleted account can obtain a token for `/Account/recover`.
 Note the asymmetry with #21.
+
+**Every exit answers 204, whatever happened.** This used to return 404 for an unknown address, which
+told an unauthenticated caller whether an account exists — the opening move of both credential
+stuffing and a targeted OTP attack, and the more damaging of the two disclosures because this is the
+password-reset path. A throttled address takes the same exit for the same reason: only a real
+account ever reaches the generator, so answering differently would put the oracle straight back.
+
+Not closed: the account-exists path pays a Redis write and a Resend round trip, so the two exits
+remain distinguishable by latency. Closing that means dispatching the mail off the request thread.
 
 ### 23. Verify OTP — `POST /Email/verify` · **anon** `[email]`
 
@@ -494,6 +563,16 @@ flowchart TD
     I --> J["Redis SET registration:{token}<br/>= Protect(email) 10 min"]
     J --> K["200 registrationToken (string)"]
 ```
+`OtpService` carries one per-address counter alongside the code — `otp:gen:{email}:{yyyyMMddHH}`,
+over a tumbling hour — because every rate-limit policy at the edge partitions by client address while the code is
+keyed by email. Minting a fresh code resets the in-entry attempt count, so before it existed nothing
+bounded how many codes one address could be issued: three guesses per code against a million values
+is only safe if generations are finite. Five codes an hour holds the ceiling at fifteen values.
+
+Failures are counted **per code only**, never per address. A per-address failure counter would let
+anyone who knows an email lock its owner out of password reset by guessing wrong on their behalf,
+and the generation cap already bounds the search without that.
+
 A correct code is **not** deleted on use; it expires on its own 10 minute TTL. Deleting it made a
 lost response unrecoverable — the caller never received the registration token the code was
 exchanged for, and the code that would have earned another was already gone. Brute force is bounded
@@ -516,11 +595,12 @@ flowchart TD
     C -->|fail| C1["400"]
     C --> D["MediatR → CreatePostValidator<br/>rate 1–5 · names ≤200 · caption ≤2000<br/>lat/lng both-or-neither, in range"] -->|invalid| D1["400"]
     D --> E["CreatePostHandler → identity"] -->|null| E1["401"]
-    E --> F["R2 PutObject per image"]
-    F --> G{"Mongo find Shop<br/>Name = x AND Address = y AND !IsDeleted"}
+    E --> F["R2 PutObject per image — all in parallel"]
+    F --> G{"Mongo find Shop<br/>Name = x AND Address = y AND !IsDeleted<br/>project Id"}
     G -->|found| H["shopId = existing.Id"]
     G -->|none| I["Shop.Create(name, address, lat, lng)<br/>→ insertOne · Redis SET shop 7d<br/>bump shop:all"] --> H
-    I -->|"MongoWriteException"| X["R2 DeleteObject per image · rethrow"]
+    I -->|"DuplicateKey"| I2["re-read the shop the winner inserted"] --> H
+    I -->|"other MongoWriteException"| X["R2 DeleteObject per image · rethrow"]
     H --> J["Post.Create — CaptionNormalized computed"]
     J --> K["Mongo insertOne(post)"]
     K -->|"MongoWriteException"| X
@@ -540,6 +620,18 @@ Cleanup is best-effort in one direction only: a delete that itself throws replac
 `MongoWriteException` the caller was about to receive, and abandons any images after it in the loop.
 The `Result.Fail` paths above — `Shop.Create` and `Post.Create` rejecting their input — orphan
 whatever was already uploaded.
+
+The uploads run concurrently rather than one after another. Ten files at a couple of hundred
+milliseconds each is seconds of wall clock inside a request the latency budget gives 500 ms;
+`Task.WhenAll` preserves the order the client sent, which matters because that order is what the
+images array renders in.
+
+**A shop-creation race no longer fails the post.** Two people reviewing the same new shop at the
+same moment both miss the read and both insert, and the partial unique index on `(Name, Address)`
+lets exactly one through. The loser used to discard its uploads and rethrow, so it received a 500
+and lost a post that should simply have joined the shop the winner had just created; it now re-reads
+and attaches to that row. `CreateAccountHandler` already translated the identical collision, so this
+brings the two into line.
 
 Shop matching uses the raw name and address, not the normalized fields, so "Cafe X" and "cafe x"
 create two shops.
@@ -687,7 +779,7 @@ flowchart TD
 ```
 No write path bumps a `keyword:*` version, so these pages refresh only on the 2-minute TTL.
 
-### 77. Related posts — `GET /Post/related`
+### 77. Related posts — `GET /Post/related` `[search]`
 
 ```mermaid
 flowchart TD
@@ -860,12 +952,20 @@ flowchart TD
     D -->|null| D1["401"]
     D --> E["Mongo find Id, !IsDeleted · project IsDeleted"]
     E -->|null| E1["404 'Shop not found'"]
-    E --> F["shop.DeleteShop()"]
+    E --> P{"Mongo any post ShopId = id, !IsDeleted"}
+    P -->|yes| P1["409 'Shop still has posts'"]
+    P -->|no| F["shop.DeleteShop()"]
     F --> G["Mongo $set IsDeleted, DeletedAt"]
     G --> H["Redis DEL shop:v1:id<br/>bump shop:all"]
     H --> I["204 No Content"]
 ```
-Posts keep their `ShopId` and stay visible; `GET /Post/shop/{id}` continues to return them.
+**Refused while the shop still has live posts.** A delete that only flipped the flag left every post
+pointing at it — `GET /Post/shop/{id}` kept serving them, saved shops kept referencing it, and
+because the unique index on `(Name, Address)` is scoped to live rows the same shop could immediately
+be created again, stranding the old posts on a row nothing can reach.
+
+Refusing rather than cascading, because the posts are other people's reviews and an administrator
+removing a duplicate shop entry is not asking to destroy them. Deleting them is an explicit act.
 
 ### 40. Get shop — `GET /Shop/{shopId}`
 
@@ -905,7 +1005,7 @@ flowchart TD
 ```
 The only search matching two fields with `OR`.
 
-### 43. Shops by name — `GET /Shop/by-name?name=`
+### 43. Shops by name — `GET /Shop/by-name?name=` `[search]`
 
 ```mermaid
 flowchart TD
@@ -916,7 +1016,7 @@ flowchart TD
 ```
 Exact, case-sensitive match on the raw `Name`, not the normalized field.
 
-### 44. Shops by address — `GET /Shop/by-address?address=`
+### 44. Shops by address — `GET /Shop/by-address?address=` `[search]`
 
 ```mermaid
 flowchart TD
@@ -926,7 +1026,7 @@ flowchart TD
     D --> E["CachedCursorPaginator · Summary"] --> F["200 page of ShopSummaryDto"]
 ```
 
-### 78. Best shops around — `GET /Shop/around?latitude=&longitude=`
+### 78. Best shops around — `GET /Shop/around?latitude=&longitude=` `[search]`
 
 ```mermaid
 flowchart TD
@@ -1285,9 +1385,7 @@ sequenceDiagram
     Q->>S: ProcessBlockAsync
     S->>M: find target, !IsDeleted · project Name, Avatars
     S->>M: updateOne(me, NOT already blocked) $push Blocks
-    alt Matched ≠ 1
-        S-->>Q: Fail "Already blocked this account"
-    end
+    note over S: Matched ≠ 1 is recorded, not returned — the severing below still runs
     S->>M: bulkWrite — target $push BlockedBy ·<br/>4 tolerant follow pulls + $inc −1 each side
     S->>M: 4× find + updateMany — pull each account's<br/>reactions off the other's posts and comments, $inc −1
     S->>R: DEL both account caches, both blocked-set keys ·<br/>bump account:block, follower and following lists ·<br/>per post/comment touched
@@ -1297,8 +1395,15 @@ the request. Severing follows is **tolerant**: strangers block each other far mo
 mutuals do, so each of the four pulls carries its own filter and a filter matching nothing is the
 normal case, not a failure. The reaction sweep is the expensive half and the reason this is queued
 at all — it is index-backed by the existing `Reactions.AccountId` multikeys on both `post` and
-`comment`. The pushed `Block` snapshots the target's name and latest avatar the same way `Following`
-does, and goes equally stale on a later rename.
+`comment`. The pushed `Block` snapshots the target's name and latest avatar the same way `Following` does;
+both are refreshed by the `profile-changed` worker when that account renames or changes its picture.
+
+**"Already blocked" no longer exits early.** It used to return immediately, which made the block
+half-applicable: a crash between the `Blocks` push and the severing left the redelivered message
+matching nothing at the push, returning the conflict, and never severing — so the two accounts
+stayed following each other and kept their reactions on each other's content while the block looked
+applied. Every write below carries its own precondition and is safe to re-run, so the conflict is
+now carried to the end and reported only once the severing has run.
 
 ### 80. Unblock account — `DELETE /Block/{accountId}` → 202
 
@@ -1442,20 +1547,31 @@ flowchart TD
 
 ## Report
 
-### 63. Create report — `POST /Report`
+### 63. Create report — `POST /Report` `[report]`
 
 ```mermaid
 flowchart TD
     A["Client<br/>POST /api/v1/Report<br/>{PostId?, CommentId?, AccountId?, Reason}"] --> B["ReportController.CreateReport"]
-    B --> C["MediatR → CreateReportValidator<br/>reason non-empty ≤2000 · target ids non-empty when sent"] -->|invalid| C1["400"]
+    B --> C["MediatR → CreateReportValidator<br/>reason non-empty ≤2000<br/><b>exactly one target id</b>"] -->|invalid| C1["400"]
     C --> D["CreateReportHandler → identity"] -->|null| D1["401"]
-    D --> E["Report.Create<br/>reporterId set · reason non-blank"]
+    D --> T{"Mongo any post / comment / account<br/>Id = target, !IsDeleted"}
+    T -->|no| T1["404 'Report target not found'"]
+    T --> U{"Mongo any report<br/>ReporterId + same target, !IsDeleted"}
+    U -->|yes| U1["409 'You have already reported this'"]
+    U --> E["Report.Create<br/>reporterId set · reason non-blank"]
     E -->|fail| E1["400"]
     E --> F["Mongo insertOne(report)"]
-    F --> G["Redis SET report:v1:id 7d"] --> H["200 ReportDto"]
+    F --> G["Redis SET report:v1:id 7d<br/>bump report:all"] --> H["200 ReportDto"]
 ```
-The three target ids are all optional and none is required, so a report can be filed against no
-target. The referenced entity is not checked.
+A report names **exactly one** target, that target must exist, and a reporter may hold only one live
+report against it.
+
+All three mattered for more than queue hygiene. The targets were all optional and none was required,
+so a report about nothing validated and inserted; the target was never checked, so any GUID at all
+would do; and nothing deduplicated — which reached past moderation into trust, because
+`FollowService.TryGrantTrustAsync` refuses to grant trust to an account carrying any live report, so
+one account could file reports in a loop and hold another below the threshold indefinitely. The
+`[report]` budget bounds the rate on top of that.
 
 ### 64. List reports — `GET /Report` · **admin**
 

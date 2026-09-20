@@ -100,18 +100,18 @@ Registered as an `IMongoClient` singleton; `DbContext` resolves the database by 
 
 #### Indexes
 
-**42 index models** are declared in
+**45 index models** are declared in
 [src/infra/persistence/configuration/IndexConfiguration.cs](../src/infra/persistence/configuration/IndexConfiguration.cs)
 and created by `IndexInitializer`, a `BackgroundService` so builds never block startup.
 
 | Collection | Indexes |
 |---|---|
-| `account` | Unique `Email` partial on `IsDeleted: false`; `(Name, IsDeleted, CreatedAt desc, Id desc)`; `(IsDeleted, CreatedAt desc, Id desc)`; multikey `Followers.AccountId`, `Followings.AccountId`, `SavePosts.PostId`, `SaveShops.ShopId`; `DeletedAt` partial on `IsDeleted: true` |
+| `account` | Unique `Email` partial on `IsDeleted: false`; `(Name, IsDeleted, CreatedAt desc, Id desc)`; `(IsDeleted, CreatedAt desc, Id desc)`; multikey `Followers.AccountId`, `Followings.AccountId`, `Blocks.AccountId`, `SavePosts.PostId`, `SaveShops.ShopId`; `DeletedAt` partial on `IsDeleted: true` |
 | `post` | By `AccountId`, `ShopId`, `IsDeleted`, `CaptionNormalized`; multikey `Reactions.AccountId` backing both `ReactionMembership` and the affinity ranking in `GetRelatedPost`; `DeletedAt` partial on `IsDeleted: true` |
 | `comment` | `(PostId, IsDeleted, CreatedAt desc, Id desc)`; `(AccountId, IsDeleted, CreatedAt desc, Id desc)`; `(IsDeleted, CreatedAt desc, Id desc)` backing the unfiltered administrator listing; multikey `Reactions.AccountId`; `DeletedAt` partial on `IsDeleted: true` |
 | `shop` | Unique `(Name, Address)` partial on `IsDeleted: false`; by `Name`, `Address`, `NameNormalized`, `AddressNormalized`, `IsDeleted`; **2dsphere on `Location`** backing `GetBestShopAround`; `DeletedAt` partial on `IsDeleted: true` |
 | `report` | By `IsDeleted`, `PostId`, `CommentId`, `AccountId`, `ReporterId` |
-| `notification` | `(ToAccountId, IsDeleted, CreatedAt desc, Id desc)`, backing both the recipient's listing and the per-account delete in `AccountService` |
+| `notification` | `(ToAccountId, IsDeleted, CreatedAt desc, Id desc)`, backing both the recipient's listing and the per-account delete in `AccountService`; `ActorAccountId`, backing the actor-avatar refresh in `ProfileService` |
 | `refreshtoken` | Unique `Token`; **TTL on `ExpiryDate` with `ExpireAfter = TimeSpan.Zero`**; by `IsDeleted`; `IsRevoked` partial on `IsRevoked: true` |
 | `devicetoken` | Unique `Token`, the key `RegisterDeviceHandler` upserts on; `(AccountId, IsDeleted)` backing the per-account lookup `ApnsService` runs once per notification |
 
@@ -196,6 +196,8 @@ forcing it open during composition.
 | `list-version:{entity}:{signature}` | 1 day, sliding | List invalidation counter. Always the **unsuffixed** signature — writers cannot compute a viewer's hidden set, so every hidden variant of a page shares one counter and retires on a single bump |
 | `affinity:v1:account:{guid}` | 1 hour | Accounts this account reacts to most, ranked; a query input for `GetRelatedPost` rather than a page of results, so no version counter governs it |
 | `otp:{email}` | 10 minutes | `{Code, Attempts, ExpiresAt}`, max 3 attempts. Deleted only when the attempt cap is hit; a correct code is left to expire so a lost verify response can be retried |
+| `otp:gen:{email}:{yyyyMMddHH}` | 1 hour | Passcodes issued to this address in the window. Keyed by recipient rather than by caller, which is what the edge limiters cannot do. The UTC hour is in the key so the window **tumbles** — a sliding one would let anyone holding an address keep its owner locked out of password reset for as long as they kept asking |
+| `purge:sweep-claim` | 6 hours | Claimed by whichever replica increments it to 1, so the retention sweep runs once per interval rather than once per replica |
 | `registration:{token}` | 10 minutes | Data-Protection-wrapped email. Read non-destructively and deleted only once the write it authorises commits |
 | `rabbitmq:idempotency:{queue}:{messageId}` | 24 hours | SHA-256 of the processed payload |
 | `bump:dataprotection-keys` | none | ASP.NET Data Protection key ring (see *Deployment topology*) |
@@ -217,21 +219,30 @@ and `NetworkRecoveryInterval = 5s`. The factory blocks on
 `.CreateConnectionAsync().GetAwaiter().GetResult()`, so **the broker must be reachable at startup** —
 unlike Redis, there is no non-blocking fallback.
 
-11 durable, non-exclusive, non-auto-delete queues, each declared alongside a `.retry` queue (which
+12 durable, non-exclusive, non-auto-delete queues, each declared alongside a `.retry` queue (which
 holds nothing, and whose fixed `x-message-ttl` expires messages back to the main queue as the retry
-delay) and a `.dlq` — **33 queues in total**. Consumers use `prefetchCount: 1` with manual ack. Each
-of the 11 `QueueConsumerHost<TMessage>` instances restarts its consume loop after a 5-second delay if
+delay) and a `.dlq` — **36 queues in total**. Consumers use `prefetchCount: 1` with manual ack. Each
+of the 12 `QueueConsumerHost<TMessage>` instances restarts its consume loop after a 5-second delay if
 it throws.
 
 Messages are published with `Persistent = true` onto durable queues, so a broker restart does not lose
 them. The queue table, message payloads and worker mappings are in
-[`developer-guide.md`](./developer-guide.md#32-the-11-queues); the ordering rationale is in
+[`developer-guide.md`](./developer-guide.md#32-the-12-queues); the ordering rationale is in
 [`system-design.md`](./system-design.md#43-sequential-ordering-for-inverse-operation-pairs).
 
-`RabbitMQService.PublishAsync` opens a channel, re-declares the queue, publishes, then disposes the
-channel — three broker round trips per published message. Broker latency therefore adds directly to
-the latency of every endpoint that publishes, which makes co-locating the broker with the application
-a correctness-adjacent concern rather than a tuning detail.
+Publishing goes through `RabbitMQPublishChannel`, a singleton holding **one** channel behind a
+semaphore, with each queue declared once per channel lifetime. It previously opened a channel and
+re-declared the queue on every message — three broker round trips to send one, on the path every
+reaction, follow, save and comment takes, and once per post and per comment in the account delete
+cascade. A single channel is enough because publishing without publisher confirms does not wait on
+the broker, so the semaphore is held across a socket write and nothing else; `IChannel` is not
+thread-safe in RabbitMQ.Client 7, which is the only reason it is there. The channel is recreated, and
+its declared set cleared, if the broker closes it.
+
+Consumers keep a channel each: a consumer's channel carries its delivery acknowledgements and cannot
+be shared. Broker latency still adds to the latency of every endpoint that publishes, which makes
+co-locating the broker with the application a correctness-adjacent concern rather than a tuning
+detail.
 
 ### Cloudflare R2 — object storage
 
@@ -324,7 +335,7 @@ ENTRYPOINT ["sh", "-c", "exec dotnet api.dll --urls \"http://0.0.0.0:${PORT:-808
 
 The entrypoint binds `$PORT` when the environment sets it and falls back to the `EXPOSE`d `8080` for a
 plain `docker run`, so no target port needs to be configured on a platform that injects `PORT`. `exec`
-keeps `dotnet` as PID 1 so `SIGTERM` reaches the host and the 11 queue consumers shut down through
+keeps `dotnet` as PID 1 so `SIGTERM` reaches the host and the 12 queue consumers shut down through
 their `stoppingToken` rather than being killed.
 
 `.dockerignore` excludes `bin/`, `obj/`, `.vs/`, `.vscode/`, `*.user`, `.git/`, `.claude/`, `doc/`,
@@ -342,7 +353,7 @@ graph TB
 
     subgraph container["Container — mcr.microsoft.com/dotnet/aspnet:9.0<br/>USER $APP_UID · binds $PORT (8080 fallback)"]
         api["api.dll<br/>13 controllers + SignalR hub"]
-        hosted["15 hosted services<br/>11 queue consumers<br/>IndexInitializer<br/>NormalizedFieldBackfill<br/>AdminSeeder<br/>SoftDeletePurgeHost"]
+        hosted["16 hosted services<br/>12 queue consumers<br/>IndexInitializer<br/>NormalizedFieldBackfill<br/>AdminSeeder<br/>SoftDeletePurgeHost"]
     end
 
     mongo[("MongoDB<br/>8 collections")]
@@ -384,7 +395,7 @@ The default filesystem key ring would be discarded on every deploy and never sha
 so a token issued before a deploy, or by another replica, would fail to unprotect with no error the
 caller could act on. **Redis persistence is therefore a hard requirement, not a cache optimisation.**
 
-**The API and all 11 queue consumers run in the same process**; there is no separate worker
+**The API and all 12 queue consumers run in the same process**; there is no separate worker
 deployment. Scaling the API scales consumers too, and each replica competes for the same queues. It
 also means the process must stay resident: a platform that scales to zero would stop the consumers,
 `SoftDeletePurgeHost` and the initializers along with the HTTP surface.
@@ -457,7 +468,7 @@ them directly:
 | `UseSerilogRequestLogging` | One summary per HTTP request: method, path, status, elapsed | `StatusCode >= 500` |
 | `PerformanceMiddleware` / `PerformanceBehavior` | A warning above 500 ms, at the HTTP and MediatR layers | `level: warn`, `ElapsedMilliseconds > 2000` |
 | `CorrelationIdMiddleware` | `CorrelationId` on every event in a request scope | `CorrelationId: <id>` to reconstruct one request |
-| `QueueConsumerHost` | A warning per message that does not apply, and an error when a consume loop restarts | `QueueName: react-post` + `level: error` to isolate one queue |
+| `QueueConsumerHost` | A **warning** per message that does not apply, and an error when a consume loop restarts | `QueueName: react-post` to isolate one queue. A message that does not apply is acknowledged, never dead-lettered, so this line is the only trace a systematically refusing worker leaves — alert on its **rate**, since a single one is usually just a double tap |
 
 `ReadFrom.Configuration` still runs, so a second sink can be added purely through `appsettings.json` —
 a package reference plus a `WriteTo` entry, no code change. Seq, Better Stack, Axiom, Grafana Loki and

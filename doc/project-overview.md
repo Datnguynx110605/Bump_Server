@@ -96,8 +96,8 @@ references only `infra`, reaching `app` and `domain` transitively.
 ```mermaid
 graph LR
     api["<b>api</b><br/>13 controllers · 83 endpoints<br/>2 middleware · JWT · rate limiting"]
-    infra["<b>infra</b><br/>12 adapters · 9 queue workers<br/>15 hosted services · SignalR hub"]
-    app["<b>app</b><br/>83 MediatR handlers<br/>39 commands · 41 queries · 3 email<br/>46 validators · 21 interfaces"]
+    infra["<b>infra</b><br/>13 adapters · 10 queue workers<br/>16 hosted services · SignalR hub"]
+    app["<b>app</b><br/>83 MediatR handlers<br/>39 commands · 41 queries · 3 email<br/>46 validators · 22 interfaces"]
     domain["<b>domain</b><br/>16 entities · 3 value objects<br/>3 enums · DomainResult"]
 
     api --> infra

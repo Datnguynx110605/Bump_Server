@@ -33,18 +33,19 @@ Bump_Server/
     │
     ├── app/                        [1]  DependencyInjection.cs — AddApp: MediatR, AutoMapper, validators
     │   ├── common/                 [3]  CollectionName, QueueName, AppError
-    │   │   ├── behavior/           [3]  MediatR pipeline: Logging → Performance → Validation
+    │   │   ├── behavior/           [4]  MediatR pipeline: Logging → Performance → Validation
+    │   │   │                        → WriteCancellation
     │   │   ├── cache/              [2]  CacheKey (key shapes + TTLs), ListCache (version bump/read)
     │   │   ├── dto/                [21] response and cache shapes; PascalCase record parameters
     │   │   ├── interface/               contracts implemented in infra — the inversion boundary
     │   │   │   ├── persistence/    [1]  IMongoDbContext
-    │   │   │   ├── queue/          [9]  one per queue worker (IFollowService, IReactPostService, …)
+    │   │   │   ├── queue/          [10] one per queue worker (IFollowService, IReactPostService, …)
     │   │   │   └── service/        [11] adapters (IRedisService, IR2Service, IJwtService, IApnsService, …)
     │   │   ├── mapping/            [13] one AutoMapper Profile per aggregate
     │   │   ├── membership/         [5]  per-viewer flags and filters: ReactionMembership,
     │   │   │                        SaveMembership, PostFeedEnricher, BlockedAccountSet,
     │   │   │                        BlockGuard
-    │   │   ├── message/            [8]  queue payload records; every one carries a MessageId
+    │   │   ├── message/            [9]  queue payload records; every one carries a MessageId
     │   │   └── pagination/         [7]  cursor codec, paginators, and their cached wrappers
     │   └── feature/                     83 use cases — one folder each, listed in full below
     │       ├── account/            [1]  AccountProjection.cs — area-shared
@@ -182,11 +183,12 @@ Bump_Server/
     │   │   ├── comment/            [1]  CommentService — create notification + delete image cleanup
     │   │   ├── follow/             [1]  FollowService — both sides of the edge + counters
     │   │   ├── post/               [1]  PostService — post images + the comment cascade
+    │   │   ├── profile/            [1]  ProfileService — name/avatar fan-out to copied subdocuments
     │   │   ├── reaction/           [2]  ReactPostService, ReactCommentService — one per reaction target
     │   │   ├── save/               [1]  SaveService — save/unsave post and shop
     │   │   └── shop/               [1]  ShopRateService — rate recalculation
     │   ├── serialization/          [4]  value-object JSON converters + DomainJsonOptions
-    │   └── service/                [12] adapters: Redis, RabbitMQ, R2, email, JWT, BCrypt, OTP, identity, APNs…
+    │   └── service/                [13] adapters: Redis, RabbitMQ, R2, email, JWT, BCrypt, OTP, identity, APNs…
     │
     └── api/                        [2]  Program.cs (pipeline order), DependencyInjection.cs (AddApi)
         ├── Properties/             [0]  launchSettings.json only
@@ -214,12 +216,12 @@ exists.
   that use case's folder instead.
 - **`api/common/` is for cross-controller plumbing**, not helpers for a single controller.
 
-**Structural folders are lowercase, single word.** All 44 of them: `account`, `api`, `app`, `auth`,
+**Structural folders are lowercase, single word.** All 45 of them: `account`, `api`, `app`, `auth`,
 `behavior`, `block`, `cache`, `command`, `comment`, `common`, `configuration`, `controller`, `core`,
 `dashboard`, `dbcontext`, `domain`, `dto`, `email`, `entity`, `enum`, `feature`, `follow`, `health`,
 `hub`, `infra`, `interface`, `mapping`, `membership`, `message`, `middleware`, `notification`,
-`pagination`, `persistence`, `post`, `query`, `queue`, `reaction`, `report`, `request`, `save`,
-`serialization`, `service`, `shop`, `valueobject`. Note `valueobject` and `dbcontext` are run
+`pagination`, `persistence`, `post`, `profile`, `query`, `queue`, `reaction`, `report`, `request`,
+`save`, `serialization`, `service`, `shop`, `valueobject`. Note `valueobject` and `dbcontext` are run
 together rather than hyphenated or split.
 
 **Use-case folders are PascalCase** and named for the operation: `Create`, `Delete`, `ChangeBio`,

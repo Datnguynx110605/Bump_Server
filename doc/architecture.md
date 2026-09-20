@@ -56,7 +56,7 @@ This is the one genuinely inverted boundary in the system, and it is the reason 
 graph LR
     subgraph app["app — declares"]
         ipers["1 persistence contract"]
-        iqueue["9 queue worker contracts"]
+        iqueue["10 queue worker contracts"]
         isvc["11 service contracts"]
     end
 
@@ -75,12 +75,12 @@ graph LR
     style infra fill:#e3f2fd,stroke:#1565c0
 ```
 
-**21 interfaces** are declared in `app` and implemented in `infra`:
+**22 interfaces** are declared in `app` and implemented in `infra`:
 
 | Category | Count | Covers |
 |---|---|---|
 | Persistence | 1 | Collection access |
-| Queue workers | 9 | The business operation behind each category of deferred work |
+| Queue workers | 10 | The business operation behind each category of deferred work |
 | Services | 11 | Cache, messaging, object storage, email, push, token issuance, hashing, one-time passcodes, registration tokens, identity access |
 
 Consequences that must be preserved:
@@ -124,7 +124,7 @@ graph TD
 
     api -.->|"transitive, used directly:<br/>value-object factories, role enum"| domain
     api -.->|"transitive, used directly:<br/>commands, queries, DTOs"| app
-    infra ==>|"implements 21 contracts"| app
+    infra ==>|"implements 22 contracts"| app
 
     style domain fill:#e8f5e9,stroke:#2e7d32
     style api fill:#e3f2fd,stroke:#1565c0
@@ -359,6 +359,7 @@ diagnostic question when the latency SLA is breached.
 | Error translation | each layer translates once (§4.2) | — |
 | Logging, correlation, performance | `api` and `app` | `api` and `app` |
 | Rate limiting | `api` | `api` |
+| Cancellation scope | `app` | `app`, as a pipeline behaviour |
 | Cache policy | `app` | `infra` |
 | Serialization mapping | `infra` | `infra` |
 
@@ -406,6 +407,16 @@ the rule, the reason, and the correct alternative.
 
 > **Do not mutate a collection without maintaining its counter in the same operation.** There is no
 > reconciliation process; a counter that drifts stays drifted.
+
+> **Do not carry the caller's cancellation token into the second and later writes of a command.**
+> A command is rarely one write, and a client that disconnects mid-request cancels the token — which
+> used to commit the first write and skip the rest. The pipeline substitutes a non-cancellable token
+> for every command, so this holds by default; a handler that reintroduces a request-scoped token
+> after its first write breaks it again.
+
+> **Do not enumerate a cascade's targets by a predicate the cascade itself falsifies.** Listing rows
+> as live and then marking them deleted means the list is empty on every redelivery, so a failure
+> between the two loses the remaining work silently. Enumerate on the post-state.
 
 > **Do not hard-delete.** Deletion is soft everywhere, and the retention sweep owns permanence. A hard
 > delete removes the recovery window and desynchronises any cascade that expects the row to still be

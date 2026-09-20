@@ -64,11 +64,11 @@ The 16 request records: `ChangeBioRequest`, `ChangeCaptionRequest`, `ChangeConte
 | **Validators** | **46** | 41 of 42 commands; 5 of 41 queries |
 | **DTO shapes** | **21** | |
 | AutoMapper profiles | 13 | One per aggregate |
-| Queue message records | 8 | |
-| Pipeline behaviours | 3 | `LoggingBehavior` → `PerformanceBehavior` → `ValidationBehavior` |
+| Queue message records | 9 | |
+| Pipeline behaviours | 4 | `LoggingBehavior` → `PerformanceBehavior` → `ValidationBehavior` → `WriteCancellationBehavior` |
 | Pagination types | 7 | |
 | Membership helpers | 5 | |
-| Interfaces | 21 | 1 persistence, 9 queue, 11 service |
+| Interfaces | 22 | 1 persistence, 10 queue, 11 service |
 
 **The only command without a validator** is `DeleteAccount`, which takes no parameters.
 **The 5 queries that have one** are `GetAccountByKeyword`, `GetPostByKeyword`, `GetShopByKeyword`,
@@ -90,18 +90,23 @@ The 5 membership helpers: `ReactionMembership`, `SaveMembership`, `PostFeedEnric
 
 | Artifact | Count | Notes |
 |---|---|---|
-| Service adapters | 12 | 11 implement `app` contracts; `ApnsTokenProvider` is a supporting singleton |
-| **Queue workers** | **9** | |
-| Queues | 11 | Plus 11 `.retry` and 11 `.dlq` — **33 total** |
-| **Hosted services** | **15** | 11 `QueueConsumerHost<TMessage>` + 4 lifecycle services |
+| Service adapters | 13 | 11 implement `app` contracts; `ApnsTokenProvider` and `RabbitMQPublishChannel` are supporting singletons |
+| **Queue workers** | **10** | |
+| Queues | 12 | Plus 12 `.retry` and 12 `.dlq` — **36 total** |
+| **Hosted services** | **16** | 12 `QueueConsumerHost<TMessage>` + 4 lifecycle services |
 | Health checks | 3 | `MongoHealthCheck`, `RedisHealthCheck`, `RabbitMQHealthCheck` |
 | JSON converters | 3 | Plus `DomainJsonOptions` |
 | Persistence configuration | 7 | Class maps, serializer, indexes, initializers, seeder, purge host |
-| Index models | 42 | Declared in `IndexConfiguration` |
+| Index models | 43 | Declared in `IndexConfiguration` |
 
-The 12 adapters: `ApnsService`, `ApnsTokenProvider`, `BCryptService`, `CurrentIdentityService`,
-`EmailService`, `JwtService`, `NotificationService`, `OtpService`, `R2Service`, `RabbitMQService`,
-`RedisService`, `RegistrationService`.
+The 13 adapters: `ApnsService`, `ApnsTokenProvider`, `BCryptService`, `CurrentIdentityService`,
+`EmailService`, `JwtService`, `NotificationService`, `OtpService`, `R2Service`,
+`RabbitMQPublishChannel`, `RabbitMQService`, `RedisService`, `RegistrationService`.
+
+`RabbitMQPublishChannel` is a singleton holding one channel and the set of queues declared on it.
+`RabbitMQService` is scoped and used to open a channel and redeclare the queue on every publish —
+three broker round trips to send one message, on the path every reaction, follow, save and comment
+takes.
 
 The 4 non-queue hosted services: `IndexInitializer`, `NormalizedFieldBackfillInitializer`,
 `AdminSeeder`, `SoftDeletePurgeHost`.
@@ -165,11 +170,11 @@ src/
 │   │   ├── dto/                [21] response and cache shapes
 │   │   ├── interface/
 │   │   │   ├── persistence/    [1]  IMongoDbContext
-│   │   │   ├── queue/          [9]  one per queue worker
+│   │   │   ├── queue/          [10] one per queue worker
 │   │   │   └── service/        [11] adapter contracts
 │   │   ├── mapping/            [13] one AutoMapper Profile per aggregate
 │   │   ├── membership/         [5]  per-viewer flags and filters
-│   │   ├── message/            [8]  queue payloads; every one carries a MessageId
+│   │   ├── message/            [9]  queue payloads; every one carries a MessageId
 │   │   └── pagination/         [7]  cursor codec, paginators, cached wrappers
 │   └── feature/                     83 use cases
 │       └── <area>/
@@ -192,11 +197,12 @@ src/
 │   │   ├── comment/            [1]  CommentService
 │   │   ├── follow/             [1]  FollowService
 │   │   ├── post/               [1]  PostService
+│   │   ├── profile/            [1]  ProfileService
 │   │   ├── reaction/           [2]  ReactPostService, ReactCommentService
 │   │   ├── save/               [1]  SaveService
 │   │   └── shop/               [1]  ShopRateService
 │   ├── serialization/          [4]  value-object JSON converters + DomainJsonOptions
-│   └── service/                [12] Redis, RabbitMQ, R2, email, JWT, BCrypt,
+│   └── service/                [13] Redis, RabbitMQ, R2, email, JWT, BCrypt,
 │                                    OTP, identity, registration, APNs ×2, notification
 │
 └── api/                        [2]  Program.cs, DependencyInjection.cs
@@ -251,7 +257,7 @@ Every queue is provisioned as a three-tier set:
 All queues are declared `durable: true`, non-exclusive, non-auto-delete. Messages are published with
 `Persistent = true`. Consumers use `prefetchCount: 1` with manual ack.
 
-### 3.2 The 11 queues
+### 3.2 The 12 queues
 
 Queue names are constants on `QueueName` (`src/app/common/QueueName.cs`). Registration happens in
 `AddInfra` via the private `AddQueueConsumer<TMessage>` helper.
@@ -269,13 +275,18 @@ Queue names are constants on `QueueName` (`src/app/common/QueueName.cs`). Regist
 | `delete-account` | `AccountMessage` | `IAccountService` | `ProcessAfterDeleteAsync` |
 | `delete-post` | `PostMessage` | `IPostService` | `ProcessAfterDeleteAsync` |
 | `delete-comment` | `CommentMessage` | `ICommentService` | `ProcessAfterDeleteAsync` |
+| `profile-changed` | `ProfileMessage` | `IProfileService` | `ProcessProfileChangedAsync` |
 
 **Rows with two methods share one queue and branch on the message's `IsUndo` flag.** Registering the
 inverse on its own queue would let the two be consumed concurrently and apply out of order.
 
+`profile-changed` needs no such pairing and no ordering guarantee: the worker re-reads the account's
+current name and avatar rather than applying a delta, so two changes consumed out of order still
+leave the latest values in place.
+
 ### 3.3 Message payloads
 
-All 8 records carry a `MessageId` as their first parameter; it is the idempotency key.
+All 9 records carry a `MessageId` as their first parameter; it is the idempotency key.
 
 | Record | Payload beyond `MessageId` |
 |---|---|
@@ -287,10 +298,11 @@ All 8 records carry a `MessageId` as their first parameter; it is the idempotenc
 | `RecalculateShopRateMessage` | `ShopId` |
 | `AccountMessage` | `AccountId` |
 | `PostMessage` | `PostId` |
+| `ProfileMessage` | `AccountId` |
 
 ### 3.4 Registration mechanics — why not `AddHostedService`
 
-The 11 registrations close only **8 distinct** `QueueConsumerHost<TMessage>` generics:
+The 12 registrations close only **9 distinct** `QueueConsumerHost<TMessage>` generics:
 
 | Message type | Queues closing the same generic |
 |---|---|
@@ -299,7 +311,7 @@ The 11 registrations close only **8 distinct** `QueueConsumerHost<TMessage>` gen
 | `SaveMessage` | `save-post`, `save-shop` |
 
 `AddHostedService` routes through `TryAddEnumerable`, which **deduplicates by implementation type**.
-Using it here would silently drop 3 of the 11 consumers with no error at build or startup. The helper
+Using it here would silently drop 3 of the 12 consumers with no error at build or startup. The helper
 therefore registers directly:
 
 ```csharp
@@ -340,7 +352,7 @@ is already false after the first application.
 
 | Service | Trigger | Behaviour |
 |---|---|---|
-| `IndexInitializer` | Startup | Creates the 42 index models without blocking startup |
+| `IndexInitializer` | Startup | Creates the 45 index models without blocking startup |
 | `NormalizedFieldBackfillInitializer` | Startup | Cursor-scans for documents missing normalized fields, applies `BulkWriteAsync` per batch |
 | `AdminSeeder` | Startup | Creates or promotes the administrator from `Admin__Email` / `Admin__Password`; skipped and logged when unset |
 | `SoftDeletePurgeHost` | `PeriodicTimer` | 10-minute startup delay, then every 6 h; purges rows deleted more than 30 days ago in batches of 500 with a 200 ms pause |
