@@ -18,6 +18,11 @@ public static class AppError
 
     public static Error Conflict(string message) => Create(message, 409);
 
+    // Distinct from the edge rate limiter, which rejects before a handler runs and answers
+    // from RateLimiterPolicy. This is a handler-level budget the edge cannot express,
+    // because it is scoped to an email address rather than to a connection or a principal.
+    public static Error TooManyRequests(string message) => Create(message, 429);
+
     private static Error Create(string message, int status) =>
         new Error(message).WithMetadata(StatusKey, status);
 }

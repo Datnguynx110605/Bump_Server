@@ -19,6 +19,7 @@ internal static class ResultStatusMapper
             StatusCodes.Status401Unauthorized => "Unauthorized",
             StatusCodes.Status404NotFound => "Not Found",
             StatusCodes.Status409Conflict => "Conflict",
+            StatusCodes.Status429TooManyRequests => "Too Many Requests",
             _ => "Bad Request"
         };
     }
