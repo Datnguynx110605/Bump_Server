@@ -83,12 +83,17 @@ internal sealed class ChangePasswordHandler
         // token's own 7-day lifetime.
         var refreshTokenCollection = _dbContext.GetCollection<RefreshToken>(CollectionName.RefreshToken);
 
-        await refreshTokenCollection.UpdateManyAsync(
+        // Deleted, not marked revoked. A revoked row is the signal RequestNewAccessToken uses
+        // to detect a replayed token and cut every session on the account — and a credential
+        // change is not a replay. Marking them left a second device holding a row that looked
+        // exactly like a stolen one, so its next refresh nuked the session the user had just
+        // created here. These rows are worthless either way, and SoftDeletePurgeHost already
+        // hard-deletes revoked tokens on sight, so deleting now only brings that forward.
+        await refreshTokenCollection.DeleteManyAsync(
             Builders<RefreshToken>.Filter.And(
                 Builders<RefreshToken>.Filter.Eq(x => x.AccountId, account.Id),
                 Builders<RefreshToken>.Filter.Eq(x => x.IsRevoked, false)),
-            Builders<RefreshToken>.Update.Set(x => x.IsRevoked, true),
-            cancellationToken : cancellationToken);
+            cancellationToken);
 
         // A credential reset means some device is no longer trusted, and a device that can
         // no longer authenticate should not keep receiving notification text on its lock

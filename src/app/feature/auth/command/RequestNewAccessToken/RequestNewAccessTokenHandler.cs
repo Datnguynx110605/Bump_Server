@@ -31,6 +31,28 @@ internal sealed class RequestNewAccessTokenHandler
         if(currentToken is null)
             return Result.Fail(AppError.Unauthorized("Invalid refresh token"));
 
+        // A revoked token being presented again is not an ordinary expiry — rotation already
+        // replaced it, so whoever holds it either kept a copy or stole one, and there is no
+        // way to tell which side of that is the real user. Cutting every live session for
+        // the account is the only answer that is certainly correct: the thief loses access,
+        // and the legitimate holder signs in again with credentials the thief does not have.
+        // Before this, a stolen token's chain kept rotating happily alongside the victim's.
+        //
+        // Scoped to the account rather than to a token lineage because rotation inserts an
+        // independent row each time and carries no parent, so "the family" and "the account"
+        // are the same set. The other live sessions are collateral, and deliberately so.
+        if(currentToken.IsRevoked)
+        {
+            await refreshTokenCollection.UpdateManyAsync(
+                Builders<RefreshToken>.Filter.And(
+                    Builders<RefreshToken>.Filter.Eq(x => x.AccountId, currentToken.AccountId),
+                    Builders<RefreshToken>.Filter.Eq(x => x.IsRevoked, false)),
+                Builders<RefreshToken>.Update.Set(x => x.IsRevoked, true),
+                cancellationToken : cancellationToken);
+
+            return Result.Fail(AppError.Unauthorized("Invalid refresh token"));
+        }
+
         var validateResult = currentToken.Validate();
         if(!validateResult.IsSuccess)
             return Result.Fail(AppError.Unauthorized(validateResult.Error!));
