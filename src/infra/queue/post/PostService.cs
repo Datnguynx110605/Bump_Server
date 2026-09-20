@@ -56,14 +56,6 @@ public sealed class PostService : IPostService
         var commentProjection = Builders<Comment>.Projection
             .Include(x => x.AccountId);
 
-        var comments = await commentCollection
-            .Find(x => x.PostId == post.Id && !x.IsDeleted)
-            .Project<Comment>(commentProjection)
-            .ToListAsync(cancellationToken);
-
-        if(comments.Count == 0)
-            return Result.Ok();
-
         var commentFilter = Builders<Comment>.Filter.And(
             Builders<Comment>.Filter.Eq(x => x.PostId, post.Id),
             Builders<Comment>.Filter.Eq(x => x.IsDeleted, false));
@@ -76,6 +68,24 @@ public sealed class PostService : IPostService
             commentFilter,
             commentUpdate,
             cancellationToken : cancellationToken);
+
+        // Read after the flip and on IsDeleted == true. The earlier form read the live
+        // comments first, returned Result.Ok() when it found none, and published from that
+        // pre-flip list — so a crash between the UpdateMany above and this loop was
+        // unrecoverable: the redelivered message found every comment already flipped, took
+        // the empty-list exit, and no comment's images were ever removed from R2. Reading
+        // the post-state is what lets the retry finish the job.
+        //
+        // It also names comments deleted before this post was, whose cascade already ran.
+        // CommentService.ProcessAfterDeleteAsync is a no-op on a second pass, so that costs
+        // redundant messages rather than a wrong result.
+        var comments = await commentCollection
+            .Find(x => x.PostId == post.Id && x.IsDeleted)
+            .Project<Comment>(commentProjection)
+            .ToListAsync(cancellationToken);
+
+        if(comments.Count == 0)
+            return Result.Ok();
 
         // One message per comment rather than deleting the images here: a post's comment
         // count is unbounded, so inline this is the same message-whose-cost-scales problem

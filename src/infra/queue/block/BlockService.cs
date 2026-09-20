@@ -61,8 +61,14 @@ public sealed class BlockService : IBlockService
             blockUpdate,
             cancellationToken : cancellationToken);
 
-        if(blockResult.MatchedCount != 1)
-            return Result.Fail(AppError.Conflict("Already blocked this account"));
+        // A zero match is "the Blocks entry is already there", and that is deliberately NOT
+        // an exit. It used to be, and that made the block half-applicable: a crash between
+        // this push and the severing below left the redelivered message matching nothing
+        // here, returning Conflict, and never severing — so the two accounts stayed
+        // following each other and kept their reactions on each other's content while the
+        // block looked applied. Every write below carries its own precondition and is
+        // therefore safe to re-run, so falling through is what lets a retry finish.
+        bool alreadyBlocked = blockResult.MatchedCount != 1;
 
         // Severing follows is tolerant by design: strangers block each other far more often
         // than mutuals do, so a filter that matches nothing is the normal case and must not
@@ -111,7 +117,11 @@ public sealed class BlockService : IBlockService
 
         await InvalidateAsync(blockerId, blockedId, reactions, cancellationToken);
 
-        return Result.Ok();
+        // Reported only once the severing has actually run, so the caller still learns the
+        // block was a duplicate without that answer costing the repair above.
+        return alreadyBlocked
+            ? Result.Fail(AppError.Conflict("Already blocked this account"))
+            : Result.Ok();
     }
 
     public async Task<Result> ProcessUnblockAsync(

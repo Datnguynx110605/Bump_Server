@@ -7,6 +7,10 @@ namespace infra;
 
 public sealed class AccountService : IAccountService
 {
+    // How many cache invalidations are in flight at once. Bounded because the count scales
+    // with the deleted account's engagement, which has no ceiling.
+    private const int InvalidationBatchSize = 500;
+
     private readonly IMongoDbContext _dbContext;
     private readonly IR2Service _r2Service;
     private readonly IRedisService _redisService;
@@ -50,9 +54,6 @@ public sealed class AccountService : IAccountService
         var refreshTokenFilter = Builders<RefreshToken>.Filter.And(
             Builders<RefreshToken>.Filter.Eq(x => x.AccountId, accountId),
             Builders<RefreshToken>.Filter.Eq(x => x.IsRevoked, false));
-
-        var refreshTokenUpdate = Builders<RefreshToken>.Update
-            .Set(x => x.IsRevoked, true);
 
         var ownerCommentFilter = Builders<Comment>.Filter.And(
             Builders<Comment>.Filter.Eq(x => x.AccountId, account.Id),
@@ -102,43 +103,61 @@ public sealed class AccountService : IAccountService
 
         var notificationCollection = _dbContext.GetCollection<Notification>(CollectionName.Notification);
 
-        var ownerComments = await commentCollection
+        // Started together rather than awaited in turn: five reads across three collections,
+        // none of which needs another's answer, so they cost one wall-clock wait instead of
+        // five round trips back to back.
+        //
+        // ownerComments is read BEFORE the flip on purpose, unlike the cascade lists below:
+        // it drives the CommentAmount decrement, which must apply exactly once. A redelivery
+        // finds these rows already IsDeleted and reads an empty list, which is what keeps the
+        // decrement from double-applying and driving the counter negative.
+        var ownerCommentsTask = commentCollection
             .Find(ownerCommentFilter)
             .Project<Comment>(Builders<Comment>.Projection
                 .Include(x => x.Id)
                 .Include(x => x.PostId))
             .ToListAsync(cancellationToken);
 
-        var ownerPosts = await postCollection
-            .Find(ownerPostFilter)
-            .Project<Post>(Builders<Post>.Projection.Include(x => x.Id))
-            .ToListAsync(cancellationToken);
-
-        var reactedPosts = await postCollection
+        var reactedPostsTask = postCollection
             .Find(postFilter)
             .Project<Post>(Builders<Post>.Projection.Include(x => x.Id))
             .ToListAsync(cancellationToken);
 
-        var reactedComments = await commentCollection
+        var reactedCommentsTask = commentCollection
             .Find(commentFilter)
             .Project<Comment>(Builders<Comment>.Projection.Include(x => x.Id))
             .ToListAsync(cancellationToken);
 
-        var followerAccounts = await accountCollection
+        var followerAccountsTask = accountCollection
             .Find(followerFilter)
             .Project<Account>(Builders<Account>.Projection.Include(x => x.Id))
             .ToListAsync(cancellationToken);
 
-        var followingAccounts = await accountCollection
+        var followingAccountsTask = accountCollection
             .Find(followingFilter)
             .Project<Account>(Builders<Account>.Projection.Include(x => x.Id))
             .ToListAsync(cancellationToken);
 
         await Task.WhenAll(
-            refreshTokenCollection.UpdateManyAsync(
+            ownerCommentsTask,
+            reactedPostsTask,
+            reactedCommentsTask,
+            followerAccountsTask,
+            followingAccountsTask);
+
+        var ownerComments = ownerCommentsTask.Result;
+        var reactedPosts = reactedPostsTask.Result;
+        var reactedComments = reactedCommentsTask.Result;
+        var followerAccounts = followerAccountsTask.Result;
+        var followingAccounts = followingAccountsTask.Result;
+
+        await Task.WhenAll(
+            // Deleted rather than marked revoked, for the reason ChangePasswordHandler
+            // spells out: a revoked row is the replay signal, and an account deletion is not
+            // a replay.
+            refreshTokenCollection.DeleteManyAsync(
                 refreshTokenFilter,
-                refreshTokenUpdate,
-                cancellationToken : cancellationToken),
+                cancellationToken),
             postCollection.UpdateManyAsync(
                 postFilter,
                 postUpdate,
@@ -175,7 +194,39 @@ public sealed class AccountService : IAccountService
         // so inline this becomes a single message whose cost scales with them, and a failure
         // near the end replays all of it. Both workers require the row to already be
         // IsDeleted, which is why the publish follows the update rather than replacing it.
-        foreach(var post in ownerPosts)
+        //
+        // Enumerated on IsDeleted == true, and read again here rather than reusing a list
+        // taken before the flip. That ordering was the whole bug: the pre-flip list is empty
+        // on every redelivery, because the first attempt already flipped the rows, so a crash
+        // or a broker blip between the update above and this loop lost the cascade for good —
+        // the images stayed in R2 with no document left to name them, and other accounts'
+        // comments survived pointing at a post the sweep would hard-delete. Reading the
+        // post-state is what makes a retry republish instead of finding nothing.
+        //
+        // The cost is that this also names rows the owner deleted individually long ago,
+        // whose cascade already ran. Both workers are no-ops on a second pass — S3 answers a
+        // delete of a missing key with success, and the comment sweep matches nothing — so
+        // that is redundant messages, not a wrong result.
+        var cascadePostsTask = postCollection
+            .Find(Builders<Post>.Filter.And(
+                Builders<Post>.Filter.Eq(x => x.AccountId, accountId),
+                Builders<Post>.Filter.Eq(x => x.IsDeleted, true)))
+            .Project<Post>(Builders<Post>.Projection.Include(x => x.Id))
+            .ToListAsync(cancellationToken);
+
+        var cascadeCommentsTask = commentCollection
+            .Find(Builders<Comment>.Filter.And(
+                Builders<Comment>.Filter.Eq(x => x.AccountId, accountId),
+                Builders<Comment>.Filter.Eq(x => x.IsDeleted, true)))
+            .Project<Comment>(Builders<Comment>.Projection.Include(x => x.Id))
+            .ToListAsync(cancellationToken);
+
+        await Task.WhenAll(cascadePostsTask, cascadeCommentsTask);
+
+        var cascadePosts = cascadePostsTask.Result;
+        var cascadeComments = cascadeCommentsTask.Result;
+
+        foreach(var post in cascadePosts)
         {
             await _rabbitMQService.PublishAsync(
                 QueueName.DeletePost,
@@ -183,7 +234,7 @@ public sealed class AccountService : IAccountService
                 cancellationToken);
         }
 
-        foreach(var comment in ownerComments)
+        foreach(var comment in cascadeComments)
         {
             await _rabbitMQService.PublishAsync(
                 QueueName.DeleteComment,
@@ -210,9 +261,15 @@ public sealed class AccountService : IAccountService
 
         if(commentCountByPost.Count > 0)
         {
+            // Gte the amount being subtracted, for the reason spelled out in
+            // DeleteCommentHandler: this decrement is not coupled to the array it summarises,
+            // so it is the one that can push the counter past zero into a value the domain
+            // cannot construct.
             var commentAmountWrites = commentCountByPost
                 .Select(group => new UpdateOneModel<Post>(
-                    Builders<Post>.Filter.Eq(x => x.Id, group.Key),
+                    Builders<Post>.Filter.And(
+                        Builders<Post>.Filter.Eq(x => x.Id, group.Key),
+                        Builders<Post>.Filter.Gte(x => x.CommentAmount.Value, group.Count())),
                     Builders<Post>.Update.Inc(x => x.CommentAmount.Value, -group.Count())))
                 .ToList<WriteModel<Post>>();
 
@@ -283,7 +340,7 @@ public sealed class AccountService : IAccountService
             cacheInvalidations.Add(_redisService.RemoveAsync(CacheKey.Comment(comment.Id), cancellationToken));
         }
 
-        foreach(var post in ownerPosts)
+        foreach(var post in cascadePosts)
         {
             cacheInvalidations.Add(_redisService.RemoveAsync(CacheKey.Post(post.Id), cancellationToken));
         }
@@ -318,7 +375,13 @@ public sealed class AccountService : IAccountService
     cancellationToken));
         }
 
-        await Task.WhenAll(cacheInvalidations);
+        // Chunked rather than one Task.WhenAll over the whole list. Every loop above adds up
+        // to two entries per row, and reacted posts, reacted comments and followers are all
+        // unbounded, so a heavily engaged account produced a WhenAll of hundreds of thousands
+        // of commands queued on one multiplexer at once — which is how the backlog times out
+        // rather than how it goes fast.
+        foreach(var batch in cacheInvalidations.Chunk(InvalidationBatchSize))
+            await Task.WhenAll(batch);
 
         return Result.Ok();
     }
