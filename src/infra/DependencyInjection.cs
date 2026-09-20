@@ -77,6 +77,10 @@ public static class DependencyInjection
             return factory.CreateConnectionAsync().GetAwaiter().GetResult();
         });
 
+        // Singleton: it caches one channel and the set of queues declared on it, both of
+        // which are per-process rather than per-request.
+        services.AddSingleton<RabbitMQPublishChannel>();
+
         services.AddHealthChecks()
             .AddCheck<MongoHealthCheck>("mongodb")
             .AddCheck<RedisHealthCheck>("redis")
@@ -102,6 +106,7 @@ public static class DependencyInjection
         services.AddScoped<IAccountService, AccountService>();
         services.AddScoped<IBlockService, BlockService>();
         services.AddScoped<IPostService, PostService>();
+        services.AddScoped<IProfileService, ProfileService>();
         services.AddHttpClient<IEmailService, EmailService>(
             client => client.Timeout = TimeSpan.FromSeconds(10));
         services.AddScoped<IFollowService, FollowService>();
@@ -203,6 +208,14 @@ public static class DependencyInjection
             message => message.MessageId,
             (provider, message, cancellationToken) => provider.GetRequiredService<IPostService>()
                 .ProcessAfterDeleteAsync(message.PostId, cancellationToken));
+
+        // No IsUndo flag and no pair: a profile refresh re-reads the account's current name
+        // and avatar, so consuming two of them out of order still leaves the latest values.
+        services.AddQueueConsumer<ProfileMessage>(
+            QueueName.ProfileChanged,
+            message => message.MessageId,
+            (provider, message, cancellationToken) => provider.GetRequiredService<IProfileService>()
+                .ProcessProfileChangedAsync(message.AccountId, cancellationToken));
 
         services.AddQueueConsumer<CommentMessage>(
             QueueName.DeleteComment,

@@ -1,4 +1,4 @@
-﻿using domain;
+using domain;
 using FluentResults;
 using MediatR;
 using MongoDB.Driver;
@@ -11,14 +11,17 @@ internal sealed class ChangeNameHandler
     private readonly IMongoDbContext _dbContext;
     private readonly IRedisService _redisService;
     private readonly ICurrentIdentityService _identityService;
+    private readonly IRabbitMQService _rabbitMQService;
     public ChangeNameHandler(
         IMongoDbContext dbContext,
         IRedisService redisService,
-        ICurrentIdentityService identityService)
+        ICurrentIdentityService identityService,
+        IRabbitMQService rabbitMQService)
     {
         _dbContext = dbContext;
         _redisService = redisService;
         _identityService = identityService;
+        _rabbitMQService = rabbitMQService;
     }
 
     public async Task<Result> Handle(
@@ -64,6 +67,15 @@ internal sealed class ChangeNameHandler
 
         await _redisService.RemoveAsync(
             cacheKey,
+            cancellationToken);
+
+        // The row above is the only copy this handler owns. Follow, block and react each
+        // denormalized the name onto other people's documents, and nothing refreshed them —
+        // so before this message existed a rename showed the old name in every follower,
+        // following, block and reaction list that already contained this account, for good.
+        await _rabbitMQService.PublishAsync(
+            QueueName.ProfileChanged,
+            new ProfileMessage(Guid.NewGuid(), account.Id),
             cancellationToken);
 
         return Result.Ok();

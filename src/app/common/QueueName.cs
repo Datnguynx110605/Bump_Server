@@ -16,4 +16,7 @@ public sealed record QueueName
     public static string DeleteAccount = "delete-account";
     public static string DeletePost = "delete-post";
     public static string DeleteComment = "delete-comment";
+    // Not an inverse pair: one direction, and the worker reads current state rather than
+    // applying a delta, so it needs no ordering guarantee of its own.
+    public static string ProfileChanged = "profile-changed";
 }

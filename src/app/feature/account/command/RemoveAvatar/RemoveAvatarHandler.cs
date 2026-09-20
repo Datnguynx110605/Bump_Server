@@ -12,16 +12,19 @@ internal sealed class RemoveAvatarHandler
     private readonly IRedisService _redisService;
     private readonly ICurrentIdentityService _identityService;
     private readonly IR2Service _r2Service;
+    private readonly IRabbitMQService _rabbitMQService;
     public RemoveAvatarHandler(
         IMongoDbContext dbContext,
         IRedisService redisService,
         ICurrentIdentityService identityService,
-        IR2Service r2Service)
+        IR2Service r2Service,
+        IRabbitMQService rabbitMQService)
     {
         _dbContext = dbContext;
         _redisService = redisService;
         _identityService = identityService;
         _r2Service = r2Service;
+        _rabbitMQService = rabbitMQService;
     }
 
     public async Task<Result> Handle(
@@ -55,6 +58,8 @@ internal sealed class RemoveAvatarHandler
             update,
             cancellationToken : cancellationToken);
 
+        // The match is what authorizes the R2 delete below: request.url is caller-supplied,
+        // and only a URL already sitting in this account's own Avatars array gets past it.
         if(updateResult.MatchedCount != 1)
             return Result.Fail(AppError.NotFound("Avatar not found"));
 
@@ -66,6 +71,15 @@ internal sealed class RemoveAvatarHandler
 
         await _redisService.RemoveAsync(
             cacheKey,
+            cancellationToken);
+
+        // Clearing the avatar has to reach the denormalized copies too, or the removed
+        // image keeps rendering from every follower, block and reaction snapshot that still
+        // holds it. The worker reads the account's current avatar, which is now absent, and
+        // writes null into those copies.
+        await _rabbitMQService.PublishAsync(
+            QueueName.ProfileChanged,
+            new ProfileMessage(Guid.NewGuid(), identity.Value),
             cancellationToken);
 
         return Result.Ok();
