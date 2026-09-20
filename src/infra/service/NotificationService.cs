@@ -52,14 +52,26 @@ public sealed class NotificationService : INotificationService
 
         Notification notification = notificationResult.Value!;
 
+        // Marked before the insert rather than by a second write after the pushes. The flag
+        // records that delivery was attempted, not that it landed — the catch blocks below
+        // mean it was set either way — so the follow-up write had nothing to learn from the
+        // attempt, and it cost every notification a second Mongo round trip plus a Redis
+        // delete against a key this method never writes. Notifications are the highest
+        // frequency write in the system, which is what made one redundant round trip each
+        // worth removing.
+        var sentResult = notification.MarkAsSent();
+        if(!sentResult.IsSuccess)
+            return Result.Fail(sentResult.Error);
+
         var notificationCollection = _dbContext.GetCollection<Notification>(CollectionName.Notification);
 
         await notificationCollection.InsertOneAsync(
             notification,
             cancellationToken : cancellationToken);
 
-        // Nothing caches the notification here: delivery is now unconditional, so the
-        // MarkAsSent write below always invalidates the entry again. Reads populate it.
+        // The recipient's list is retired, but the notification itself is not written to the
+        // entity cache here — GetSpecificNotification populates that on the first read, and
+        // most notifications are never opened individually.
         await ListCache.InvalidateAsync(
             _redisService,
             CollectionName.Notification,
@@ -74,8 +86,8 @@ public sealed class NotificationService : INotificationService
         // will see this in their list either way. Letting a backplane failure throw here
         // unwound the whole queue message instead: the retry re-ran the caller, whose
         // conditional write then matched nothing and returned a failed Result, so the
-        // message was acked and MarkAsSent below never ran. The push is the only part
-        // nobody is waiting on, so it is the only part allowed to fail quietly.
+        // message was acked and the notification was never delivered at all. The push is the
+        // only part nobody is waiting on, so it is the only part allowed to fail quietly.
         try
         {
             await _hubContext.Clients
@@ -127,27 +139,6 @@ public sealed class NotificationService : INotificationService
                 notification.Id,
                 toAccountId);
         }
-
-        // Marks the attempt, not a confirmed delivery: SignalR has no receipt, and the
-        // catch above means this is reached whether or not the push landed.
-        var result = notification.MarkAsSent();
-        if(!result.IsSuccess)
-            return Result.Fail(result.Error);
-
-        var filter = Builders<Notification>.Filter.Eq(x => x.Id, notification.Id);
-
-        var update = Builders<Notification>.Update
-            .Set(x => x.IsSent, notification.IsSent)
-            .Set(x => x.UpdatedAt, notification.UpdatedAt);
-
-        await notificationCollection.UpdateOneAsync(
-            filter,
-            update,
-            cancellationToken : cancellationToken);
-
-        await _redisService.RemoveAsync(
-            CacheKey.Notification(notification.Id),
-            cancellationToken);
 
         return Result.Ok();
     }

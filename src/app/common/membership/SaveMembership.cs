@@ -1,4 +1,5 @@
 using domain;
+using MongoDB.Bson;
 using MongoDB.Driver;
 
 namespace app;
@@ -40,24 +41,47 @@ public static class SaveMembership
         if(postIds.Count == 0)
             return new HashSet<Guid>();
 
-        // ponytail: reads the viewer's whole SavePosts array to answer a membership question
-        // about one page, and that array grows without bound. Not narrowed server-side
-        // because the obvious narrowing is wrong: an $elemMatch projection returns only the
-        // FIRST matching element, which would mark at most one post per page as saved. The
-        // correct form is a $filter aggregation expression over the array, which needs the
-        // page's ids encoded as standard-UUID binary — verify that against a live MongoDB
-        // before switching, since a translation failure takes the whole feed down.
-        var projection = Builders<Account>.Projection.Include(x => x.SavePosts);
+        // Narrowed in the server rather than by reading the whole SavePosts array back and
+        // filtering in process. That array grows without bound while the question is only
+        // ever about one page, so a reader with ten thousand saved posts was dragging all of
+        // them across the wire on every feed request to answer twenty membership questions.
+        //
+        // $filter rather than an $elemMatch projection: $elemMatch returns only the FIRST
+        // matching element, which would mark at most one post per page as saved. $map then
+        // reduces each survivor to its id so nothing but the ids come back.
+        //
+        // The ids in the $in are written as explicit standard-UUID binary. This stage is a
+        // raw document and does not pass through the class map that gives every other Guid
+        // here its representation, and a mismatch does not fail — it matches nothing, and
+        // the feed quietly reports every post as unsaved.
+        var savedIds = new BsonArray(postIds.Select(id =>
+            new BsonBinaryData(id, GuidRepresentation.Standard)));
 
-        var account = await accounts
-            .Find(x => x.Id == accountId && !x.IsDeleted)
-            .Project<Account>(projection)
+        var projectStage = new BsonDocument("$project", new BsonDocument(
+            "PostIds", new BsonDocument("$map", new BsonDocument
+            {
+                { "input", new BsonDocument("$filter", new BsonDocument
+                    {
+                        // An account that has never saved anything has no SavePosts field at
+                        // all, and $filter errors on a missing input rather than treating it
+                        // as empty.
+                        { "input", new BsonDocument("$ifNull", new BsonArray { "$SavePosts", new BsonArray() }) },
+                        { "as", "sp" },
+                        { "cond", new BsonDocument("$in", new BsonArray { "$$sp.PostId", savedIds }) }
+                    })
+                },
+                { "as", "sp" },
+                { "in", "$$sp.PostId" }
+            })));
+
+        var document = await accounts.Aggregate()
+            .Match(x => x.Id == accountId && !x.IsDeleted)
+            .AppendStage<BsonDocument>(projectStage)
             .FirstOrDefaultAsync(cancellationToken);
 
-        if(account is null)
+        if(document is null || !document.TryGetValue("PostIds", out var matched))
             return new HashSet<Guid>();
 
-        var requested = postIds.ToHashSet();
-        return account.SavePosts.Select(sp => sp.PostId).Where(requested.Contains).ToHashSet();
+        return matched.AsBsonArray.Select(x => x.AsGuid).ToHashSet();
     }
 }

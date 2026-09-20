@@ -31,14 +31,6 @@ public sealed class ReactPostService : IReactPostService
             .Include(x => x.Name)
             .Include(x => x.Avatars);
 
-        var account = await accountCollection
-            .Find(x => x.Id == accountId && !x.IsDeleted)
-            .Project<Account>(accountProjection)
-            .FirstOrDefaultAsync(cancellationToken);
-
-        if(account is null)
-            return Result.Fail(AppError.NotFound("Account not found"));
-
         var postCollection = _dbContext.GetCollection<Post>(CollectionName.Post);
 
         // Read before the write rather than after it. The author id is what the guard
@@ -48,10 +40,26 @@ public sealed class ReactPostService : IReactPostService
             .Include(x => x.AccountId)
             .Include(x => x.ShopId);
 
-        var post = await postCollection
+        // Started together: different collections, neither needs the other's answer. Only
+        // the block guard below depends on both, so overlapping these takes the path from
+        // four sequential round trips to three.
+        var accountTask = accountCollection
+            .Find(x => x.Id == accountId && !x.IsDeleted)
+            .Project<Account>(accountProjection)
+            .FirstOrDefaultAsync(cancellationToken);
+
+        var postTask = postCollection
             .Find(x => x.Id == postId && !x.IsDeleted)
             .Project<Post>(postOwnerProjection)
             .FirstOrDefaultAsync(cancellationToken);
+
+        await Task.WhenAll(accountTask, postTask);
+
+        var account = accountTask.Result;
+        var post = postTask.Result;
+
+        if(account is null)
+            return Result.Fail(AppError.NotFound("Account not found"));
 
         if(post is null)
             return Result.Fail(AppError.NotFound("Post not found"));
@@ -121,12 +129,26 @@ public sealed class ReactPostService : IReactPostService
             .PullFilter(x => x.Reactions, r => r.AccountId == accountId)
             .Inc(x => x.ReactionAmount.Value, -1);
 
-        var result = await postCollection.UpdateOneAsync(
+        var postOwnerProjection = Builders<Post>.Projection
+            .Include(x => x.AccountId)
+            .Include(x => x.ShopId);
+
+        // FindOneAndUpdate rather than UpdateOne followed by a second Find: the author and
+        // shop the invalidations below need come back in the same round trip as the pull,
+        // the way DeleteCommentHandler already does it. The separate read also raced its own
+        // write — anything that deleted the post in between left `post` null and made the
+        // list invalidation a silent no-op.
+        var post = await postCollection.FindOneAndUpdateAsync(
             filter,
             update,
-            cancellationToken : cancellationToken);
+            new FindOneAndUpdateOptions<Post>
+            {
+                ReturnDocument = ReturnDocument.After,
+                Projection = postOwnerProjection
+            },
+            cancellationToken);
 
-        if(result.MatchedCount != 1)
+        if(post is null)
             return Result.Fail("Not reacted to this post");
 
         await Task.WhenAll(
@@ -139,17 +161,7 @@ public sealed class ReactPostService : IReactPostService
                 $"post:{postId}",
                 cancellationToken));
 
-        var postOwnerProjection = Builders<Post>.Projection
-            .Include(x => x.AccountId)
-            .Include(x => x.ShopId);
-
-        var post = await postCollection
-            .Find(x => x.Id == postId && !x.IsDeleted)
-            .Project<Post>(postOwnerProjection)
-            .FirstOrDefaultAsync(cancellationToken);
-
-        if(post is not null)
-            await InvalidatePostListsAsync(post.AccountId, post.ShopId, cancellationToken);
+        await InvalidatePostListsAsync(post.AccountId, post.ShopId, cancellationToken);
 
         return Result.Ok();
     }

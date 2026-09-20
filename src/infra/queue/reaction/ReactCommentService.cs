@@ -31,14 +31,6 @@ public sealed class ReactCommentService : IReactCommentService
             .Include(x => x.Name)
             .Include(x => x.Avatars);
 
-        var account = await accountCollection
-            .Find(x => x.Id == accountId && !x.IsDeleted)
-            .Project<Account>(accountProjection)
-            .FirstOrDefaultAsync(cancellationToken);
-
-        if(account is null)
-            return Result.Fail(AppError.NotFound("Account not found"));
-
         var commentCollection = _dbContext.GetCollection<Comment>(CollectionName.Comment);
 
         // Read before the write rather than after it. The author id is what the guard
@@ -48,10 +40,26 @@ public sealed class ReactCommentService : IReactCommentService
             .Include(x => x.AccountId)
             .Include(x => x.PostId);
 
-        var comment = await commentCollection
+        // Started together: different collections, neither needs the other's answer. Only
+        // the block guard below depends on both, so overlapping these takes the path from
+        // four sequential round trips to three.
+        var accountTask = accountCollection
+            .Find(x => x.Id == accountId && !x.IsDeleted)
+            .Project<Account>(accountProjection)
+            .FirstOrDefaultAsync(cancellationToken);
+
+        var commentTask = commentCollection
             .Find(x => x.Id == commentId && !x.IsDeleted)
             .Project<Comment>(commentOwnerProjection)
             .FirstOrDefaultAsync(cancellationToken);
+
+        await Task.WhenAll(accountTask, commentTask);
+
+        var account = accountTask.Result;
+        var comment = commentTask.Result;
+
+        if(account is null)
+            return Result.Fail(AppError.NotFound("Account not found"));
 
         if(comment is null)
             return Result.Fail(AppError.NotFound("Comment not found"));
@@ -121,12 +129,26 @@ public sealed class ReactCommentService : IReactCommentService
             .PullFilter(x => x.Reactions, r => r.AccountId == accountId)
             .Inc(x => x.ReactionAmount.Value, -1);
 
-        var result = await commentCollection.UpdateOneAsync(
+        var commentOwnerProjection = Builders<Comment>.Projection
+            .Include(x => x.AccountId)
+            .Include(x => x.PostId);
+
+        // FindOneAndUpdate rather than UpdateOne followed by a second Find: the post and
+        // author the invalidations below need come back in the same round trip as the pull,
+        // the way DeleteCommentHandler already does it. The separate read also raced its own
+        // write — anything that deleted the comment in between left `comment` null and made
+        // the list invalidation a silent no-op.
+        var comment = await commentCollection.FindOneAndUpdateAsync(
             filter,
             update,
-            cancellationToken : cancellationToken);
+            new FindOneAndUpdateOptions<Comment>
+            {
+                ReturnDocument = ReturnDocument.After,
+                Projection = commentOwnerProjection
+            },
+            cancellationToken);
 
-        if(result.MatchedCount != 1)
+        if(comment is null)
             return Result.Fail("Not reacted to this comment");
 
         await Task.WhenAll(
@@ -139,17 +161,7 @@ public sealed class ReactCommentService : IReactCommentService
                 $"comment:{commentId}",
                 cancellationToken));
 
-        var commentOwnerProjection = Builders<Comment>.Projection
-            .Include(x => x.AccountId)
-            .Include(x => x.PostId);
-
-        var comment = await commentCollection
-            .Find(x => x.Id == commentId && !x.IsDeleted)
-            .Project<Comment>(commentOwnerProjection)
-            .FirstOrDefaultAsync(cancellationToken);
-
-        if(comment is not null)
-            await InvalidateCommentListsAsync(comment.PostId, comment.AccountId, cancellationToken);
+        await InvalidateCommentListsAsync(comment.PostId, comment.AccountId, cancellationToken);
 
         return Result.Ok();
     }

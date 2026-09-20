@@ -174,10 +174,14 @@ internal sealed class GetRelatedPostHandler
         // not show up in it. This read is uncached and one indexed lookup, which is what makes
         // "my newest post is always first" hold. Skipped for the own-posts fallback, where it
         // would duplicate the one post that feed already contains.
-        if(!ownPostsFallback && latestTask is not null)
+        // Awaited on both paths, prepended on only one. The fallback used to return without
+        // ever awaiting it, which left a started Mongo query with nobody observing its result
+        // or its exception.
+        if(latestTask is not null)
         {
             var latest = await latestTask;
-            if(latest is not null)
+
+            if(!ownPostsFallback && latest is not null)
                 dtoPage = dtoPage with { Items = dtoPage.Items.Prepend(latest).ToList() };
         }
 
