@@ -29,33 +29,30 @@ public sealed class RabbitMQService : IRabbitMQService
 
     private readonly IConnection _connection;
     private readonly IRedisService _redisService;
+    private readonly RabbitMQPublishChannel _publishChannel;
 
     public RabbitMQService(
         IConnection connection, 
-        IRedisService redisService)
+        IRedisService redisService,
+        RabbitMQPublishChannel publishChannel)
     {
         _connection = connection;
         _redisService = redisService;
+        _publishChannel = publishChannel;
     }
 
-    public async Task PublishAsync<T>(
+    // Goes through the shared publish channel rather than opening one of its own. The
+    // consumer path below still owns a channel per consumer, which is what it needs: a
+    // consumer's channel carries its delivery acknowledgements and cannot be shared.
+    public Task PublishAsync<T>(
         string queueName, 
         T message, 
         CancellationToken cancellationToken)
     {
-        using var channel = await _connection.CreateChannelAsync(cancellationToken: cancellationToken);
-        await channel.QueueDeclareAsync(
-            queue: queueName,
-            durable: true,
-            exclusive: false,
-            autoDelete: false,
-            cancellationToken: cancellationToken);
-
-        await PublishRawAsync(
-            channel, 
-            queueName, 
-            JsonSerializer.SerializeToUtf8Bytes(message), 
-            retryCount: 0, 
+        return _publishChannel.PublishAsync(
+            queueName,
+            JsonSerializer.SerializeToUtf8Bytes(message),
+            BuildProperties(retryCount: 0),
             cancellationToken);
     }
 
@@ -209,19 +206,22 @@ public sealed class RabbitMQService : IRabbitMQService
         int retryCount, 
         CancellationToken cancellationToken)
     {
-        var properties = new BasicProperties
-        {
-            Persistent = true,
-            Headers = new Dictionary<string, object?> { [RetryCountHeader] = retryCount }
-        };
-
         await channel.BasicPublishAsync(
             exchange: string.Empty,
             routingKey: queueName,
             mandatory: false,
-            basicProperties: properties,
+            basicProperties: BuildProperties(retryCount),
             body: body,
             cancellationToken: cancellationToken);
+    }
+
+    private static BasicProperties BuildProperties(int retryCount)
+    {
+        return new BasicProperties
+        {
+            Persistent = true,
+            Headers = new Dictionary<string, object?> { [RetryCountHeader] = retryCount }
+        };
     }
 
     private static int GetRetryCount(IReadOnlyBasicProperties properties)
