@@ -14,6 +14,9 @@ public static class DependencyInjection
             cfg.AddOpenBehavior(typeof(LoggingBehavior<,>));
             cfg.AddOpenBehavior(typeof(PerformanceBehavior<,>));
             cfg.AddOpenBehavior(typeof(ValidationBehavior<,>));
+            // Innermost, so validation still short-circuits on the caller's token and only the
+            // handler itself runs detached.
+            cfg.AddOpenBehavior(typeof(WriteCancellationBehavior<,>));
         });
         services.AddAutoMapper(cfg => {}, typeof(DependencyInjection).Assembly);
         services.AddValidatorsFromAssembly(typeof(DependencyInjection).Assembly, includeInternalTypes: true);
