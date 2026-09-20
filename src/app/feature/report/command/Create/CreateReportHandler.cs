@@ -2,6 +2,7 @@ using AutoMapper;
 using domain;
 using FluentResults;
 using MediatR;
+using MongoDB.Driver;
 
 namespace app;
 
@@ -32,6 +33,32 @@ internal sealed class CreateReportHandler
         if(identity is null)
             return Result.Fail(AppError.Unauthorized("Unauthorized"));
 
+        // The target was never checked, so a report could name any GUID at all and the
+        // administrator's queue filled with rows pointing at nothing. The validator has
+        // already established that exactly one of the three is set.
+        if(!await TargetExistsAsync(request, cancellationToken))
+            return Result.Fail(AppError.NotFound("Report target not found"));
+
+        var reportCollection = _dbContext.GetCollection<Report>(CollectionName.Report);
+
+        // One live report per reporter per target. Nothing deduplicated before, and the
+        // consequence reached further than a cluttered queue: FollowService.TryGrantTrustAsync
+        // refuses to grant trust to any account carrying a live report, so one account could
+        // file reports in a loop and hold another below the threshold indefinitely.
+        var duplicateFilter = Builders<Report>.Filter.And(
+            Builders<Report>.Filter.Eq(x => x.ReporterId, identity.Value),
+            Builders<Report>.Filter.Eq(x => x.PostId, request.postId),
+            Builders<Report>.Filter.Eq(x => x.CommentId, request.commentId),
+            Builders<Report>.Filter.Eq(x => x.AccountId, request.accountId),
+            Builders<Report>.Filter.Eq(x => x.IsDeleted, false));
+
+        bool alreadyReported = await reportCollection
+            .Find(duplicateFilter)
+            .AnyAsync(cancellationToken);
+
+        if(alreadyReported)
+            return Result.Fail(AppError.Conflict("You have already reported this"));
+
         var reportResult = Report.Create(
             identity.Value,
             request.postId,
@@ -43,8 +70,6 @@ internal sealed class CreateReportHandler
 
         Report report = reportResult.Value;
 
-        var reportCollection = _dbContext.GetCollection<Report>(CollectionName.Report);
-
         await reportCollection.InsertOneAsync(
             report,
             cancellationToken : cancellationToken);
@@ -53,12 +78,40 @@ internal sealed class CreateReportHandler
 
         string cacheKey = CacheKey.Report(report.Id);
 
-        await _redisService.SetAsync(
-            cacheKey,
-            dto,
-            CacheKey.DefaultReportTTL,
-            cancellationToken);
+        await Task.WhenAll(
+            _redisService.SetAsync(
+                cacheKey,
+                dto,
+                CacheKey.DefaultReportTTL,
+                cancellationToken),
+            // The administrator listing is built from the report collection and was never
+            // retired on write, so a new report stayed invisible to moderation for the page
+            // cache's TTL.
+            ListCache.InvalidateAsync(
+                _redisService,
+                CollectionName.Report,
+                filterSignature: null,
+                cancellationToken));
 
         return Result.Ok(dto);
+    }
+
+    private async Task<bool> TargetExistsAsync(
+        CreateReportCommand request,
+        CancellationToken cancellationToken)
+    {
+        if(request.postId is not null)
+            return await _dbContext.GetCollection<Post>(CollectionName.Post)
+                .Find(x => x.Id == request.postId.Value && !x.IsDeleted)
+                .AnyAsync(cancellationToken);
+
+        if(request.commentId is not null)
+            return await _dbContext.GetCollection<Comment>(CollectionName.Comment)
+                .Find(x => x.Id == request.commentId.Value && !x.IsDeleted)
+                .AnyAsync(cancellationToken);
+
+        return await _dbContext.GetCollection<Account>(CollectionName.Account)
+            .Find(x => x.Id == request.accountId!.Value && !x.IsDeleted)
+            .AnyAsync(cancellationToken);
     }
 }

@@ -80,7 +80,9 @@ public sealed class AccountController : ControllerBase
         ChangeEmailRequest request,
         CancellationToken cancellationToken)
     {
-        var result = await _sender.Send(new ChangeEmailCommand(request.RegistrationToken), cancellationToken);
+        var result = await _sender.Send(
+            new ChangeEmailCommand(request.RegistrationToken, request.CurrentPassword),
+            cancellationToken);
         return result.ToActionResult();
     }
 
@@ -170,6 +172,10 @@ public sealed class AccountController : ControllerBase
         return result.ToActionResult();
     }
 
+    // Same cost shape as /search — an unanchored match over the whole collection — so it
+    // carries the same budget. Under the global 200/min it was a ten times wider door to
+    // the same query.
+    [EnableRateLimiting(RateLimiterPolicy.Search)]
     [HttpGet("by-name")]
     public async Task<ActionResult<CursorPageResult<AccountSummaryDto>>> GetAccountByName(
         [FromQuery] string name,

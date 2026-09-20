@@ -118,6 +118,10 @@ public sealed class PostController : ControllerBase
         return result.ToActionResult();
     }
 
+    // Not a keyword search, but the same order of cost: up to four Mongo queries plus a
+    // $sortByCount over every post the viewer has ever reacted to when the affinity cache
+    // is cold.
+    [EnableRateLimiting(RateLimiterPolicy.Search)]
     [HttpGet("related")]
     public async Task<ActionResult<CursorPageResult<PostFeedItemDto>>> GetRelatedPost(
         [FromQuery] string? cursor,

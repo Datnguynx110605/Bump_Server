@@ -48,6 +48,10 @@ public sealed class ShopController : ControllerBase
         return result.ToActionResult();
     }
 
+    // The geospatial lookup is the most expensive read in the system: $nearSphere walks
+    // the index outward and discards shops below the rate floor after the index, so a
+    // sparse neighbourhood keeps walking to the radius limit.
+    [EnableRateLimiting(RateLimiterPolicy.Search)]
     [HttpGet("around")]
     public async Task<ActionResult<CursorPageResult<ShopSummaryDto>>> GetBestShopAround(
         [FromQuery] double latitude,
@@ -70,6 +74,7 @@ public sealed class ShopController : ControllerBase
         return result.ToActionResult();
     }
 
+    [EnableRateLimiting(RateLimiterPolicy.Search)]
     [HttpGet("by-name")]
     public async Task<ActionResult<CursorPageResult<ShopSummaryDto>>> GetShopByName(
         [FromQuery] string name,
@@ -81,6 +86,7 @@ public sealed class ShopController : ControllerBase
         return result.ToActionResult();
     }
 
+    [EnableRateLimiting(RateLimiterPolicy.Search)]
     [HttpGet("by-address")]
     public async Task<ActionResult<CursorPageResult<ShopSummaryDto>>> GetShopByAddress(
         [FromQuery] string address,

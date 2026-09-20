@@ -3,6 +3,7 @@ using domain;
 using MediatR;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.RateLimiting;
 
 namespace api;
 
@@ -18,6 +19,7 @@ public sealed class ReportController : ControllerBase
         _sender = sender;
     }
 
+    [EnableRateLimiting(RateLimiterPolicy.Report)]
     [HttpPost]
     public async Task<ActionResult<ReportDto>> CreateReport(
         CreateReportRequest request,

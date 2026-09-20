@@ -185,6 +185,20 @@ public static class DependencyInjection
                         QueueLimit = 0
                     }));
 
+            // Reports are cheap to file and expensive to ignore: one live report against an
+            // account blocks it from ever being granted trust, and nothing deduplicates them
+            // at 200/min under the global budget alone.
+            options.AddPolicy(RateLimiterPolicy.Report, httpContext =>
+                RateLimitPartition.GetSlidingWindowLimiter(
+                    ResolveClientKey(httpContext),
+                    _ => new SlidingWindowRateLimiterOptions
+                    {
+                        PermitLimit = 10,
+                        Window = TimeSpan.FromMinutes(1),
+                        SegmentsPerWindow = 6,
+                        QueueLimit = 0
+                    }));
+
             options.AddPolicy(RateLimiterPolicy.Upload, httpContext =>
                 RateLimitPartition.GetSlidingWindowLimiter(
                     ResolveClientKey(httpContext),
