@@ -60,6 +60,9 @@ public static class IndexConfiguration
                 // whole collection on every feed request.
                 new CreateIndexModel<Account>(keys.Ascending("Followers.AccountId")),
                 new CreateIndexModel<Account>(keys.Ascending("Followings.AccountId")),
+                // Blocks is read by membership checks the same way, and is also one of the
+                // arrays ProfileService rewrites on every display-name and avatar change.
+                new CreateIndexModel<Account>(keys.Ascending("Blocks.AccountId")),
                 new CreateIndexModel<Account>(keys.Ascending("SavePosts.PostId")),
                 new CreateIndexModel<Account>(keys.Ascending("SaveShops.ShopId")),
                 // Backs the retention sweep in SoftDeletePurgeHost. Partial so it only
@@ -259,12 +262,19 @@ public static class IndexConfiguration
     {
         var keys = Builders<Notification>.IndexKeys;
 
-        return database.GetCollection<Notification>(CollectionName.Notification).Indexes.CreateOneAsync(
-            new CreateIndexModel<Notification>(
-                keys.Ascending(x => x.ToAccountId)
-                    .Ascending(x => x.IsDeleted)
-                    .Descending(x => x.CreatedAt)
-                    .Descending(x => x.Id)),
+        return database.GetCollection<Notification>(CollectionName.Notification).Indexes.CreateManyAsync(
+            new[]
+            {
+                new CreateIndexModel<Notification>(
+                    keys.Ascending(x => x.ToAccountId)
+                        .Ascending(x => x.IsDeleted)
+                        .Descending(x => x.CreatedAt)
+                        .Descending(x => x.Id)),
+                // The actor side, which only ProfileService reads — it refreshes the cached
+                // avatar on every notification this account raised. Without this the fan-out
+                // scans the largest collection in the system on every avatar change.
+                new CreateIndexModel<Notification>(keys.Ascending(x => x.ActorAccountId))
+            },
             cancellationToken : cancellationToken);
     }
 
@@ -284,7 +294,17 @@ public static class IndexConfiguration
                 // Backs the per-account lookup ApnsService runs once per notification.
                 new CreateIndexModel<DeviceToken>(
                     keys.Ascending(x => x.AccountId)
-                        .Ascending(x => x.IsDeleted))
+                        .Ascending(x => x.IsDeleted)),
+                // Backs the retention sweep in SoftDeletePurgeHost, which filters DeletedAt
+                // and had no index to do it with — a full collection scan every six hours.
+                // Partial for the same reason as the other aggregates: it only needs to carry
+                // the retired rows.
+                new CreateIndexModel<DeviceToken>(
+                    keys.Ascending(x => x.DeletedAt),
+                    new CreateIndexOptions<DeviceToken>
+                    {
+                        PartialFilterExpression = Builders<DeviceToken>.Filter.Eq(x => x.IsDeleted, true)
+                    })
             },
             cancellationToken : cancellationToken);
     }

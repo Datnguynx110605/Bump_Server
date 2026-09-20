@@ -13,11 +13,13 @@ namespace infra;
 // the app is still coming up. Deletes are batched with a pause between batches so a
 // large backlog never lands as one long write burst.
 //
-// R2 objects are already removed at soft-delete time by the delete handlers and the
-// queue cascades, so the sweep is pure Mongo work.
+// R2 objects are removed at soft-delete time by the delete handlers and the queue
+// cascades, so the sweep itself is pure Mongo work. That holds only while those cascades
+// actually run: a cascade message that dead-letters leaves objects in the bucket that this
+// sweep then makes unreachable by hard-deleting the row that named them. Nothing reconciles
+// that today.
 //
-// ponytail: assumes a single replica. If Railway scales past one, gate each sweep on
-// _redisService.IncrementAsync(key, SweepInterval) == 1 so only one replica sweeps.
+// Only one replica sweeps per interval — see the claim in SweepAsync.
 internal sealed class SoftDeletePurgeHost : BackgroundService
 {
     private static readonly TimeSpan Retention = TimeSpan.FromDays(30);
@@ -25,6 +27,7 @@ internal sealed class SoftDeletePurgeHost : BackgroundService
     private static readonly TimeSpan SweepInterval = TimeSpan.FromHours(6);
     private static readonly TimeSpan BatchDelay = TimeSpan.FromMilliseconds(200);
     private const int BatchSize = 500;
+    private const string SweepClaimKey = "purge:sweep-claim";
 
     private readonly IServiceScopeFactory _scopeFactory;
     private readonly ILogger<SoftDeletePurgeHost> _logger;
@@ -61,6 +64,24 @@ internal sealed class SoftDeletePurgeHost : BackgroundService
     {
         using var scope = _scopeFactory.CreateScope();
         var dbContext = scope.ServiceProvider.GetRequiredService<IMongoDbContext>();
+        var redisService = scope.ServiceProvider.GetRequiredService<IRedisService>();
+
+        // One replica sweeps per interval. Every instance runs this host — the worker engine
+        // is co-located with the request surface, so scaling request capacity scales the
+        // number of sweepers too — and they all wake on the same schedule from the same
+        // deploy. Without this they would walk the same batches concurrently, each deleting
+        // rows the others had just listed, turning a paced background job into a burst that
+        // scales with replica count.
+        //
+        // The counter carries the sweep interval as its TTL, so it expires in time for the
+        // next one and the winner rotates naturally as replicas restart.
+        long claim = await redisService.IncrementAsync(
+            SweepClaimKey,
+            SweepInterval,
+            cancellationToken);
+
+        if(claim != 1)
+            return;
 
         var accountCollection = dbContext.GetCollection<Account>(CollectionName.Account);
         var postCollection = dbContext.GetCollection<Post>(CollectionName.Post);

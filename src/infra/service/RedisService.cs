@@ -22,6 +22,8 @@ public sealed class RedisService : IRedisService
         var db = _connectionMultiplexer.GetDatabase();
         var expiration = ttl.HasValue ? (Expiration)ttl.Value : Expiration.Default;
 
+        cancellationToken.ThrowIfCancellationRequested();
+
         await db.StringSetAsync(
             key, 
             JsonSerializer.Serialize(value, DomainJsonOptions.Options), 
@@ -32,6 +34,8 @@ public sealed class RedisService : IRedisService
         string key, 
         CancellationToken cancellationToken)
     {
+        cancellationToken.ThrowIfCancellationRequested();
+
         var db = _connectionMultiplexer.GetDatabase();
         var value = await db.StringGetAsync(key);
 
@@ -42,6 +46,8 @@ public sealed class RedisService : IRedisService
         string key, 
         CancellationToken cancellationToken)
     {
+        cancellationToken.ThrowIfCancellationRequested();
+
         var db = _connectionMultiplexer.GetDatabase();
         var value = await db.StringGetDeleteAsync(key);
 
@@ -52,6 +58,8 @@ public sealed class RedisService : IRedisService
         string key,
         CancellationToken cancellationToken)
     {
+        cancellationToken.ThrowIfCancellationRequested();
+
         var db = _connectionMultiplexer.GetDatabase();
 
         await db.KeyDeleteAsync(key);
@@ -62,19 +70,31 @@ public sealed class RedisService : IRedisService
     // forever. The TTL slides on each write and must stay well above DefaultListTTL:
     // if a counter expired back to 0 while a page key from that epoch was still alive,
     // the stale page would be served again.
+    // One server round trip rather than two. The INCR and the EXPIRE were separate awaits,
+    // which is cheap where the caller batches its invalidations into a Task.WhenAll and is
+    // not where it awaits them one at a time — and the pair was never atomic either, so a
+    // process dying between them left a counter with no TTL, exactly the leak the TTL is
+    // there to prevent.
+    private const string IncrementWithTtlScript =
+        "local v = redis.call('INCR', KEYS[1]) " +
+        "if ARGV[1] ~= '' then redis.call('PEXPIRE', KEYS[1], ARGV[1]) end " +
+        "return v";
+
     public async Task<long> IncrementAsync(
         string key,
         TimeSpan? ttl,
         CancellationToken cancellationToken)
     {
+        cancellationToken.ThrowIfCancellationRequested();
+
         var db = _connectionMultiplexer.GetDatabase();
 
-        var value = await db.StringIncrementAsync(key);
+        var value = await db.ScriptEvaluateAsync(
+            IncrementWithTtlScript,
+            new RedisKey[] { key },
+            new RedisValue[] { ttl.HasValue ? (long)ttl.Value.TotalMilliseconds : string.Empty });
 
-        if(ttl.HasValue)
-            await db.KeyExpireAsync(key, ttl.Value);
-
-        return value;
+        return (long)value;
     }
 
     // Counters are stored by Redis as raw integers rather than as the JSON the other
@@ -84,6 +104,10 @@ public sealed class RedisService : IRedisService
         string key,
         CancellationToken cancellationToken)
     {
+        cancellationToken.ThrowIfCancellationRequested();
+
+        cancellationToken.ThrowIfCancellationRequested();
+
         var db = _connectionMultiplexer.GetDatabase();
         var value = await db.StringGetAsync(key);
 

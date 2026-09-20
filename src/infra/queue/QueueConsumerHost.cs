@@ -67,6 +67,18 @@ internal sealed class QueueConsumerHost<TMessage> : BackgroundService
             message,
             cancellationToken);
 
+        // A failed Result is terminal here: RabbitMQService treats this method returning
+        // normally as success, writes the idempotency key and acks, so the message never
+        // reaches the retry or dead-letter tiers that system-design.md describes — only a
+        // thrown exception does. That makes this line the only trace a message that stopped
+        // applying ever leaves, which is why it exists at all.
+        //
+        // Warning rather than Error, because every Result.Fail a worker returns today is a
+        // correct refusal — already following, already blocked, already reacted, row since
+        // deleted — and those ride the normal path on any double tap. Raising them to Error
+        // would page on ordinary user behaviour and bury the case worth seeing. The signal
+        // that a worker has started refusing everything is the rate of this warning per
+        // QueueName, not the level of any one line.
         if(result.IsFailed)
             _logger.LogWarning(
                 "{QueueName} message {MessageId} did not apply: {Error}",
