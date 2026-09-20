@@ -68,7 +68,15 @@ internal sealed class DeleteCommentHandler
 
         var postFilter = Builders<Post>.Filter.And(
             Builders<Post>.Filter.Eq(x => x.Id, comment.PostId),
-            Builders<Post>.Filter.Eq(x => x.IsDeleted, false));
+            Builders<Post>.Filter.Eq(x => x.IsDeleted, false),
+            // The floor is part of the precondition, not an assertion. This decrement and the
+            // matching increment in CreateCommentHandler are separate writes to separate
+            // collections, so an increment lost to a crash or a cancelled request leaves the
+            // count one short and the deletes that follow drive it negative — and a negative
+            // Amount is a value the domain refuses to construct. A zero match here means the
+            // count already disagrees with reality, which is strictly better than making it
+            // disagree further.
+            Builders<Post>.Filter.Gt(x => x.CommentAmount.Value, 0));
 
         var postUpdate = Builders<Post>.Update
             .Inc(x => x.CommentAmount.Value, -1);

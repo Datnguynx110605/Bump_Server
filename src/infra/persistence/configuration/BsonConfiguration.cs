@@ -17,10 +17,21 @@ public static class BsonConfiguration
 
     private static void RegisterValueObject()
     {
+        // Clamped, not null-forgiving. Amount.Create rejects a negative, DomainResult<T>
+        // .Failure leaves Value as default — which for a reference type is null — and the
+        // `!` only silenced the compiler. A counter that drifted below zero therefore
+        // deserialized to a null Amount sitting on a non-nullable property: it reached the
+        // client as `null` on a field the app declares required, and threw
+        // NullReferenceException at the two places that dereference it in C#
+        // (FollowService.TryGrantTrustAsync and GetBestShopAroundHandler's in-memory sort).
+        // Reading a drifted row as zero is wrong by the amount of the drift and visible;
+        // reading it as null is a crash with no indication of the cause.
         BsonClassMap.RegisterClassMap<Amount>(map =>
         {
             map.MapProperty(x => x.Value);
-            map.MapCreator(new Func<int, Amount>(value => Amount.Create(value).Value!), nameof(Amount.Value));
+            map.MapCreator(
+                new Func<int, Amount>(value => Amount.Create(value).Value ?? Amount.Create(0).Value!),
+                nameof(Amount.Value));
         });
 
         BsonClassMap.RegisterClassMap<Email>(map =>
