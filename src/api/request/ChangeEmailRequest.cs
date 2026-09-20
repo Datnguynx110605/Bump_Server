@@ -1,3 +1,5 @@
 namespace api;
 
-public sealed record ChangeEmailRequest(string RegistrationToken);
+public sealed record ChangeEmailRequest(
+    string RegistrationToken,
+    string CurrentPassword);

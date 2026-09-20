@@ -12,16 +12,19 @@ internal sealed class ChangeEmailHandler
     private readonly IMongoDbContext _dbContext;
     private readonly IRedisService _redisService;
     private readonly ICurrentIdentityService _identityService;
+    private readonly IBcryptService _bcryptService;
     public ChangeEmailHandler(
         IRegistrationService registrationService,
         IMongoDbContext dbContext,
         IRedisService redisService,
-        ICurrentIdentityService identityService)
+        ICurrentIdentityService identityService,
+        IBcryptService bcryptService)
     {
         _registrationService = registrationService;
         _dbContext = dbContext;
         _redisService = redisService;
         _identityService = identityService;
+        _bcryptService = bcryptService;
     }
 
     public async Task<Result> Handle(
@@ -48,6 +51,7 @@ internal sealed class ChangeEmailHandler
 
         var projection = Builders<Account>.Projection
             .Include(x => x.Email)
+            .Include(x => x.Password)
             .Include(x => x.IsDeleted);
 
         var account = await accountCollection
@@ -57,6 +61,16 @@ internal sealed class ChangeEmailHandler
 
         if(account is null)
             return Result.Fail(AppError.Unauthorized("Unauthenticated"));
+
+        // The access token alone is not enough to move the address the account recovers
+        // through. Without this check a stolen token was a permanent takeover: mint a
+        // registration token for an address you control, point the account at it, then walk
+        // the ordinary reset-password flow and the real owner has no way back in. The same
+        // reason ChangePasswordHandler asks for the current password before it touches
+        // credentials — this endpoint decides who can prove ownership later, so it is a
+        // credential change in everything but name.
+        if(!_bcryptService.VerifyPassword(request.currentPassword, account.Password))
+            return Result.Fail(AppError.Unauthorized("Current password is incorrect"));
 
         Email oldEmail = account.Email;
 
@@ -72,10 +86,22 @@ internal sealed class ChangeEmailHandler
             .Set(x => x.Email, account.Email)
             .Set(x => x.UpdatedAt, account.UpdatedAt);
 
-        await accountCollection.UpdateOneAsync(
-            filter,
-            update,
-            cancellationToken : cancellationToken);
+        try
+        {
+            await accountCollection.UpdateOneAsync(
+                filter,
+                update,
+                cancellationToken : cancellationToken);
+        }
+        catch(MongoWriteException ex)
+            when (ex.WriteError.Category == ServerErrorCategory.DuplicateKey)
+        {
+            // The partial unique index on Email rejects a move onto an address some other
+            // live account already holds. Translated here for the same reason
+            // CreateAccountHandler translates it: unhandled, the driver's exception reaches
+            // UseExceptionHandler and the caller reads 500 for what is an ordinary conflict.
+            return Result.Fail(AppError.Conflict("Email already exists"));
+        }
 
         await _registrationService.ConsumeTokenAsync(
             request.registrationToken,

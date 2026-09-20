@@ -3,5 +3,7 @@ using MediatR;
 
 namespace app;
 
-public sealed record ChangeEmailCommand(string registrationToken)
+public sealed record ChangeEmailCommand(
+    string registrationToken,
+    string currentPassword)
     : IRequest<Result>;

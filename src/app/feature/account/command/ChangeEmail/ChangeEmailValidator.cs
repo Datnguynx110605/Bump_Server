@@ -9,5 +9,7 @@ internal sealed class ChangeEmailValidator
     {
         RuleFor(x => x.registrationToken)
             .NotEmpty().WithMessage("RegistrationToken is required");
+        RuleFor(x => x.currentPassword)
+            .NotEmpty().WithMessage("Current password is required");
     }
 }
