@@ -44,10 +44,13 @@ sink itself is configured in `Program.cs` (see *Logging and monitoring*).
 | `Apns__PrivateKey` | `Apns:PrivateKey` | `ApnsTokenProvider` — base64 of the whole `.p8` file, so the multi-line PEM survives as a single-line variable |
 | `Apns__BundleId` | `Apns:BundleId` | `ApnsService` — the `apns-topic` header; must equal the iOS app's `PRODUCT_BUNDLE_IDENTIFIER` |
 
-### Optional variables — 5
+### Optional variables — 8
 
 | Variable | Effect when set | Effect when unset |
 |---|---|---|
+| `Maps__TeamId` | `MapsTokenProvider` — the Maps auth JWT's `iss` claim | Place verification is unavailable: a post carrying a `placeId` is answered `400`, every unverified path still works |
+| `Maps__KeyId` | `MapsTokenProvider` — the Maps auth JWT's `kid` header | Same |
+| `Maps__PrivateKey` | `MapsTokenProvider` — base64 of the whole Maps `.p8` file, same single-line convention as `Apns__PrivateKey` | Same |
 | `Admin__Email` + `Admin__Password` | `AdminSeeder` creates the account, or promotes an existing one to `Role.Admin` | Seeding is skipped and logged at `Information` |
 | `Admin__Name` | Display name for a newly seeded administrator | Defaults to `admin` |
 | `ForwardedHeaders__KnownProxies__0` | Pins `X-Forwarded-*` trust to a specific proxy IP | Trust is open to whatever can reach the container |
@@ -65,6 +68,11 @@ Two groups are exceptions:
   minted already expired, and the only symptom is that nothing authenticates.
 - The four `Apns__*` keys are read eagerly in `AddInfra`, because a push failure is swallowed by
   design and a misconfigured key would otherwise be indistinguishable from a working one.
+- The three `Maps__*` keys are read eagerly too, but **warn instead of throwing**. Place
+  verification is a tier rather than the whole feature: a deployment without a Maps key still serves
+  every unverified path, and refusing to boot would take the API down over a capability that
+  degrades cleanly. The startup warning is what keeps "unconfigured" from being mistaken for "Apple
+  rejected it".
 
 **Values must be supplied unquoted.** The local `.env` wraps values in double quotes as a file
 convention. Whatever supplies them as container environment variables must not: a literal `"10"`
@@ -291,6 +299,25 @@ notification id as `apns-id`. The host is chosen **per token** from `DeviceToken
 one deployment serves Xcode (sandbox) and TestFlight (production) builds at the same time — which is
 why there is no single `Apns__UseSandbox` switch. A token answered `410 Unregistered` or
 `400 BadDeviceToken` is soft-deleted.
+
+### Apple Maps Server API — place verification
+
+`AddHttpClient<IPlaceService, ApplePlaceService>` with a 10-second timeout. Two credentials steps,
+one more than APNs needs: `MapsTokenProvider` signs an ES256 JWT from the base64-decoded Maps `.p8`
+key — the same P1363 `r||s` signature APNs requires — carrying `iss`, `iat`, `exp` and
+`scope: server_api`, then exchanges it at `GET https://maps-api.apple.com/v1/token` for an access
+token. Only the access token is accepted by the API itself.
+
+The access token is cached process-wide in a singleton, refreshed a minute before the
+`expiresInSeconds` Apple reports (1800 at the time of writing) and clamped to a 60-second floor, so
+a missing lifetime cannot spend a quota call per request. **Server API and MapKit JS share one quota
+of 25,000 calls per day per team**; a `429` means it is exhausted.
+
+`ApplePlaceService.ResolveAsync` calls `GET /v1/place/{id}` and maps the answer to name, joined
+`formattedAddressLines` and coordinate, truncating name and address to the 200 characters the rest of
+the system expects. A `404` is an ordinary outcome — an identifier Apple has never issued, or a
+retired place — and is not logged; every other status is. Resolution failure returns `null`, which
+`CreatePostHandler` answers as `400 Shop could not be verified`.
 
 ### Health checks
 

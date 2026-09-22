@@ -18,13 +18,25 @@ panel (`Bump_Admin`) are separate repositories that consume this API.
 
 **Shops are never created directly.** No endpoint creates a shop. `CreatePostHandler`
 ([src/app/feature/post/command/Create/CreatePostHandler.cs](../src/app/feature/post/command/Create/CreatePostHandler.cs))
-looks a shop up by exact `Name` + `Address` and inserts one when absent, so the shop catalogue is a
-side effect of posting.
+resolves one while creating a post, so the shop catalogue is a side effect of posting.
 
-That insert is also the only place a shop's coordinate is ever written. `Shop.Location` holds an
-optional `[longitude, latitude]` pair supplied by the client's place picker, indexed with 2dsphere
-and read by `GetBestShopAround`. Reusing an existing shop never overwrites it, so **the first poster
-to name a (name, address) pair fixes that shop's coordinate permanently.** A shop's `Rate` is the
+**A shop comes in two tiers, and `Shop.PlaceId` is the whole difference.** A post carrying a
+`placeId` has that identifier resolved against the Apple Maps Server API *before anything is
+uploaded*, and the shop is created from the name, address and coordinate Apple answered — the
+request's own shop text is not read at all on that path. A client can claim any name it likes; it
+cannot invent an identifier Apple will return a place for. A post without a `placeId` still creates
+the shop the client typed, unverified, which is what keeps a street cart Apple has never heard of
+postable.
+
+An existing shop is matched by `PlaceId` first and by exact `Name` + `Address` second. The second
+arm stamps the identifier onto a shop created before verification existed, so the catalogue upgrades
+itself as people post rather than needing a migration.
+
+`Shop.Location` holds an optional `[longitude, latitude]` pair, indexed with 2dsphere and read by
+`GetBestShopAround`, which serves **verified shops only** — it is the one surface that exists to be
+navigated to. Reusing an existing shop never overwrites its coordinate, so on the unverified tier the
+first poster to name a (name, address) pair still fixes that shop's coordinate permanently; on the
+verified tier the coordinate is Apple's and the question does not arise. A shop's `Rate` is the
 rounded average of its posts' rates, recalculated asynchronously by `ShopRateService`.
 
 ## Surface area
@@ -85,7 +97,8 @@ All four projects target `net9.0` with `<Nullable>enable</Nullable>` and
 
 **External services:** MongoDB (system of record) · Redis (cache, OTP, registration tokens, queue
 idempotency, SignalR backplane, Data Protection key ring) · RabbitMQ (asynchronous work) ·
-Cloudflare R2 over the S3 API (images) · Resend (transactional email) · Apple APNs (push).
+Cloudflare R2 over the S3 API (images) · Resend (transactional email) · Apple APNs (push) ·
+Apple Maps Server API (place verification).
 
 ## Module map
 
@@ -96,8 +109,8 @@ references only `infra`, reaching `app` and `domain` transitively.
 ```mermaid
 graph LR
     api["<b>api</b><br/>13 controllers · 83 endpoints<br/>2 middleware · JWT · rate limiting"]
-    infra["<b>infra</b><br/>13 adapters · 10 queue workers<br/>16 hosted services · SignalR hub"]
-    app["<b>app</b><br/>83 MediatR handlers<br/>39 commands · 41 queries · 3 email<br/>46 validators · 22 interfaces"]
+    infra["<b>infra</b><br/>15 adapters · 10 queue workers<br/>16 hosted services · SignalR hub"]
+    app["<b>app</b><br/>83 MediatR handlers<br/>39 commands · 41 queries · 3 email<br/>46 validators · 23 interfaces"]
     domain["<b>domain</b><br/>16 entities · 3 value objects<br/>3 enums · DomainResult"]
 
     api --> infra
@@ -116,7 +129,8 @@ level; every other use case follows `feature/<area>/<command|query>/<UseCase>/`.
 
 Configuration is read through `IConfiguration` from **process environment variables** using ASP.NET's
 double-underscore nesting (`MongoDB__ConnectionString` maps to `MongoDB:ConnectionString`). **20
-variables are required**; `AdminSeeder` and the forwarded-headers trust list add optional ones. The
+variables are required**; `AdminSeeder`, the forwarded-headers trust list and the three `Maps__*`
+keys add optional ones. The
 full table, with what consumes each value, is in [`infrastructure.md`](./infrastructure.md).
 
 A gitignored `.env` at the repository root holds them for local work. Nothing in the repository parses

@@ -97,11 +97,12 @@ The 5 membership helpers: `ReactionMembership`, `SaveMembership`, `PostFeedEnric
 | Health checks | 3 | `MongoHealthCheck`, `RedisHealthCheck`, `RabbitMQHealthCheck` |
 | JSON converters | 3 | Plus `DomainJsonOptions` |
 | Persistence configuration | 7 | Class maps, serializer, indexes, initializers, seeder, purge host |
-| Index models | 43 | Declared in `IndexConfiguration` |
+| Index models | 44 | Declared in `IndexConfiguration` |
 
-The 13 adapters: `ApnsService`, `ApnsTokenProvider`, `BCryptService`, `CurrentIdentityService`,
-`EmailService`, `JwtService`, `NotificationService`, `OtpService`, `R2Service`,
-`RabbitMQPublishChannel`, `RabbitMQService`, `RedisService`, `RegistrationService`.
+The 15 adapters: `ApnsService`, `ApnsTokenProvider`, `ApplePlaceService`, `BCryptService`,
+`CurrentIdentityService`, `EmailService`, `JwtService`, `MapsTokenProvider`, `NotificationService`,
+`OtpService`, `R2Service`, `RabbitMQPublishChannel`, `RabbitMQService`, `RedisService`,
+`RegistrationService`.
 
 `RabbitMQPublishChannel` is a singleton holding one channel and the set of queues declared on it.
 `RabbitMQService` is scoped and used to open a channel and redeclare the queue on every publish —

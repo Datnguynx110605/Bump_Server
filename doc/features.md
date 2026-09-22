@@ -589,16 +589,23 @@ The returned token is the credential for #1, #6, #10 and #11.
 
 ```mermaid
 flowchart TD
-    A["Client<br/>POST /api/v1/Post (multipart)<br/>shopName, shopAddress, latitude, longitude,<br/>caption, rate, images"] --> B["PostController.CreatePost<br/>Amount.Create(rate) ≥ 0"]
+    A["Client<br/>POST /api/v1/Post (multipart)<br/>placeId, shopName, shopAddress,<br/>latitude, longitude, caption, rate, images"] --> B["PostController.CreatePost<br/>Amount.Create(rate) ≥ 0"]
     B -->|invalid| B1["400"]
     B --> C["ImageUpload.ToStreams<br/>≤10 files · ≤5 MB · allowlist + magic bytes<br/>opens the streams only on success"]
     C -->|fail| C1["400"]
-    C --> D["MediatR → CreatePostValidator<br/>rate 1–5 · names ≤200 · caption ≤2000<br/>lat/lng both-or-neither, in range"] -->|invalid| D1["400"]
+    C --> D["MediatR → CreatePostValidator<br/>rate 1–5 · caption ≤2000 · placeId ≤200<br/>name+address required only without a placeId<br/>lat/lng both-or-neither, in range"] -->|invalid| D1["400"]
     D --> E["CreatePostHandler → identity"] -->|null| E1["401"]
-    E --> F["R2 PutObject per image — all in parallel"]
-    F --> G{"Mongo find Shop<br/>Name = x AND Address = y AND !IsDeleted<br/>project Id"}
+    E --> P{"placeId present?"}
+    P -->|yes| P1["ApplePlaceService.ResolveAsync<br/>GET /v1/place/id"]
+    P1 -->|null| P2["400 'Shop could not be verified'"]
+    P1 --> Q["name, address, lat, lng := Apple's<br/>request text ignored"]
+    P -->|no| Q2["name, address, lat, lng := the request's"]
+    Q --> F["R2 PutObject per image — all in parallel"]
+    Q2 --> F
+    F --> G{"Mongo find Shop by PlaceId,<br/>then by Name + Address, !IsDeleted<br/>project Id, PlaceId"}
+    G -->|"found, no PlaceId, place resolved"| G2["AdoptPlace → $set PlaceId, UpdatedAt<br/>drop shop cache"] --> H
     G -->|found| H["shopId = existing.Id"]
-    G -->|none| I["Shop.Create(name, address, lat, lng)<br/>→ insertOne · Redis SET shop 7d<br/>bump shop:all"] --> H
+    G -->|none| I["Shop.Create(name, address, lat, lng, placeId)<br/>→ insertOne · Redis SET shop 7d<br/>bump shop:all"] --> H
     I -->|"DuplicateKey"| I2["re-read the shop the winner inserted"] --> H
     I -->|"other MongoWriteException"| X["R2 DeleteObject per image · rethrow"]
     H --> J["Post.Create — CaptionNormalized computed"]
@@ -633,16 +640,38 @@ and lost a post that should simply have joined the shop the winner had just crea
 and attaches to that row. `CreateAccountHandler` already translated the identical collision, so this
 brings the two into line.
 
-Shop matching uses the raw name and address, not the normalized fields, so "Cafe X" and "cafe x"
-create two shops.
+**A shop comes in two tiers.** With a `placeId`, the identifier is resolved against the Apple Maps
+Server API and the shop is created from the name, address and coordinate Apple answered; the
+request's own `shopName`, `shopAddress`, `latitude` and `longitude` are not read at all. That is the
+guarantee — a client can claim any name, but cannot invent an identifier Apple will return a place
+for. Without a `placeId` the shop is whatever the client typed and is created unverified, which
+keeps a street cart Apple has never heard of postable. `CreatePostValidator` requires the name and
+address only on that second path.
 
-The coordinate is optional and reaches `Shop` only on the branch that inserts one: a post naming an
-existing shop reuses the row and never overwrites `Location`, so the first poster to name a
-(name, address) pair fixes that shop's coordinate permanently. Both values must arrive together and
-within range or `CreatePostValidator` rejects the request — checked there as well as in `Shop.Create`
-because the handler uploads every image to R2 before it reaches the entity, and a failure at the
-entity would orphan the uploaded objects. A post created without a coordinate is not an error; the
-shop is simply absent from the 2dsphere index and never appears in #78.
+**Resolution happens before the uploads.** Everything past the R2 block has to clean up after the
+objects on its way out, and a rejected place is much the cheapest failure to answer while there is
+still nothing to discard. A place that will not resolve — unknown to Apple, an Apple error, or no
+Maps key configured — is `400 Shop could not be verified`.
+
+An existing shop is looked up **by `PlaceId` first, then by exact `Name` + `Address`**, as two
+queries rather than one `$or` because the order is load-bearing: a row already carrying the
+identifier has to win. The text arm is what adopts a shop created before verification existed —
+`Shop.AdoptPlace` stamps the identifier on it and the cached summary is dropped — so the catalogue
+upgrades itself as people post, with no migration. Adoption only ever fills an empty slot, and a
+duplicate-key collision there (Apple renamed the place and a second row grew under the new name)
+skips the stamp rather than failing a valid post, leaving two rows for an administrator to merge.
+
+Matching on the text arm uses the raw name and address, not the normalized fields, so "Cafe X" and
+"cafe x" create two shops.
+
+The coordinate reaches `Shop` only on the branch that inserts one: a post naming an existing shop
+reuses the row and never overwrites `Location`, so on the unverified tier the first poster to name a
+(name, address) pair fixes that shop's coordinate permanently. On the verified tier the coordinate is
+Apple's. Both values must arrive together and within range or `CreatePostValidator` rejects the
+request — checked there as well as in `Shop.Create` because the handler uploads every image to R2
+before it reaches the entity, and a failure at the entity would orphan the uploaded objects. A post
+created without a coordinate is not an error; the shop is simply absent from the 2dsphere index and
+never appears in #78.
 
 ### 25. Change caption — `PUT /Post/{postId}/caption`
 
@@ -1033,7 +1062,7 @@ flowchart TD
     A["Client<br/>GET /api/v1/Shop/around?latitude=&longitude="] --> B["ShopController.GetBestShopAround"]
     B --> C["MediatR → GetBestShopAroundValidator<br/>lat ±90 · lng ±180"] -->|invalid| C1["400"]
     C --> D["GetBestShopAroundHandler"]
-    D --> E["filter: !IsDeleted AND Rate.Value ≥ 4 AND<br/>Location $nearSphere origin, $maxDistance 5000 m"]
+    D --> E["filter: !IsDeleted AND PlaceId exists AND<br/>Rate.Value ≥ 4 AND<br/>Location $nearSphere origin, $maxDistance 5000 m"]
     E --> F["Mongo find · limit 50 · Summary<br/>2dsphere index · nearest first"]
     F --> G["OrderByDescending(Rate).Take(10) in memory"]
     G --> H["200 CursorPageResult of ShopSummaryDto<br/>NextCursor null"]
@@ -1052,6 +1081,12 @@ trades relevance for reach.
 The answer is a fixed top ten with `NextCursor: null`, matching the `CursorPageResult` shape every
 other list endpoint returns so the client decodes it the same way. Shops with no `Location` are
 absent from the 2dsphere index and can never appear here.
+
+**Verified shops only.** This is the one surface that exists to be navigated to, so a shop nobody
+confirmed against Apple Maps is precisely the one that must not appear on it — an unverified pin is
+how somebody ends up at the wrong shop, or at a shop that was never there. Keyword, name and address
+search (#42–#44) are deliberately left open to both tiers: a shop somebody typed in is still theirs
+to find by name.
 
 ---
 

@@ -580,14 +580,18 @@ genuinely unavailable.
 | **Cloudflare R2** | Binary object storage for avatars and content images | S3-compatible HTTPS | Objects are referenced by URL from documents. Deletion is **best-effort and not transactional** with the document store — a failed delete orphans an object, which is preferred to blocking a user-facing delete |
 | **Resend** | Transactional email — one-time passcodes for registration and address verification | HTTPS REST, bounded timeout | Synchronous in the registration path. A failure surfaces to the caller, who retries; no passcode is consumed |
 | **Apple APNs** | Mobile push to backgrounded and terminated clients | **HTTP/2, mandatory** | Asynchronous and failure-isolated. Tokens rejected as unregistered or malformed are retired automatically, so the device registry self-cleans |
+| **Apple Maps Server API** | Resolving a place identifier into the name, address and coordinate a shop is created from | HTTPS REST, bounded timeout | Synchronous in post creation, and only on the verified tier. A failure rejects the post before anything is uploaded; an unconfigured key degrades to unverified-only rather than failing the deploy. One shared quota of 25,000 calls per day |
 
-Three integration constraints are structural rather than incidental:
+Four integration constraints are structural rather than incidental:
 
 - **APNs refuses HTTP/1.1**, and a client library that negotiates protocol version will silently
   downgrade. The version is therefore pinned explicitly rather than negotiated.
 - **Push credentials are short-lived by mandate.** The provider assertion is re-minted on a schedule
   that sits inside the provider's accepted validity window — too frequent is rejected as abuse, too
   infrequent is rejected as expired.
+- **Place verification is only worth its round trip because it is rare.** The lookup runs on the
+  branch that has no shop yet, so its volume is bounded by distinct new places rather than by posts;
+  every post naming a shop the catalogue already holds is a local index hit.
 - **A single deployment serves both development and production push environments simultaneously.**
   The target environment is a property of each registered device rather than of the deployment, so
   internal builds and released builds coexist without a separate service instance.

@@ -75,13 +75,13 @@ graph LR
     style infra fill:#e3f2fd,stroke:#1565c0
 ```
 
-**22 interfaces** are declared in `app` and implemented in `infra`:
+**23 interfaces** are declared in `app` and implemented in `infra`:
 
 | Category | Count | Covers |
 |---|---|---|
 | Persistence | 1 | Collection access |
 | Queue workers | 10 | The business operation behind each category of deferred work |
-| Services | 11 | Cache, messaging, object storage, email, push, token issuance, hashing, one-time passcodes, registration tokens, identity access |
+| Services | 12 | Cache, messaging, object storage, email, push, place verification, token issuance, hashing, one-time passcodes, registration tokens, identity access |
 
 Consequences that must be preserved:
 
