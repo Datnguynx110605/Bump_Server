@@ -77,35 +77,51 @@ public sealed class MapsTokenProvider
             using var request = new HttpRequestMessage(HttpMethod.Get, TokenEndpoint);
             request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", SignAuthToken());
 
-            using var response = await client.SendAsync(request, cancellationToken);
-
-            if(!response.IsSuccessStatusCode)
+            HttpResponseMessage response;
+            try
             {
-                _logger.LogError(
-                    "Maps token exchange returned {Status}: {Body}",
-                    (int)response.StatusCode,
-                    await response.Content.ReadAsStringAsync(cancellationToken));
+                response = await client.SendAsync(request, cancellationToken);
+            }
+            // Same network conditions ApplePlaceService.ResolveAsync guards against: a
+            // timeout or dropped connection here should degrade to "can't verify right now"
+            // rather than crash the request with a raw 500.
+            catch(Exception ex) when (ex is HttpRequestException or TaskCanceledException)
+            {
+                _logger.LogError(ex, "Maps token exchange timed out or failed");
 
                 return null;
             }
 
-            var token = await response.Content.ReadFromJsonAsync<TokenResponse>(cancellationToken);
-
-            if(string.IsNullOrWhiteSpace(token?.AccessToken))
+            using(response)
             {
-                _logger.LogError("Maps token exchange returned no access token");
+                if(!response.IsSuccessStatusCode)
+                {
+                    _logger.LogError(
+                        "Maps token exchange returned {Status}: {Body}",
+                        (int)response.StatusCode,
+                        await response.Content.ReadAsStringAsync(cancellationToken));
 
-                return null;
+                    return null;
+                }
+
+                var token = await response.Content.ReadFromJsonAsync<TokenResponse>(cancellationToken);
+
+                if(string.IsNullOrWhiteSpace(token?.AccessToken))
+                {
+                    _logger.LogError("Maps token exchange returned no access token");
+
+                    return null;
+                }
+
+                _accessToken = token.AccessToken;
+                // Clamped: an absent or nonsensical lifetime would otherwise expire the token
+                // on arrival and spend a quota call on every single request.
+                _expiresAt = DateTime.UtcNow
+                    .AddSeconds(Math.Max(token.ExpiresInSeconds, 60))
+                    .Subtract(ExpiryMargin);
+
+                return _accessToken;
             }
-
-            _accessToken = token.AccessToken;
-            // Clamped: an absent or nonsensical lifetime would otherwise expire the token
-            // on arrival and spend a quota call on every single request.
-            _expiresAt = DateTime.UtcNow
-                .AddSeconds(Math.Max(token.ExpiresInSeconds, 60))
-                .Subtract(ExpiryMargin);
-
-            return _accessToken;
         }
         finally
         {

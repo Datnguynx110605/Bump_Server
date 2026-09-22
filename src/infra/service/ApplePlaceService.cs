@@ -52,50 +52,66 @@ public sealed class ApplePlaceService : IPlaceService
             PlaceEndpoint + Uri.EscapeDataString(placeId));
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
 
-        using var response = await _httpClient.SendAsync(request, cancellationToken);
-
-        // An identifier Apple has never issued is an ordinary outcome, not a fault: the
-        // client is one app version behind, or the place has been retired. Anything else
-        // is ours to look at — a 401 is a bad key, a 429 is the daily quota.
-        if(!response.IsSuccessStatusCode)
+        HttpResponseMessage response;
+        try
         {
-            if(response.StatusCode != HttpStatusCode.NotFound)
-                _logger.LogWarning(
-                    "Maps place lookup returned {Status}: {Body}",
-                    (int)response.StatusCode,
-                    await response.Content.ReadAsStringAsync(cancellationToken));
+            response = await _httpClient.SendAsync(request, cancellationToken);
+        }
+        // A DNS blip, a dropped connection or the request outliving HttpClient.Timeout are
+        // ordinary network conditions, not something a client can fix by retrying with
+        // different input — treated the same as an identifier Apple doesn't recognize
+        // rather than left to crash the request with a raw 500.
+        catch(Exception ex) when (ex is HttpRequestException or TaskCanceledException)
+        {
+            _logger.LogWarning(ex, "Maps place lookup timed out or failed for {PlaceId}", placeId);
 
             return null;
         }
-
-        string body = await response.Content.ReadAsStringAsync(cancellationToken);
-        var place = ReadPlace(body);
-
-        if(place?.Name is null || place.Coordinate is null)
+        using(response)
         {
-            _logger.LogWarning("Maps place lookup returned an unusable place: {Body}", body);
+            // An identifier Apple has never issued is an ordinary outcome, not a fault: the
+            // client is one app version behind, or the place has been retired. Anything else
+            // is ours to look at — a 401 is a bad key, a 429 is the daily quota.
+            if(!response.IsSuccessStatusCode)
+            {
+                if(response.StatusCode != HttpStatusCode.NotFound)
+                    _logger.LogWarning(
+                        "Maps place lookup returned {Status}: {Body}",
+                        (int)response.StatusCode,
+                        await response.Content.ReadAsStringAsync(cancellationToken));
 
-            return null;
+                return null;
+            }
+
+            string body = await response.Content.ReadAsStringAsync(cancellationToken);
+            var place = ReadPlace(body);
+
+            if(place?.Name is null || place.Coordinate is null)
+            {
+                _logger.LogWarning("Maps place lookup returned an unusable place: {Body}", body);
+
+                return null;
+            }
+
+            // formattedAddressLines is a mailing label split across lines; the single line the
+            // form and the 200-character column expect is the same join the client already
+            // uses on its own placemarks.
+            string address = Truncate(string.Join(", ", place.FormattedAddressLines ?? []));
+
+            if(string.IsNullOrWhiteSpace(address))
+            {
+                _logger.LogWarning("Maps place {PlaceId} has no address lines", placeId);
+
+                return null;
+            }
+
+            return new PlaceResult(
+                placeId,
+                Truncate(place.Name),
+                address,
+                place.Coordinate.Latitude,
+                place.Coordinate.Longitude);
         }
-
-        // formattedAddressLines is a mailing label split across lines; the single line the
-        // form and the 200-character column expect is the same join the client already
-        // uses on its own placemarks.
-        string address = Truncate(string.Join(", ", place.FormattedAddressLines ?? []));
-
-        if(string.IsNullOrWhiteSpace(address))
-        {
-            _logger.LogWarning("Maps place {PlaceId} has no address lines", placeId);
-
-            return null;
-        }
-
-        return new PlaceResult(
-            placeId,
-            Truncate(place.Name),
-            address,
-            place.Coordinate.Latitude,
-            place.Coordinate.Longitude);
     }
 
     // The single-identifier endpoint answers with a bare Place and the multi-identifier
