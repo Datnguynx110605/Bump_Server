@@ -1,0 +1,77 @@
+name: bump
+
+# Local dev/test backing services only. The api itself runs via `dotnet run` against these, or the
+# same containers are what Testcontainers spins up ad hoc for the test suites under /test. No compose
+# file provisions Resend, APNs or Apple Maps — those are external SaaS and are stubbed in tests instead.
+services:
+  mongo:
+    image: mongo:7
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo-data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping')"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  rabbitmq:
+    image: rabbitmq:3-management-alpine
+    ports:
+      - "5672:5672"
+      - "15672:15672"
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  minio:
+    # Docker Hub's minio/minio requires auth as of MinIO's 2025 licensing change; quay.io stays open.
+    image: quay.io/minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: bump-dev
+      MINIO_ROOT_PASSWORD: bump-dev-secret
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # Creates the R2-equivalent bucket once minio is up, then exits. `docker compose up` leaves it
+  # "exited (0)"; that is success, not a crash.
+  minio-init:
+    image: quay.io/minio/mc:latest
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      sh -c "
+      mc alias set local http://minio:9000 bump-dev bump-dev-secret &&
+      mc mb -p local/bump-dev &&
+      mc anonymous set download local/bump-dev
+      "
+
+volumes:
+  mongo-data:
+  rabbitmq-data:
+  minio-data:

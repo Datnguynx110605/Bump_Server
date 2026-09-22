@@ -405,8 +405,14 @@ graph TB
     style container fill:#e3f2fd,stroke:#1565c0
 ```
 
-**Every backing service is external to this repository.** No compose file, manifest or IaC provisions
-any of them; each arrives as a connection string or API key in a service variable.
+**Every backing service is external to this repository** in production; each arrives as a connection
+string or API key in a service variable, and no manifest or IaC provisions them. The one exception is
+local development: the root `docker-compose.yml` runs Mongo, Redis, RabbitMQ and a MinIO standing in
+for R2 (`quay.io/minio/minio` — Docker Hub's `minio/minio` requires auth under MinIO's current
+licensing), so `dotnet run` and the test suites under `/test` have somewhere to point without a
+Railway environment. Resend, APNs and Apple Maps have no local emulator and are stubbed in tests
+instead of run in a container. See [`developer-guide.md`](./developer-guide.md#local-development) for
+how to bring the stack up.
 
 **The API container is stateless.** ASP.NET Data Protection keys — which protect the registration
 token payload and therefore gate registration, recovery, password reset and email change — are

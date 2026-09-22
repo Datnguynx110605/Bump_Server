@@ -682,6 +682,19 @@ be shared between replicas — failing silently, with no error the caller could 
 ## 6. Local Development
 
 ```bash
+docker compose up -d
+```
+
+Brings up Mongo, Redis, RabbitMQ and a MinIO instance standing in for R2 (`docker-compose.yml` at the
+repository root); `minio-init` runs once to create the `bump-dev` bucket and exits — an "Exited (0)"
+status for it is success, not a crash. `docker compose down` stops them; add `-v` to also drop the
+named volumes (`mongo-data`, `rabbitmq-data`, `minio-data`) and start from an empty state. Point the
+matching `.env` / user-secrets values at `localhost` and the credentials in the compose file
+(`bump-dev` / `bump-dev-secret` for MinIO). Resend, APNs and Apple Maps have no local container; run
+without those three variable groups and the corresponding paths degrade the way
+[`infrastructure.md`](./infrastructure.md#optional-variables--8) describes, or stub them in tests.
+
+```bash
 dotnet build src/Bump.sln -c Release
 ```
 
