@@ -50,6 +50,17 @@
   4. stop further attempts and report the command, observed behavior, and available output.
 - MUST NOT leave background processes running.
 
+## Docker Usage
+
+- Docker environment runs via **Colima**.
+- **Colima VM lifecycle management (`colima start`, `colima stop`, `colima status`, `colima delete`, etc.) is strictly OWNED BY THE USER.**
+- NEVER execute any `colima` CLI commands under any circumstances.
+- If the Docker daemon is unreachable or down, MUST immediately stop and report to the user to start Colima, rather than attempting to start or troubleshoot Colima.
+- ALLOWED to run `docker` or `docker compose` CLI commands to build images and containers strictly for local testing environments.
+- MUST NOT modify Docker configurations without explicit user request and prior approval.
+- MUST NOT edit or modify `Dockerfile`, `docker-compose.yml`, or related configurations without thoroughly understanding the codebase and repository structure first.
+- MUST perform a complete cleanup upon task completion: remove all created images, containers, networks, volumes, and terminate all active Docker processes.
+
 ## Communication and Completion
 
 - MUST state assumptions when repository evidence is incomplete.
