@@ -92,6 +92,10 @@ public static class DependencyInjection
         // silence.
         services.AddSingleton(new ApnsTokenProvider(configuration));
 
+        // Singleton so the exchanged Maps access token is cached process-wide; it costs a
+        // network round trip against the same daily quota the lookups themselves spend.
+        services.AddSingleton<MapsTokenProvider>();
+
         // APNs refuses HTTP/1.1 and HttpClient downgrades silently unless told not to. No
         // BaseAddress: the host belongs to the device token, not to the client.
         services.AddHttpClient<IApnsService, ApnsService>(client =>
@@ -114,6 +118,8 @@ public static class DependencyInjection
         services.AddScoped<IMongoDbContext, DbContext>();
         services.AddScoped<INotificationService, NotificationService>();
         services.AddScoped<IOtpService, OtpService>();
+        services.AddHttpClient<IPlaceService, ApplePlaceService>(
+            client => client.Timeout = TimeSpan.FromSeconds(10));
         services.AddScoped<IR2Service, R2Service>();
         services.AddScoped<IRabbitMQService, RabbitMQService>();
         services.AddScoped<IReactCommentService, ReactCommentService>();

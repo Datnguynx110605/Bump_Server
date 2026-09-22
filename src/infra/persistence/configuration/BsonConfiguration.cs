@@ -98,6 +98,11 @@ public static class BsonConfiguration
             // extract a key from. Omitting the field entirely is what makes the index
             // skip shops posted without a place pick instead of rejecting the insert.
             map.GetMemberMap(x => x.Location).SetIgnoreIfNull(true);
+            // Same reason, different index: the unique index over PlaceId is partial on
+            // the field existing, and a written-out `PlaceId: null` on every unverified
+            // shop would put them all in it — where they would collide with each other on
+            // null and make manual entry impossible.
+            map.GetMemberMap(x => x.PlaceId).SetIgnoreIfNull(true);
         });
 
         RegisterBackingFieldSerializer<Account>();

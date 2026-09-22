@@ -13,15 +13,22 @@ public sealed class Shop : BaseEntity
     // those documents, so a shop with no coordinate simply never appears in a
     // proximity search rather than appearing at (0, 0).
     public double[]? Location { get; private set; }
+    // The place identifier the maps provider knows this shop by. Null for a shop somebody
+    // typed in by hand, which is the whole difference between a verified shop and an
+    // unverified one: a verified shop's name, address and coordinate were read back from
+    // the provider rather than accepted from the client, so it can be navigated to.
+    public string? PlaceId { get; private set; }
     private Shop() {}
     private Shop(
         string name,
         string address,
         double? latitude,
-        double? longitude)
+        double? longitude,
+        string? placeId)
     {
         Name = name;
         Address = address;
+        PlaceId = placeId;
         NameNormalized = TextNormalizer.RemoveDiacriticsAndLower(name);
         AddressNormalized = TextNormalizer.RemoveDiacriticsAndLower(address);
         Location = latitude is null || longitude is null
@@ -33,7 +40,8 @@ public sealed class Shop : BaseEntity
         string name,
         string address,
         double? latitude = null,
-        double? longitude = null)
+        double? longitude = null,
+        string? placeId = null)
     {
         if(string.IsNullOrWhiteSpace(name))
             return DomainResult<Shop>.Failure("Shop name is required");
@@ -52,9 +60,26 @@ public sealed class Shop : BaseEntity
         if(longitude is < -180 or > 180)
             return DomainResult<Shop>.Failure("Longitude must be between -180 and 180");
 
-        Shop shop = new Shop(name, address, latitude, longitude);
+        Shop shop = new Shop(name, address, latitude, longitude, placeId);
 
         return DomainResult<Shop>.Success(shop);
+    }
+
+    // A shop that predates place verification, matched on its name and address and
+    // stamped with the identifier of the place that resolved to them. Only ever fills an
+    // empty slot: once a shop carries an identifier that identifier is its identity, and
+    // replacing it would silently repoint the row at a different place.
+    public DomainResult AdoptPlace(string placeId)
+    {
+        if(string.IsNullOrWhiteSpace(placeId))
+            return DomainResult.Failure("PlaceId is required");
+
+        if(PlaceId is not null)
+            return DomainResult.Failure("Shop is already linked to a place");
+
+        PlaceId = placeId;
+
+        return Update();
     }
 
     public DomainResult ChangeRate(Amount rate)

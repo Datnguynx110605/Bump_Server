@@ -181,6 +181,19 @@ public static class IndexConfiguration
                         Unique = true,
                         PartialFilterExpression = Builders<Shop>.Filter.Eq(x => x.IsDeleted, false)
                     }),
+                // One row per real place. Partial on the field existing as well as on
+                // IsDeleted: a shop somebody typed in by hand carries no PlaceId and is
+                // serialized without the field, so unverified shops stay out of this index
+                // altogether rather than colliding with one another on a missing value.
+                new CreateIndexModel<Shop>(
+                    keys.Ascending(x => x.PlaceId),
+                    new CreateIndexOptions<Shop>
+                    {
+                        Unique = true,
+                        PartialFilterExpression = Builders<Shop>.Filter.And(
+                            Builders<Shop>.Filter.Exists(x => x.PlaceId, true),
+                            Builders<Shop>.Filter.Eq(x => x.IsDeleted, false))
+                    }),
                 // Backs the retention sweep in SoftDeletePurgeHost. Partial so it only
                 // carries soft-deleted rows instead of the whole collection.
                 new CreateIndexModel<Shop>(
