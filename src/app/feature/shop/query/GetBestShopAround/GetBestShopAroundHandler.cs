@@ -52,6 +52,10 @@ internal sealed class GetBestShopAroundHandler
 
         var filter = Builders<Shop>.Filter.And(
             Builders<Shop>.Filter.Eq(x => x.IsDeleted, false),
+            // Verified shops only. This is the one surface that exists to be navigated to,
+            // and a shop nobody confirmed is exactly the one whose pin sends a person to
+            // the wrong place — or to a shop that was never there.
+            Builders<Shop>.Filter.Exists(x => x.PlaceId, true),
             Builders<Shop>.Filter.Gte(x => x.Rate.Value, MinRate),
             Builders<Shop>.Filter.NearSphere(x => x.Location, origin, MaxDistanceMeters));
 

@@ -38,7 +38,10 @@ public sealed record CacheKey
     public static TimeSpan DefaultShopTTL = TimeSpan.FromDays(7);
     public static string Shop(Guid shopId)
     {
-        return $"shop:v1:id:{shopId}";
+        // v2: the cached shop gained PlaceId. A v1 entry deserializes without it and would
+        // read as unverified for the seven days its TTL has left, hiding the navigation
+        // the identifier is there to provide.
+        return $"shop:v2:id:{shopId}";
     }
 
     public static TimeSpan DefaultNotificationTTL = TimeSpan.FromDays(7);
