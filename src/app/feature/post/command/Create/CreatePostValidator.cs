@@ -7,12 +7,20 @@ internal sealed class CreatePostValidator
 {
     public CreatePostValidator()
     {
-        RuleFor(x => x.shopName)
-            .NotEmpty().WithMessage("ShopName is required")
-            .MaximumLength(200).WithMessage("ShopName is too long, maximum length is 200 characters");
-        RuleFor(x => x.shopAddress)
-            .NotEmpty().WithMessage("ShopAddress is required")
-            .MaximumLength(200).WithMessage("ShopAddress is too long, maximum length is 200 characters");
+        RuleFor(x => x.placeId)
+            .MaximumLength(200).WithMessage("PlaceId is too long, maximum length is 200 characters");
+        // Name and address are only the shop's identity on the unverified tier. With a
+        // place identifier present the handler reads neither — whatever the provider
+        // answers is the shop — so requiring them there would demand text nobody uses.
+        When(x => string.IsNullOrWhiteSpace(x.placeId), () =>
+        {
+            RuleFor(x => x.shopName)
+                .NotEmpty().WithMessage("ShopName is required")
+                .MaximumLength(200).WithMessage("ShopName is too long, maximum length is 200 characters");
+            RuleFor(x => x.shopAddress)
+                .NotEmpty().WithMessage("ShopAddress is required")
+                .MaximumLength(200).WithMessage("ShopAddress is too long, maximum length is 200 characters");
+        });
         // Mirrors the guards in Shop.Create. Duplicated deliberately: validators run
         // before the handler, and the handler uploads every image to R2 before it ever
         // reaches Shop.Create — failing there would orphan the uploaded objects.

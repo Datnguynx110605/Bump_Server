@@ -10,6 +10,7 @@ internal sealed class CreatePostHandler
     : IRequestHandler<CreatePostCommand, Result<PostDto>>
 {
     private readonly ICurrentIdentityService _identityService;
+    private readonly IPlaceService _placeService;
     private readonly IR2Service _r2Service;
     private readonly IRedisService _redisService;
     private readonly IMongoDbContext _dbContext;
@@ -17,6 +18,7 @@ internal sealed class CreatePostHandler
     private readonly IRabbitMQService _rabbitMQService;
     public CreatePostHandler(
         ICurrentIdentityService identityService,
+        IPlaceService placeService,
         IR2Service r2Service,
         IRedisService redisService,
         IMongoDbContext dbContext,
@@ -24,6 +26,7 @@ internal sealed class CreatePostHandler
         IRabbitMQService rabbitMQService)
     {
         _identityService = identityService;
+        _placeService = placeService;
         _r2Service = r2Service;
         _redisService = redisService;
         _dbContext = dbContext;
@@ -38,6 +41,27 @@ internal sealed class CreatePostHandler
         var identity = _identityService.GetAccountId();
         if(identity is null)
             return Result.Fail(AppError.Unauthorized("Unauthorized"));
+
+        // Resolved before a single byte is uploaded. Everything below this point has to
+        // clean up after the R2 objects on the way out, and a rejected place is much the
+        // cheapest failure to answer here, where there is nothing to discard yet.
+        PlaceResult? place = null;
+        if(!string.IsNullOrWhiteSpace(request.placeId))
+        {
+            place = await _placeService.ResolveAsync(request.placeId, cancellationToken);
+
+            if(place is null)
+                return Result.Fail(AppError.BadRequest("Shop could not be verified"));
+        }
+
+        // A verified shop is described entirely by what the provider answered. The
+        // request's own name, address and coordinate are read only when no place was named
+        // at all — which is the whole guard: a real identifier can never be paired with
+        // invented text, because the text is not looked at.
+        string shopName = place?.Name ?? request.shopName!;
+        string shopAddress = place?.Address ?? request.shopAddress!;
+        double? latitude = place?.Latitude ?? request.latitude;
+        double? longitude = place?.Longitude ?? request.longitude;
 
         List<string>? urls = null;
         if(request.images?.Any() == true)
@@ -72,34 +96,54 @@ internal sealed class CreatePostHandler
 
         var shopCollection = _dbContext.GetCollection<Shop>(CollectionName.Shop);
 
-        var shopFilter = Builders<Shop>.Filter.And(
-            Builders<Shop>.Filter.Eq(x => x.Name, request.shopName),
-            Builders<Shop>.Filter.Eq(x => x.Address, request.shopAddress),
+        var nameAddressFilter = Builders<Shop>.Filter.And(
+            Builders<Shop>.Filter.Eq(x => x.Name, shopName),
+            Builders<Shop>.Filter.Eq(x => x.Address, shopAddress),
             Builders<Shop>.Filter.Eq(x => x.IsDeleted, false));
 
-        // Projected: only the id is read from an existing row, and an unprojected read drags
-        // the whole shop document back to learn one field.
-        var existingShop = await shopCollection
-            .Find(shopFilter)
-            .Project<Shop>(Builders<Shop>.Projection.Include(x => x.Id))
-            .FirstOrDefaultAsync(cancellationToken);
+        var placeIdFilter = place is null
+            ? null
+            : Builders<Shop>.Filter.And(
+                Builders<Shop>.Filter.Eq(x => x.PlaceId, place.PlaceId),
+                Builders<Shop>.Filter.Eq(x => x.IsDeleted, false));
+
+        // Projected: only the id and the identifier are read from an existing row, and an
+        // unprojected read drags the whole shop document back to learn two fields.
+        Task<Shop> FindShopAsync(FilterDefinition<Shop> filter) =>
+            shopCollection
+                .Find(filter)
+                .Project<Shop>(Builders<Shop>.Projection
+                    .Include(x => x.Id)
+                    .Include(x => x.PlaceId))
+                .FirstOrDefaultAsync(cancellationToken);
+
+        // Two queries rather than one `$or`, because the order matters: a row that already
+        // carries the identifier has to win. The text arm is a fallback that adopts a shop
+        // created before verification existed, and adopting onto a second row while the
+        // first one holds the same identifier would collide on the unique index.
+        Shop? existingShop = placeIdFilter is null ? null : await FindShopAsync(placeIdFilter);
+        existingShop ??= await FindShopAsync(nameAddressFilter);
 
         Guid shopId;
         if(existingShop is not null)
         {
-            // The first post to name a (shop, address) pair fixes its coordinate for
-            // good — later posts reuse the row and never overwrite Location. The client
-            // sources both from one place-picker result, so a second poster picking the
-            // same place submits the same coordinate anyway.
             shopId = existingShop.Id;
+
+            // Matched on its name and address and carrying no identifier: a shop from
+            // before verification, or one somebody typed by hand that the provider has now
+            // confirmed. Stamping it is what makes it navigable, and it only ever fills an
+            // empty slot — the catalogue upgrades itself as people post, with no migration.
+            if(place is not null && existingShop.PlaceId is null && existingShop.AdoptPlace(place.PlaceId).IsSuccess)
+                await AdoptPlaceAsync(shopCollection, existingShop, cancellationToken);
         }
         else
         {
             var shopResult = Shop.Create(
-                request.shopName,
-                request.shopAddress,
-                request.latitude,
-                request.longitude);
+                shopName,
+                shopAddress,
+                latitude,
+                longitude,
+                place?.PlaceId);
             if(!shopResult.IsSuccess)
             {
                 await DiscardUploadsAsync();
@@ -119,22 +163,21 @@ internal sealed class CreatePostHandler
                 when (ex.WriteError.Category == ServerErrorCategory.DuplicateKey)
             {
                 // Two people reviewing the same new shop at the same moment both miss the
-                // read above and both insert; the partial unique index on (Name, Address)
-                // lets exactly one through. This used to discard the uploads and rethrow, so
-                // the loser got a 500 and lost a post that should simply have joined the shop
-                // the winner just created. Re-reading is the whole fix — by the time the
-                // index has rejected us, the row we wanted is there.
+                // read above and both insert; the partial unique indexes on the identifier
+                // and on (Name, Address) let exactly one through. This used to discard the
+                // uploads and rethrow, so the loser got a 500 and lost a post that should
+                // simply have joined the shop the winner just created. Re-reading is the
+                // whole fix — by the time the index has rejected us, the row we wanted is
+                // there.
                 inserted = false;
 
-                var raced = await shopCollection
-                    .Find(shopFilter)
-                    .Project<Shop>(Builders<Shop>.Projection.Include(x => x.Id))
-                    .FirstOrDefaultAsync(cancellationToken);
+                Shop? raced = placeIdFilter is null ? null : await FindShopAsync(placeIdFilter);
+                raced ??= await FindShopAsync(nameAddressFilter);
 
                 if(raced is null)
                 {
-                    // The duplicate came from something other than this filter — a soft
-                    // deleted row is excluded from the partial index, so this should not
+                    // The duplicate came from something other than these filters — a soft
+                    // deleted row is excluded from both partial indexes, so this should not
                     // happen — and there is no shop to attach the post to.
                     await DiscardUploadsAsync();
                     return Result.Fail(AppError.Conflict("Shop could not be resolved"));
@@ -228,5 +271,42 @@ internal sealed class CreatePostHandler
             cancellationToken);
 
         return Result.Ok(dto);
+    }
+
+    private async Task AdoptPlaceAsync(
+        IMongoCollection<Shop> shopCollection,
+        Shop shop,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            await shopCollection.UpdateOneAsync(
+                Builders<Shop>.Filter.And(
+                    Builders<Shop>.Filter.Eq(x => x.Id, shop.Id),
+                    Builders<Shop>.Filter.Exists(x => x.PlaceId, false),
+                    Builders<Shop>.Filter.Eq(x => x.IsDeleted, false)),
+                Builders<Shop>.Update
+                    .Set(x => x.PlaceId, shop.PlaceId)
+                    .Set(x => x.UpdatedAt, shop.UpdatedAt),
+                cancellationToken : cancellationToken);
+        }
+        catch(MongoWriteException ex)
+            when (ex.WriteError.Category == ServerErrorCategory.DuplicateKey)
+        {
+            // Another row already holds this identifier — the provider renamed the place
+            // and a second row grew under the new name. The post still belongs to the shop
+            // it matched, so the stamp is skipped rather than failing a valid post; the
+            // two rows are a duplicate for an administrator to merge.
+            return;
+        }
+
+        // The cached summary still reads as unverified, and it would for a week.
+        await Task.WhenAll(
+            _redisService.RemoveAsync(CacheKey.Shop(shop.Id), cancellationToken),
+            ListCache.InvalidateAsync(
+                _redisService,
+                CollectionName.Shop,
+                filterSignature: null,
+                cancellationToken));
     }
 }
