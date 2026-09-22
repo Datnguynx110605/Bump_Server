@@ -107,14 +107,18 @@ internal sealed class CreatePostHandler
                 Builders<Shop>.Filter.Eq(x => x.PlaceId, place.PlaceId),
                 Builders<Shop>.Filter.Eq(x => x.IsDeleted, false));
 
-        // Projected: only the id and the identifier are read from an existing row, and an
-        // unprojected read drags the whole shop document back to learn two fields.
+        // Projected: only three fields are read from an existing row, and an unprojected
+        // read drags the whole shop document back to learn them. IsDeleted is one of the
+        // three because AdoptPlace goes through Update(), which refuses a deleted row —
+        // leaving it out would have that check pass on a defaulted false rather than on
+        // what the row actually says.
         Task<Shop> FindShopAsync(FilterDefinition<Shop> filter) =>
             shopCollection
                 .Find(filter)
                 .Project<Shop>(Builders<Shop>.Projection
                     .Include(x => x.Id)
-                    .Include(x => x.PlaceId))
+                    .Include(x => x.PlaceId)
+                    .Include(x => x.IsDeleted))
                 .FirstOrDefaultAsync(cancellationToken);
 
         // Two queries rather than one `$or`, because the order matters: a row that already
