@@ -170,6 +170,7 @@ aggregates one check per backing service and is available in every environment.
 | [`features.md`](./features.md) | Feature work | What does each endpoint do, and what are its business rules? |
 | [`project-rules.md`](./project-rules.md) | Feature work | Where does a new file go, what is it named, and how is a new use case scaffolded? |
 | [`infrastructure.md`](./infrastructure.md) | Operations | How is each external service configured, how is the image built, and how is it deployed and observed? |
+| [`test-strategy.md`](./test-strategy.md) | Anyone adding tests | How is each layer to be tested, which tests cover which feature, and what must pass before a merge? (a plan — no suite exists yet) |
 
 **Start here if you are new:** [`system-design.md`](./system-design.md) for the shape of the system,
 then [`architecture.md`](./architecture.md) for the rules, then
