@@ -19,4 +19,9 @@
     <ProjectReference Include="..\infra\infra.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <InternalsVisibleTo Include="unit" />
+    <InternalsVisibleTo Include="integration" />
+  </ItemGroup>
+
 </Project>

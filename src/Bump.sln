@@ -11,6 +11,10 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "app", "app\app.csproj", "{9
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "api", "api\api.csproj", "{375F527F-BC11-4E01-859A-3E9B437F158F}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "unit", "..\test\unit\unit.csproj", "{8A48248C-66B9-4E9E-BD9B-22CBB3A79386}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "integration", "..\test\integration\integration.csproj", "{758D3E1B-F88D-4A39-9C51-D83261898C2B}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -36,5 +40,13 @@ Global
 		{375F527F-BC11-4E01-859A-3E9B437F158F}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{375F527F-BC11-4E01-859A-3E9B437F158F}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{375F527F-BC11-4E01-859A-3E9B437F158F}.Release|Any CPU.Build.0 = Release|Any CPU
+		{8A48248C-66B9-4E9E-BD9B-22CBB3A79386}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{8A48248C-66B9-4E9E-BD9B-22CBB3A79386}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{8A48248C-66B9-4E9E-BD9B-22CBB3A79386}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{8A48248C-66B9-4E9E-BD9B-22CBB3A79386}.Release|Any CPU.Build.0 = Release|Any CPU
+		{758D3E1B-F88D-4A39-9C51-D83261898C2B}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{758D3E1B-F88D-4A39-9C51-D83261898C2B}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{758D3E1B-F88D-4A39-9C51-D83261898C2B}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{758D3E1B-F88D-4A39-9C51-D83261898C2B}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 EndGlobal

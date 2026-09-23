@@ -50,9 +50,17 @@ public static class DependencyInjection
 
         services.AddSingleton<IAmazonS3>(_ =>
         {
+            // Unset in every deployed environment, where R2:AccountId alone determines the
+            // endpoint. Local dev and the integration test suite are the only callers that set
+            // it, to redirect at the MinIO container docker-compose.yml provisions as R2's
+            // stand-in — MinIO speaks the same path-style S3 API but has no account subdomain.
+            string? serviceUrl = configuration["R2:ServiceUrl"];
+
             var s3Config = new AmazonS3Config
             {
-                ServiceURL = $"https://{configuration["R2:AccountId"]}.r2.cloudflarestorage.com",
+                ServiceURL = string.IsNullOrWhiteSpace(serviceUrl)
+                    ? $"https://{configuration["R2:AccountId"]}.r2.cloudflarestorage.com"
+                    : serviceUrl,
                 ForcePathStyle = true,
                 RequestChecksumCalculation = RequestChecksumCalculation.WHEN_REQUIRED,
                 ResponseChecksumValidation = ResponseChecksumValidation.WHEN_REQUIRED

@@ -20,4 +20,9 @@
     <Nullable>enable</Nullable>
   </PropertyGroup>
 
+  <ItemGroup>
+    <InternalsVisibleTo Include="unit" />
+    <InternalsVisibleTo Include="integration" />
+  </ItemGroup>
+
 </Project>
