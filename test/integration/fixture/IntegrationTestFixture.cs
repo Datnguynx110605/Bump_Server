@@ -45,6 +45,8 @@ public sealed class IntegrationTestFixture : WebApplicationFactory<Program>, IAs
 
     public PublishedMessageLog PublishedMessages => Services.GetRequiredService<PublishedMessageLog>();
 
+    public CapturingLogEventSink LogEvents { get; } = new();
+
     public async Task InitializeAsync()
     {
         await Task.WhenAll(
@@ -108,6 +110,11 @@ public sealed class IntegrationTestFixture : WebApplicationFactory<Program>, IAs
                 http.ConfigurePrimaryHttpMessageHandler(sp => sp.GetRequiredService<ScriptedHttpMessageHandler>()));
 
             services.AddScoped<ICurrentIdentityService, FakeCurrentIdentityService>();
+
+            // Picked up by Program.cs's own .ReadFrom.Services(services) call — no
+            // production change needed. See CapturingLogEventSink's own comment.
+            services.AddSingleton(LogEvents);
+            services.AddSingleton<Serilog.Core.ILogEventSink>(LogEvents);
 
             // Wraps the real IRabbitMQService (registered Scoped in infra/DependencyInjection.cs)
             // rather than replacing it, so every queue consumer above still receives every
@@ -184,11 +191,13 @@ public sealed class IntegrationTestFixture : WebApplicationFactory<Program>, IAs
             ["R2:ServiceUrl"] = _minio.GetConnectionString(),
 
             // ApnsTokenProvider.Required() throws at construction if any of these are
-            // missing. Its PEM parsing never runs in this slice — nothing here sends a
-            // push — so the value only has to be non-empty.
+            // missing, and Current() signs a real ES256 token from the PEM the moment
+            // ApnsServiceTests sends a push — a real key, not a placeholder, or that
+            // signing step throws before the scripted HttpMessageHandler ever sees the
+            // request.
             ["Apns:KeyId"] = "test-key-id",
             ["Apns:TeamId"] = "test-team-id",
-            ["Apns:PrivateKey"] = "unused-in-this-slice",
+            ["Apns:PrivateKey"] = GenerateEcdsaPrivateKeyPem(),
             ["Apns:BundleId"] = "com.bump.test",
 
             // Maps:* left configured (unlike the two above, MapsTokenProvider treats a
@@ -197,11 +206,11 @@ public sealed class IntegrationTestFixture : WebApplicationFactory<Program>, IAs
             // short-circuiting to null.
             ["Maps:KeyId"] = "test-key-id",
             ["Maps:TeamId"] = "test-team-id",
-            ["Maps:PrivateKey"] = GenerateMapsPrivateKey()
+            ["Maps:PrivateKey"] = GenerateEcdsaPrivateKeyPem()
         };
     }
 
-    private static string GenerateMapsPrivateKey()
+    private static string GenerateEcdsaPrivateKeyPem()
     {
         using var key = ECDsa.Create(ECCurve.NamedCurves.nistP256);
 
