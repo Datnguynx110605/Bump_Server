@@ -1,9 +1,11 @@
 # Test Strategy
 
-**Status: a plan. No test project exists yet.** `test/` is an empty directory and `src/Bump.sln`
-declares four projects, none of them a test project. Nothing described here has been executed, and no
-claim in this document should be read as a statement that a suite passes. Where a section says a test
-"asserts" something, read it as *the test to be written asserts*.
+**Status: in progress.** Bootstrap (§2), `domain` (§3.1), the `app` pure parts (§3.2), the `infra`
+adapters (§3.4), the queue transport contract (§3.5), §3.6's three generic sweeps, its rate-limit
+policy tests and its pipeline tests (§3.6.5) are fully implemented and green, along with a growing set
+of feature areas across §3.3 and §3.6's per-endpoint tables. Sections or rows not yet backed by a test
+file are still a plan — where one of those says a test "asserts" something, read it as *the test to be
+written asserts*, not as a claim that a suite passes for it.
 
 The strategy is derived from what the code actually does, not from a generic layer template. Section 1
 explains the one property of this codebase that decides the whole shape; sections 2–4 give the plan per
@@ -76,7 +78,8 @@ split that matters for feedback speed is "needs Docker" versus "does not".
 
 ## 2. Bootstrap — step zero
 
-None of the following has been done; it is the prerequisite for every section after it.
+Done — `test/unit` and `test/integration` exist, are registered in `src/Bump.sln`, and the visibility
+edits and test host surgery below are in place. Left here as the reference for what bootstrap required.
 
 ### 2.1 Projects
 
@@ -212,6 +215,12 @@ two pages do not overlap. Filtered reads add a blocked-account case (§3.6).
 
 ### 3.4 `infra` — adapters, integration tests
 
+Done — every row below is implemented and green in `test/integration/infra` (`JwtService` and
+`BCryptService` in `test/unit/infra` per their own row). Two rows were corrected against the adapters'
+actual code while writing their tests, same as the §3.5 worker rows below: `EmailService`/
+`ApplePlaceService`/`ApnsService`'s "degrades rather than throwing" claim, and `RabbitMQService`'s
+undeserializable-body claim in §3.5.
+
 | Adapter | Against | What the tests pin |
 |---|---|---|
 | `RedisService` | Redis container | get/set/remove round-trip with the value-object JSON converters; TTL applied; `IncrementAsync` creates and expires the counter; `GetCounterAsync` returns 0 for a missing key |
@@ -221,7 +230,7 @@ two pages do not overlap. Filtered reads add a blocked-account case (§3.6).
 | `RegistrationService` | Redis | `ExtractEmailAsync` does **not** consume the token — the token survives a failed downstream write, which is the whole reason the read and the consume are separate calls; a tampered payload returns `null` rather than throwing; `ConsumeTokenAsync` removes it |
 | `JwtService` | none (unit) | the token carries `accountId` and `role` claims, the configured issuer/audience, and an expiry `Jwt:ExpiryMinutes` in the future. Can live in `test/unit` with an in-memory `IConfiguration` |
 | `BCryptService` | none (unit) | hash length is 60 — the number `Account.Create` hard-codes as `PasswordHashLength`; verify succeeds for the right password and fails for the wrong one |
-| `EmailService`, `ApplePlaceService`, `ApnsService` | scripted `HttpMessageHandler` | a success response parses into the expected result; a 5xx, a timeout and a malformed body each degrade the documented way rather than throwing out of the handler. `ApplePlaceService` returning `null` on a network failure is the behaviour the most recent commit added |
+| `EmailService`, `ApplePlaceService`, `ApnsService` | scripted `HttpMessageHandler` | a success response parses into the expected result. Corrected against the actual code, not all three degrade the same way: `EmailService` throws `InvalidOperationException` on any non-success status by design, which is its documented failure mode, not a bug to guard against; `ApplePlaceService` returns `null` on a network failure, an unknown place id, and a non-success status, but a malformed 200 body throws `JsonException` uncaught — nothing between `ReadAsStringAsync` and the `Deserialize` call catches it; `ApnsService` swallows an ordinary failure status and a malformed *reason* body (logs a warning, retires a dead token, retries once on `ExpiredProviderToken`), but a network failure propagates out of `SendAsync` uncaught — `ApnsTokenProvider`'s own comment says that is swallowed by `NotificationService`, one layer up, not here |
 | `BsonConfiguration` / `BackingFieldBsonSerializer` | Mongo container | an `Account` with populated `_avatars`, `_followers`, `_blocks` and `_blockedBy` round-trips through insert and read with the private backing fields intact, and `Email`/`Name`/`Amount` deserialize through their private constructors |
 | `IndexConfiguration` / `IndexInitializer` | Mongo container | after the initializer runs, the expected indexes exist; specifically the two partial unique indexes on `Shop` (`PlaceId`, and `Name`+`Address`) that `CreatePostHandler`'s race recovery depends on, and the 2dsphere index on `Location` |
 | health checks | all three containers | healthy when up. The unhealthy case is left alone: stopping a shared container to test it would break every other test in the assembly |
@@ -230,12 +239,17 @@ two pages do not overlap. Filtered reads add a blocked-account case (§3.6).
 
 Two distinct things to test, and conflating them is the usual mistake.
 
-**The transport contract**, once, against `RabbitMQService`:
+**The transport contract** is done, in `test/integration/infra/queue/RabbitMQTransportContractTests.cs`,
+tested once against the real `RabbitMQService`/`QueueConsumerHost`:
 
 - a message is consumed and the handler invoked;
 - redelivery of the same `MessageId` with the same payload is skipped (the Redis idempotency key);
 - redelivery of the same `MessageId` with a *different* payload is dead-lettered, not silently acked;
-- an undeserializable body goes straight to `{queue}.dlq`;
+- corrected against the actual code while writing this: a body only goes straight to `{queue}.dlq`
+  when it deserializes to JSON `null` — that is the one case `ConsumeAsync`'s own `message is null`
+  check dead-letters directly. Genuinely malformed JSON makes `JsonSerializer.Deserialize` throw, which
+  the surrounding `catch` treats exactly like a throwing handler: it goes to `{queue}.retry` first and
+  only reaches `{queue}.dlq` on the third attempt, same as any other handler exception;
 - a throwing handler republishes to `{queue}.retry` with `x-retry-count` incremented, and the third
   attempt lands in `{queue}.dlq` (`MaxAttempts = 3`). The 30-second `RetryDelay` makes a literal
   end-to-end retry test slow — assert on the queue the message was published to and the header value,
@@ -258,9 +272,9 @@ going through the broker, since the transport is already covered above.
 | Worker | Cases beyond the happy path |
 |---|---|
 | `FollowService` | self-follow refused; either account missing → `NotFound`; blocked in either direction → refused silently; `MatchedCount == 0` → `Conflict("Already following")`; a pre-broken half-applied edge is **repaired** rather than throwing; both `FollowerAmount` and `FollowingAmount` move by exactly 1; trust granted only at ≥500 followers **and** ≥30 days old **and** no live reports, and never revoked by unfollow |
-| `BlockService` | both arrays written; existing follow edges severed in both directions; reactions severed; the blocked-set cache key deleted for both accounts |
+| `BlockService` | both arrays written; existing follow edges severed in both directions; reactions severed; the blocked-set cache key deleted for both accounts; **and, like `FollowService`, a pre-broken half-applied block (`Blocks` already pushed, nothing else run) falls through and still severs follows/reactions rather than exiting on the first `MatchedCount == 0`** — found while writing the Block area's tests, not called out when this row was first drafted; `ProcessBlockAsync`'s own comment records the bug class the fall-through fixed |
 | `ReactPostService` / `ReactCommentService` | double-react is a no-op; `ReactionAmount` never goes negative on a double-unreact; the reaction snapshots the actor's name and latest avatar |
-| `SaveService` | the four save/unsave paths; double-save is a no-op |
+| `SaveService` | the four save/unsave paths; **a double-save is not a no-op** — `ProcessSavePostAsync`/`ProcessSaveShopAsync`'s conditional filter excludes an id already saved, so the second call matches nothing and returns `AppError.Conflict`, not `Result.Ok()` (corrected from this row's original guess, written before the handler was read). The array does stay at one entry either way, which is the part "no-op" got right. The two failure paths are also asymmetric: save's `Conflict` carries status metadata, unsave's bare `Result.Fail("Not saved this post"/"Not saved this shop")` does not — the same class of inconsistency §5 row 5 already pins for `ChangePasswordHandler` |
 | `CommentService` | create publishes the notification and increments `CommentAmount`; delete removes the comment's images from R2 |
 | `PostService` | delete cascades to comments and removes post images from R2 |
 | `AccountService` | the delete cascade across every collection that references the account |
@@ -333,23 +347,34 @@ the assertion is on `Detail`; for a `ValidationProblemDetails`, on the set of `E
 
 Data-driven, so the volume lives in tables that are read rather than in code that is maintained.
 
-**Three generic sweeps**, one `[Theory]` each, covering what applies to whole classes of route:
+**Three generic sweeps**, one `[Theory]` each, covering what applies to whole classes of route — done,
+all three in `test/integration`:
 
-- the auth tier over all 83 routes — anonymous → 401, user token on an admin route → 403, the 8
-  `[AllowAnonymous]` routes reachable without a token. The tier is an attribute, and an attribute is
-  exactly what a refactor drops silently;
-- the malformed-`{id:guid}` case over the route table;
-- the absent/malformed-body case over the 16 body endpoints.
+- the auth tier over all 83 routes (`AuthTierSweepTests`) — anonymous → 401, user token on an admin
+  route → 403, the 8 `[AllowAnonymous]` routes reachable without a token. The tier is an attribute, and
+  an attribute is exactly what a refactor drops silently;
+- the malformed-`{id:guid}` case over the route table (`RouteSweepTests`);
+- the absent/malformed-body case (`BodyShapeSweepTests`), over what turned out to be **17** JSON-body
+  endpoints once actually counted, not 16 — `PUT /Comment/{id}` was missing from the original count.
+  `{}` (an empty JSON object) 400s at every one of them except `PUT /Account/me/bio`:
+  `ChangeBioRequest`'s only field is the nullable `Bio`, so `{}` deserializes to a request that
+  legitimately clears the bio (204, per that endpoint's own input matrix) rather than failing to bind.
 
 **One `[Theory]` per endpoint** with its own `MemberData` table for the field-specific cases. A row is
 `(description, request, expectedStatus, expectedMessageFragment)`, and **row one is always the valid
 case**, so valid and invalid stay visibly paired in the same table. Eighty-three tables of five to
 twelve rows is data to review in a diff, not code to maintain.
 
-**Rate-limit policies** get one test each (`auth` 10/min, `email` 5/min, `search` 20/min, `upload`
-10/min, `report` 10/min, global 200/min), asserting 429 with `Retry-After` and a `ProblemDetails` body.
-Partitioning is tested too: the authenticated partition is keyed by `account:{id}` and the anonymous
-one by `ip:{addr}`, so two accounts must not share a budget.
+**Rate-limit policies** — done, `RateLimiterPolicyTests`, one test each (`auth` 10/min, `email` 5/min,
+`search` 20/min, `upload` 10/min, `report` 10/min, global 200/min), asserting 429 with a
+`ProblemDetails` body and that partitioning actually isolates budgets: two different IPs (`auth`,
+`email`) or two different accounts (`search`, `report`, `upload`) never share one. Corrected against
+the actual runtime behaviour while writing these: only the global policy's 429 carries a `Retry-After`
+header. `ConfigureRateLimiting`'s `OnRejected` reads it from `Lease.TryGetMetadata(MetadataName.RetryAfter, ...)`,
+and `System.Threading.RateLimiting`'s `SlidingWindowRateLimiter` — every named policy uses it — never
+populates that metadata on a rejected lease, confirmed directly against the library; only
+`FixedWindowRateLimiter`, backing the global limiter, does. A 429 from `auth`/`email`/`search`/
+`report`/`upload` therefore has no `Retry-After` header at all.
 
 #### 3.6.4 Still unit-tested, because they are pure
 
@@ -360,13 +385,19 @@ the single-error, multi-error and missing-metadata shapes.
 
 #### 3.6.5 Pipeline tests that belong nowhere else
 
-- `GET /health` returns 200 with all three checks named;
-- `CorrelationIdMiddleware` echoes a valid inbound id, and **replaces** one that is over 64 characters
-  or contains anything outside `[a-zA-Z0-9-]` — an injection guard on a value that reaches every log
-  line, so the rejection cases carry more weight than the happy one;
-- SignalR: a client connecting with `?access_token=` reaches `NotificationHub` (the `OnMessageReceived`
-  event in `AddApi` exists for exactly that), and a notification created for that account is delivered.
-  The Redis backplane's cross-replica behaviour is not tested — one test host is one replica.
+Done — all three, in `test/integration`:
+
+- `GET /health` returns 200 (`HealthCheckTests`, §3.4 — one test covers both rows: it is the same
+  endpoint);
+- `CorrelationIdMiddlewareTests`: `CorrelationIdMiddleware` echoes a valid inbound id, and **replaces**
+  one that is over 64 characters or contains anything outside `[a-zA-Z0-9-]` — an injection guard on a
+  value that reaches every log line, so the rejection cases carry more weight than the happy one;
+- `NotificationHubTests`: a client connecting with `?access_token=` reaches `NotificationHub` (the
+  `OnMessageReceived` event in `AddApi` exists for exactly that — confirmed a bare connection attempt
+  with no token is rejected, the property that makes the query-param case meaningful), and a
+  notification created for that account is delivered over it, asserted against a real `HubConnection`
+  forced onto the `LongPolling` transport since `WebApplicationFactory`'s `TestServer` has no socket to
+  upgrade. The Redis backplane's cross-replica behaviour is not tested — one test host is one replica.
 
 ### 3.7 The block model — its own cross-cutting suite
 
@@ -381,7 +412,12 @@ property rather than as three endpoints:
 - for each filtered read path (`GetAllPost`, `GetPostByKeyword`, `GetRelatedPost`, `GetCommentByPost`,
   reaction lists, follower/following lists): a blocked account's rows are absent, **and** the page comes
   back full — the filtering happens in Mongo before `$limit`, so a page of 20 with 5 blocked authors
-  must still return 20 items, not 15;
+  must still return 20 items, not 15. **`GetMySavedPosts` (§5 row 61) is the one exception**, found
+  while writing the Save area's tests: `SavedPost` holds only `PostId`/`SavedAt`, never the author, so
+  the `$nin` cannot ride `EmbeddedArrayPaginator`'s query the way it rides every filter above — the
+  author is only known once the saved ids are looked up against `Post` in a second query, after
+  `HasMore`/cursor are already fixed over the *unfiltered* saved set. A page here comes back **short**
+  when a saved post's author is blocked, not backfilled to stay full;
 - the cache-key split that `CachedCursorPaginator` documents: the version counter is read under the
   *unsuffixed* signature and the page under the suffixed one. The regression test is a write by a
   non-blocked author landing visibly for a viewer who has blocked someone else — folding the hidden
@@ -397,9 +433,18 @@ property rather than as three endpoints:
 **Isolation is per-test, by data, not by container.** Each test seeds the accounts, posts and shops it
 needs with fresh `Guid`s and asserts only on those. Dropping the database between tests would serialize
 the suite and would force `IndexInitializer` to re-run; a shared database with disjoint ids does not.
-The exceptions that genuinely need a clean slate — anything asserting a *count* over a whole
-collection, which is `GetDashboardStats` — drop and reseed the collections they read, and are marked
-to run in their own non-parallel collection.
+
+**`GetDashboardStats` does not need the clean slate this section originally proposed.** Every integration
+test class already joins the one `IntegrationCollection`, and xUnit runs the test methods of classes in
+one collection sequentially by default — the whole suite is already the "non-parallel collection" this
+carve-out asked for, so nothing separate had to be added. What changed is the test itself: rather than
+dropping and reseeding `Account`/`Post`/`Comment` (which would also drop `IndexInitializer`'s partial
+unique indexes, and delete whatever `AdminSeeder` wrote at boot — `IntegrationTestFixture` only removes
+`NormalizedFieldBackfillInitializer` and `SoftDeletePurgeHost`, §2.3), the test reads `/Dashboard/stats`,
+seeds a known number of accounts/posts/comments, soft-deletes one of each, reads again, and asserts the
+**delta** is exactly `(seeded − 1, seeded − 1, seeded − 1)`. Because the two reads happen back to back in
+one already-serialized test, nothing else can insert between them, so the delta is as exact as a wipe
+would have been, without the risk to everything a wipe would have destroyed.
 
 **Redis** is shared the same way: keys are namespaced by the entity ids under test, and the few tests
 that assert a counter's absolute value flush only their own keys.
@@ -467,8 +512,31 @@ valid, invalid, missing, malformed, boundary, auth tier and rate limit — witho
 > synchronously at the H tier before anything is queued), `GetFollowerByAccountHandler`,
 > `GetFollowingByAccountHandler`, `GetMyFollowerHandler`, `GetMyFollowingHandler` and every Follow
 > validator — no cell was wrong; `FollowService` itself was already fully read (see the note above)
-> and every case in its §3.5 row is now pinned by a test. Every other cell is **derived from
-> [`features.md`](./features.md), not read from
+> and every case in its §3.5 row is now pinned by a test. Also read while writing the Save area's tests
+> (rows 57–62): `SavePostHandler`/`SaveShopHandler`/`UnsavePostHandler`/`UnsaveShopHandler`,
+> `GetMySavedPostsHandler`, `GetMySavedShopsHandler`, `SaveService` and every Save validator — rows
+> 57/58 were wrong (corrected above: a double-save is `AppError.Conflict`, not a no-op) and row 61 was
+> describing the wrong code path entirely (corrected above, and in §3.7). Also read while writing the
+> Block area's tests (rows 79–81): `BlockAccountHandler`/`UnblockAccountHandler` (self-block checked
+> synchronously at the H tier, the same pattern as Follow), `GetMyBlockedAccountHandler`, `BlockService`
+> and every Block validator — no cell was wrong, but `BlockService`'s own half-applied-block repair
+> (the same bug class `FollowService`'s repair fixes) had no test until this pass; row 79 now names it.
+> Also read while writing the Notification area's tests (rows 67–68, 82–83): `RegisterDeviceHandler`,
+> `UnregisterDeviceHandler`, `GetSpecificNotificationHandler`, `GetMyNotificationHandler`,
+> `NotificationService`, `ApnsService`, `ApnsTokenProvider` and the Notification validators — row 83 was
+> under-specified (corrected above: matched on the caller's own `AccountId`, not the token alone) and
+> row 67 was missing the warm-path (cached-DTO) ownership check, a separate branch from the cold-path
+> filter. Also read while writing the Report area's tests (rows 63–66): `CreateReportHandler`,
+> `GetAllReportHandler`, `GetSpecificReportHandler`, `GetReportByTargetHandler` and every Report
+> validator — row 66 was wrong (corrected above, and in §8): `IsInEnum()` is unreachable through the
+> endpoint because ASP.NET Core's enum query binder already rejects an undefined value at layer 1. Also
+> read while writing the Dashboard area's tests (rows 69, 76): `GetDashboardStatsHandler`,
+> `GetDashboardActivityHandler` — row 69's "isolated collection" cell was wrong (corrected above, and in
+> §4: a before/after delta in the shared serial collection, not a wipe) and `GetDashboardActivityQuery`
+> has no validator at all (`windowHours` is a plain guard clause, the first statement in `Handle`, not a
+> FluentValidation rule), which `test/unit/app/dashboard/GetDashboardActivityHandlerTests` pins directly
+> against the handler rather than against a validator that does not exist. Every other cell is **derived
+> from [`features.md`](./features.md), not read from
 > the handler.** When
 > writing a row's test, open the handler first: if it disagrees with the cell, the handler is right and
 > the cell is corrected here. A cell must never be treated as a specification the handler should be
@@ -577,7 +645,7 @@ valid, invalid, missing, malformed, boundary, auth tier and rate limit — witho
 
 | # | Endpoint | Auth | Limit | Tiers | Pinned behaviour |
 |---|---|---|---|---|---|
-| 79 | `POST /Block/{id}` → 202 | user | — | H W E | both arrays written; follow edges and reactions severed; blocked-set cache deleted |
+| 79 | `POST /Block/{id}` → 202 | user | — | H W E | both arrays written; follow edges and reactions severed; blocked-set cache deleted; a pre-broken half-applied block falls through and still severs rather than exiting early (§3.5's `BlockService` row) |
 | 80 | `DELETE /Block/{id}` → 202 | user | — | H W E | arrays cleared; cache deleted; edges **not** restored |
 | 81 | `GET /Block/me` | user | — | H E | — |
 
@@ -587,12 +655,12 @@ Plus the cross-cutting block suite in §3.7, which is where the feature's real r
 
 | # | Endpoint | Auth | Limit | Tiers | Pinned behaviour |
 |---|---|---|---|---|---|
-| 57 | `POST /Save/post/{id}` → 202 | user | — | H W E | worker pushes to `SavePosts`; double-save is a no-op |
-| 58 | `DELETE /Save/post/{id}` → 202 | user | — | H W E | worker pulls |
+| 57 | `POST /Save/post/{id}` → 202 | user | — | H W E | worker pushes to `SavePosts`; **a double-save is not a no-op** — it returns `AppError.Conflict`, corrected from this row's original guess (§3.5's `SaveService` row) |
+| 58 | `DELETE /Save/post/{id}` → 202 | user | — | H W E | worker pulls; unsaving something never saved fails with a bare, status-less `Result.Fail`, unlike save's `Conflict` |
 | 59 | `POST /Save/shop/{id}` → 202 | user | — | H W E | same on `SaveShops` |
 | 60 | `DELETE /Save/shop/{id}` → 202 | user | — | H W E | same |
-| 61 | `GET /Save/me/post` | user | — | H E | the `$project`/`$filter`/`$map` stage — a page of 20 saved posts must report **all 20** as saved, which is the bug `$elemMatch` would cause |
-| 62 | `GET /Save/me/shop` | user | — | H E | same shape |
+| 61 | `GET /Save/me/post` | user | — | H E | **corrected — this row originally described `SaveMembership.SavedPostIdsAsync`'s `$project`/`$filter`/`$map` stage, which is a different code path** (feed enrichment's `IsSaved` flag, exercised by the Post area's tests, e.g. `GetAllPost`/`GetMyPost`) and does not run here. `GetMySavedPostsHandler` instead pages `SavePosts` with `EmbeddedArrayPaginator` and resolves the posts in a second query; because `SavedPost` never stores the author, the block filter can only apply to that second query, after `HasMore`/cursor are already fixed over the unfiltered saved set. A blocked author's saved post is therefore excluded but **not backfilled** — the one exception to §3.7's "page comes back full" property, found while writing this area's tests |
+| 62 | `GET /Save/me/shop` | user | — | H E | ordinary pagination — `GetMySavedShopsHandler` filters no blocked authors at all, unlike row 61 |
 
 ### Report
 
@@ -601,20 +669,30 @@ Plus the cross-cutting block suite in §3.7, which is where the feature's real r
 | 63 | `POST /Report` | user | report | U H E | missing target → 404; reporting the same target twice → 409; a live report blocks trust grants (asserted in the `FollowService` trust case) |
 | 64 | `GET /Report` | admin | — | H E | — |
 | 65 | `GET /Report/{id}` | admin | — | H E | — |
-| 66 | `GET /Report/target` | admin | — | U H E | `ReportTarget` enum validated |
+| 66 | `GET /Report/target` | admin | — | U H E | **found gap, not a spec**: `GetReportByTargetValidator`'s `IsInEnum()` rule is unreachable through this endpoint. ASP.NET Core's own enum query binder rejects an undefined numeric value (`target=99`) exactly like it rejects an unparseable name (`target=nonsense`) — both fail model binding (layer 1, `ValidationProblemDetails`) before the validator (layer 3) ever runs. `IsInEnum()` is only exercised directly, by `GetReportByTargetValidatorTests` in `test/unit`. See §8 |
 
 ### Notification
 
 | # | Endpoint | Auth | Limit | Tiers | Pinned behaviour |
 |---|---|---|---|---|---|
-| 67 | `GET /Notification/{id}` | user | — | H E | another account's notification → 404 |
+| 67 | `GET /Notification/{id}` | user | — | H E | another account's notification → 404, on both the cold path (a Mongo read filtered to the caller's `ToAccountId`) and the warm path (`GetSpecificNotificationHandler` checks the *cached* DTO's `ToAccountId` too — a separate branch from the cold-path filter, so it needs its own test: read as the owner to populate the cache, then read the same id as a different account) |
 | 68 | `GET /Notification/mine` | user | — | H E | pagination |
 | 82 | `POST /Notification/device` | user | — | U H E | an upsert keyed on the token, not an insert: re-registering the same token from a second account **reassigns** it rather than throwing on the unique index, and clears `IsDeleted` so a reinstall revives a pruned row; `isSandbox` maps to `ApnsEnvironment` |
-| 83 | `DELETE /Notification/device/{token}` | user | — | H E | token removed; APNs no longer targeted |
+| 83 | `DELETE /Notification/device/{token}` | user | — | H E | soft-deletes the row (matched on token **and** the caller's own `AccountId`, so a token another account owns is untouched); APNs no longer targeted; a miss is still success by design |
 
-Delivery itself is covered once, not per notification type: `NotificationService` writes the row, pushes
-over SignalR when connected, and falls back to APNs (stubbed handler) when not — and a push failure is
-swallowed by design, which is itself a case.
+Delivery itself is covered once, not per notification type: `NotificationService.CreateAsync` is called
+directly (not through one of the workers that use it) and pins that it writes the row, marks it sent,
+invalidates the recipient's list, and that a push failure is swallowed by design — both with no device
+token registered (`ApnsService`'s own early return, not a failure) and with one registered. **Corrected**:
+`Apns:PrivateKey` is no longer deliberately invalid — §3.4's `ApnsServiceTests` need
+`ApnsTokenProvider.Current()` to actually succeed so its HTTP-degrade-path tests can run against a
+scripted response, so the fixture now generates a real key the same way it already did for
+`Maps:PrivateKey`. The registered-device case here forces the failure the same way §3.4 pins
+`ApnsService` doing it: a scripted network failure propagates uncaught out of `ApnsService.SendAsync`,
+and `NotificationService`'s `try`/`catch` around `_apnsService.SendAsync` is what stops it from failing
+the whole notification. The SignalR-connected push itself — a client connecting with `?access_token=`
+and receiving a live notification — is `NotificationHub`'s own pipeline test in §3.6.5, done
+(`NotificationHubTests`).
 
 ### Dashboard and administrator additions
 
@@ -624,7 +702,7 @@ Administrator additions as 7, placing #76 under the latter. Both are listed toge
 
 | # | Endpoint | Auth | Limit | Tiers | Pinned behaviour |
 |---|---|---|---|---|---|
-| 69 | `GET /Dashboard/stats` | admin | — | H E | counts exclude soft-deleted rows. Runs in the isolated collection (§4) |
+| 69 | `GET /Dashboard/stats` | admin | — | H E | counts exclude soft-deleted rows. Tested as a **delta**, not against an isolated collection — see §4's corrected carve-out |
 | 76 | `GET /Dashboard/activity` | admin | — | U H E | `windowHours` bounds |
 | 70 | `GET /Comment` | admin | — | H E | — |
 | 71 | `GET /Post` | admin | — | H E | — |
@@ -636,16 +714,16 @@ Administrator additions as 7, placing #76 under the latter. Both are listed toge
 
 ## 6. Non-functional checks
 
-Small, cheap, and each one guards a rule that is currently held by hand:
+Done — all six, in `test/unit/ArchitectureTests.cs` except the last, `test/integration/QueueRegistrationTests.cs`. Small, cheap, and each one guards a rule that is currently held by hand:
 
 | Check | Where | Rule from |
 |---|---|---|
 | `domain` has no project or package references | `test/unit`, reflection over `typeof(Account).Assembly.GetReferencedAssemblies()` | `architecture.md` §1.1 |
-| `app` references no `infra` type | same, asserting no referenced assembly named `infra` | the inversion boundary |
+| `app` references no `infra` type | same, asserting no referenced assembly named `infra` (with a positive control: `app` *does* reference `domain`, or a typo'd forbidden name could never fail this) | the inversion boundary |
 | every `IRequest` type in `app` is named `*Command` or `*Query` | `test/unit` | `WriteCancellationBehavior` depends on it silently |
-| every `*Command`/`*Query` has a registered handler | `test/unit`, resolving each from a container built by `AddApp` | a missing registration is a runtime 500 |
+| every `*Command`/`*Query` has a registered handler | `test/unit`, inspecting the `IServiceCollection` `AddApp` builds for a matching closed `IRequestHandler<,>` descriptor — **not** by resolving from the container, which would fail on missing infra dependencies (`IMongoDbContext`, `IRedisService`) for reasons that have nothing to do with handler registration | a missing registration is a runtime 500 |
 | every controller action is either `[AllowAnonymous]` or covered by the class-level `[Authorize]` | `test/unit`, reflection over `api` | the auth tier is attribute-held |
-| every `QueueName` member has exactly one `AddQueueConsumer` registration | `test/integration`, inspecting registered `IHostedService`s | a queue nobody consumes fills silently |
+| every `QueueName` member has exactly one `AddQueueConsumer` registration | `test/integration`, reflecting the private `_queueName` field off every resolved `QueueConsumerHost<>` `IHostedService` instance — grouping by closed generic type first would collapse `ReactionMessage`'s two registrations (react-post, react-comment; `SaveMessage` and `CommentMessage` are each shared the same way) into one and hide a missing consumer | a queue nobody consumes fills silently |
 
 Performance is **not** part of the gate. `PerformanceBehavior` warns above 500 ms and
 `PerformanceMiddleware` logs per request; that telemetry is the production signal, and asserting a
@@ -706,30 +784,39 @@ free, and is not a gate.
 
 #### Tooling
 
-Nothing beyond what the xUnit template already ships:
+Nothing beyond what the xUnit template already ships. The exclusion filter below is done —
+`coverlet.runsettings` at the repository root:
 
 ```bash
-dotnet test test/unit        -c Release --collect:"XPlat Code Coverage"
-dotnet test test/integration -c Release --collect:"XPlat Code Coverage"
+dotnet test test/unit        -c Release --collect:"XPlat Code Coverage" --settings coverlet.runsettings
+dotnet test test/integration -c Release --collect:"XPlat Code Coverage" --settings coverlet.runsettings
 
 reportgenerator -reports:"**/coverage.cobertura.xml"                 -targetdir:coverage                 -reporttypes:"Html;Cobertura;MarkdownSummaryGithub"
 ```
 
-`coverlet.collector` as a `PackageReference` in both test projects, `dotnet-reportgenerator-globaltool`
-as a local tool. **The two runs must be merged before the number means anything** — `test/unit` alone
-reports `app/feature` at near zero, because by §1.1 no handler has a unit tier at all.
+`coverlet.collector` as a `PackageReference` in both test projects (already present),
+`dotnet-reportgenerator-globaltool` as a local tool (not installed — the merge-and-report step is a CI
+concern, per §7's own "don't invent a pipeline" boundary; `coverlet.runsettings` alone is verified to
+work by running the two `dotnet test` lines above and inspecting the resulting `coverage.cobertura.xml`).
+**The two runs must be merged before the number means anything** — `test/unit` alone reports
+`app/feature` at near zero, because by §1.1 no handler has a unit tier at all.
 
 #### What is excluded, and why not by attribute
 
-62 of the 415 `.cs` files in `src/` are declarations with no executable branch: 21 DTOs, 13 AutoMapper
-profiles, 9 queue messages, 16 request records, 3 enums. Including them inflates the percentage by
-roughly 15% of the file count for zero information. Excluded alongside them: `Program.cs` and the four
-`DependencyInjection.cs` composition roots, which the boot smoke test walks once and which say nothing
-as a ratio.
+Done. 62 of the 415 `.cs` files in `src/` are declarations with no executable branch: 21 DTOs, 13
+AutoMapper profiles, 9 queue messages, 16 request records, 3 enums — counts confirmed by directory
+listing while writing `coverlet.runsettings`, matching this row exactly. Including them inflates the
+percentage by roughly 15% of the file count for zero information. Excluded alongside them: `Program.cs`
+and the four `DependencyInjection.cs` composition roots, which the boot smoke test walks once and which
+say nothing as a ratio.
 
-These go in the coverlet `ExcludeByFile` / filter settings in each test project, **not** as
-`[ExcludeFromCodeCoverage]` attributes — the attribute route is 67 production-file edits to serve a
-reporting concern, and `project-rules.md` has no precedent for attributes on those types.
+These go in `coverlet.runsettings`'s `ExcludeByFile` filter (`**/dto/*.cs`, `**/mapping/*.cs`,
+`**/message/*.cs`, `**/request/*.cs`, `**/enum/*.cs`, `**/Program.cs`, `**/DependencyInjection.cs`),
+**not** as `[ExcludeFromCodeCoverage]` attributes — the attribute route is 67 production-file edits to
+serve a reporting concern, and `project-rules.md` has no precedent for attributes on those types.
+Verified directly: running `dotnet test test/unit` with and without `--settings coverlet.runsettings`
+and diffing the two `coverage.cobertura.xml` files shows every excluded path absent from the filtered
+run and present in the unfiltered one, and nothing else moves.
 
 #### Targets per layer
 
@@ -810,17 +897,18 @@ Debuggability is an observability property, not a test property: the suite does 
 suite *can* do is prove the diagnostic surface still works, which matters because that surface is
 exactly what nobody notices is broken until the night they need it.
 
-What exists in the code today, and the test that pins each:
+What exists in the code today, and the test that pins each. Done except the JSON template row,
+excluded by §1.3:
 
 | Affordance | Where | Test |
 |---|---|---|
-| `X-Correlation-ID` echoed on every response; an inbound value accepted only if ≤64 chars and `^[a-zA-Z0-9-]+$`, else a fresh Guid is minted | `CorrelationIdMiddleware` | endpoint test: a valid id is echoed back; an over-long or punctuation-bearing id is **replaced**, not echoed — this is an injection guard on a value that lands in every log line, so the rejection cases matter more than the happy one |
-| That id pushed into Serilog `LogContext`, so every event inside the request carries `CorrelationId` | same | capture the log events in the test host and assert the property is present on an event emitted from inside a handler |
+| `X-Correlation-ID` echoed on every response; an inbound value accepted only if ≤64 chars and `^[a-zA-Z0-9-]+$`, else a fresh Guid is minted | `CorrelationIdMiddleware` | `CorrelationIdMiddlewareTests`: a valid id is echoed back; an over-long or punctuation-bearing id is **replaced**, not echoed — this is an injection guard on a value that lands in every log line, so the rejection cases matter more than the happy one |
+| That id pushed into Serilog `LogContext`, so every event inside the request carries `CorrelationId` | same | `CorrelationIdMiddlewareTests`: a `CapturingLogEventSink` registered as a singleton `ILogEventSink` is picked up by `Program.cs`'s own `.ReadFrom.Services(services)` call with no production change, and the id is asserted present on the "Handling `LoginCommand`" event `LoggingBehavior` logs from inside the MediatR pipeline — not only the response header |
 | One-line JSON per event with properties flattened alongside `message`/`level` | `Program.cs` `LogTemplate` | not tested (§1.3) — the template is a formatting concern |
-| Slow-request and slow-handler warnings above 500 ms | `PerformanceMiddleware`, `PerformanceBehavior` | unit test on the behavior with a delayed `next`: above threshold warns, below does not |
-| A queue message that did not apply, logged with `QueueName`, `MessageId` and the error | `QueueConsumerHost.HandleAsync` | worker test: a refusal (already following) emits exactly one warning carrying all three. This is the only trace such a message ever leaves, so a silent regression here is a blind spot, not a cosmetic one |
-| Half-applied follow/unfollow repair warnings | `FollowService` | the repair test asserts the warning as well as the state |
-| `GET /health` with three named checks | `infra/health/` | endpoint test asserting 200 and all three names present |
+| Slow-request and slow-handler warnings above 500 ms | `PerformanceMiddleware`, `PerformanceBehavior` | `PerformanceBehaviorTests`: a real delayed `next` (no injected clock exists, per §4/§8), above threshold warns, below does not. Scoped to the behavior only, per this row's own wording — `PerformanceMiddleware` is untested |
+| A queue message that did not apply, logged with `QueueName`, `MessageId` and the error | `QueueConsumerHost.HandleAsync` | `RabbitMQTransportContractTests.QueueConsumerHost_FailedResult_...`: a refusal emits exactly one warning carrying all three, asserted directly against a real `QueueConsumerHost<>` rather than through `FollowService` specifically — the mechanism is generic to every worker. This is the only trace such a message ever leaves, so a silent regression here is a blind spot, not a cosmetic one |
+| Half-applied follow/unfollow repair warnings | `FollowService` | `FollowEndpointTests.ProcessFollow_HalfAppliedEdge_IsRepaired` asserts the warning as well as the state |
+| `GET /health` with three named checks | `infra/health/` | **Corrected**: `MapHealthChecks("/health")` with no `ResponseWriter` returns the bare string `"Healthy"` — the three check names are not in the body. `HealthCheckTests` (§3.4) asserts 200 and the body correctly; asserting names present would require changing `Program.cs`, which this plan does not do without its own approval |
 
 **The gap this question exposes, and it is a real one:** the correlation id does not survive the queue
 boundary. `LogContext.PushProperty` is scoped to the request, and every `*Message` record carries a
@@ -868,6 +956,21 @@ Stated rather than hidden, because each is a real limit on what the suite can cl
   who reasonably expects the same case/diacritic tolerance `GET /Shop/search` gives will get an empty
   page instead. Whether this is intentional (an exact lookup for a client that already has the
   canonical string) or an oversight is a product decision; the suite only pins the current behaviour.
+- **`GetReportByTargetValidator`'s `IsInEnum()` rule is dead code on `GET /Report/target`.** Found while
+  writing the Report tests: ASP.NET Core's own enum query binder already rejects a `target` value that
+  is not a defined `ReportTarget` member — a numeric value like `99` fails model binding with "The value
+  '99' is invalid" exactly like an unparseable name does, so both are layer-1 `ValidationProblemDetails`
+  and the request never reaches the validator. `IsInEnum()` can only be exercised by calling
+  `GetReportByTargetValidator` directly, which `test/unit/app/report/GetReportByTargetValidatorTests`
+  does — see §5 row 66. Not a bug to fix, just a rule that adds test surface without adding a reachable
+  code path; removing it would be a validator simplification, not a behaviour change.
+- **`GetMySavedPosts` is the one filtered read where blocking shortens a page instead of backfilling it.**
+  Found while writing the Save tests, and the one correction to §3.7's own stated property: see §5 row 61
+  and §3.7.
+- **A double-save is a failed `Result`, not a silent no-op.** Found while writing the Save tests: earlier
+  drafts of §3.5 and §5 rows 57/59 described it as a no-op before the handler was read; `SaveService`
+  returns `AppError.Conflict` instead. The state ends up identical either way, so nothing production-side
+  needs fixing — only this document's earlier guess was wrong.
 
 ---
 
