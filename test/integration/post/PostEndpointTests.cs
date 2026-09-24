@@ -375,6 +375,52 @@ public class PostEndpointTests
         Assert.DoesNotContain(otherShopPost.Id, ids);
     }
 
+    // test-strategy.md §3.7's CachedCursorPaginator cache-key-split regression: the list
+    // version counter is read under the unsuffixed filter signature and the page under the
+    // one BlockedAccountSet.Signature suffixes with the viewer's hidden digest. A write by a
+    // non-blocked author only knows the plain "shop:{id}" signature to invalidate — if the
+    // counter were keyed by the suffixed signature instead, that bump could never reach a
+    // blocking viewer's page key, and the new post would stay invisible behind the stale
+    // cache entry until DefaultListTTL expired it.
+    [Fact]
+    public async Task GetPostByShop_NewPostFromNonBlockedAuthor_IsVisibleToAViewerWhoHasBlockedSomeoneElse()
+    {
+        Account viewer = await SeedAccountAsync();
+        Account blockedAuthor = await SeedAccountAsync();
+        Account otherAuthor = await SeedAccountAsync();
+        Shop shop = await SeedShopAsync();
+        await SeedPostAsync(blockedAuthor.Id, shop.Id);
+
+        using var scope = _fixture.Services.CreateScope();
+        var dbContext = scope.ServiceProvider.GetRequiredService<IMongoDbContext>();
+        await dbContext.GetCollection<Account>(CollectionName.Account).UpdateOneAsync(
+            x => x.Id == viewer.Id,
+            Builders<Account>.Update.Push(x => x.Blocks, new Block(blockedAuthor.Id, blockedAuthor.Name, null!)));
+
+        using var client = AuthenticatedClientFor(viewer);
+
+        // Populates the cache under the viewer's hidden-suffixed page key.
+        var first = await SendAsync(client, HttpMethod.Get, $"api/v1/Post/shop/{shop.Id}");
+        await AssertStatusAsync(first, HttpStatusCode.OK);
+
+        // CreatePostHandler invalidates (post, "shop:{shopId}") — the unsuffixed signature —
+        // regardless of who ends up viewing the shop afterwards.
+        TestIdentity.Current = otherAuthor.Id;
+        var mediator = scope.ServiceProvider.GetRequiredService<MediatR.IMediator>();
+        var created = await mediator.Send(new CreatePostCommand(
+            null, shop.Name, shop.Address, null, null, "new post", Amount.Create(4).Value!, null));
+        Assert.True(created.IsSuccess);
+
+        var second = await SendAsync(client, HttpMethod.Get, $"api/v1/Post/shop/{shop.Id}");
+        await AssertStatusAsync(second, HttpStatusCode.OK);
+
+        var secondPage = await second.Content.ReadFromJsonAsync<JsonElement>();
+        var idsAfterWrite = secondPage.GetProperty("items").EnumerateArray()
+            .Select(x => x.GetProperty("id").GetGuid())
+            .ToList();
+        Assert.Contains(created.Value!.Id, idsAfterWrite);
+    }
+
     // ---------------------------------------------------------------- #32 GET /Post/search
 
     [Fact]
