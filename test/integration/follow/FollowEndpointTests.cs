@@ -322,6 +322,13 @@ public class FollowEndpointTests
         Assert.Equal(1, storedFollower.FollowingAmount.Value);
         Assert.Single(storedFollowing!.Followers);
         Assert.Equal(1, storedFollowing.FollowerAmount.Value);
+
+        // test-strategy.md §7.3: the repair test asserts the warning as well as the state.
+        var warning = _fixture.LogEvents.Events.FirstOrDefault(e =>
+            e.RenderMessage().Contains(follower.Id.ToString()) &&
+            e.RenderMessage().Contains(following.Id.ToString()) &&
+            e.RenderMessage().Contains("half-applied"));
+        Assert.NotNull(warning);
     }
 
     [Fact]

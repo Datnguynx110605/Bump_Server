@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  test-strategy.md §7.1: excludes the 62 declaration-only files (21 DTOs, 13 AutoMapper
+  profiles, 9 queue messages, 16 request records, 3 enums) plus Program.cs and the four
+  DependencyInjection.cs composition roots from the branch-coverage percentage — none of
+  them have an executable branch, so including them only inflates the number for zero
+  information. Filters by path, not by [ExcludeFromCodeCoverage], per §7.1's own reasoning:
+  the attribute route is 67 production-file edits to serve a reporting concern.
+
+  Usage: dotnet test -c Release, collecting "XPlat Code Coverage", with this file passed via
+  the settings option.
+-->
+<RunSettings>
+  <DataCollectionRunSettings>
+    <DataCollectors>
+      <DataCollector friendlyName="XPlat code coverage">
+        <Configuration>
+          <Format>cobertura</Format>
+          <ExcludeByFile>**/dto/*.cs,**/mapping/*.cs,**/message/*.cs,**/request/*.cs,**/enum/*.cs,**/Program.cs,**/DependencyInjection.cs</ExcludeByFile>
+        </Configuration>
+      </DataCollector>
+    </DataCollectors>
+  </DataCollectionRunSettings>
+</RunSettings>
