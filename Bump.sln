@@ -3,17 +3,17 @@ Microsoft Visual Studio Solution File, Format Version 12.00
 # Visual Studio Version 17
 VisualStudioVersion = 17.0.31903.59
 MinimumVisualStudioVersion = 10.0.40219.1
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "domain", "domain\domain.csproj", "{6845DDB0-05E0-4676-AA3A-A621038D6863}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "domain", "src\domain\domain.csproj", "{6845DDB0-05E0-4676-AA3A-A621038D6863}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "infra", "infra\infra.csproj", "{4EC8AC70-8889-4418-BE2F-943EA302BA1E}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "infra", "src\infra\infra.csproj", "{4EC8AC70-8889-4418-BE2F-943EA302BA1E}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "app", "app\app.csproj", "{96DEADDA-15FA-4638-847D-30C6E9CE54A6}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "app", "src\app\app.csproj", "{96DEADDA-15FA-4638-847D-30C6E9CE54A6}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "api", "api\api.csproj", "{375F527F-BC11-4E01-859A-3E9B437F158F}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "api", "src\api\api.csproj", "{375F527F-BC11-4E01-859A-3E9B437F158F}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "unit", "..\test\unit\unit.csproj", "{8A48248C-66B9-4E9E-BD9B-22CBB3A79386}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "unit", "test\unit\unit.csproj", "{8A48248C-66B9-4E9E-BD9B-22CBB3A79386}"
 EndProject
-Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "integration", "..\test\integration\integration.csproj", "{758D3E1B-F88D-4A39-9C51-D83261898C2B}"
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "integration", "test\integration\integration.csproj", "{758D3E1B-F88D-4A39-9C51-D83261898C2B}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution

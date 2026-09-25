@@ -4,7 +4,7 @@ FROM mcr.microsoft.com/dotnet/sdk:9.0 AS build
 ARG BUILD_CONFIGURATION=Release
 WORKDIR /src
 
-COPY ["src/Bump.sln", "./"]
+COPY ["Bump.sln", "./"]
 COPY ["src/domain/domain.csproj", "domain/"]
 COPY ["src/app/app.csproj", "app/"]
 COPY ["src/infra/infra.csproj", "infra/"]
