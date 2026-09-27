@@ -57,6 +57,30 @@ public class ApnsServiceTests
         Assert.False(reread.IsDeleted);
     }
 
+    // APNs closes an HTTP/1.1 connection without answering, and the client's
+    // DefaultRequestVersion does not reach a request ApnsService constructs itself, so the
+    // version has to be on the message. Asserted on the request rather than the response
+    // because the fake handler answers any version.
+    [Fact]
+    public async Task SendAsync_SendsOverHttp2()
+    {
+        var accountId = Guid.NewGuid();
+        await SeedDeviceTokenAsync(accountId);
+        Version? version = null;
+        _fixture.HttpHandler.Respond = request =>
+        {
+            version = request.Version;
+            return new HttpResponseMessage(HttpStatusCode.OK);
+        };
+
+        using var scope = _fixture.Services.CreateScope();
+        var apns = scope.ServiceProvider.GetRequiredService<IApnsService>();
+
+        await apns.SendAsync(accountId, "title", "body", NotificationType.Follow, Guid.NewGuid(), Guid.NewGuid(), CancellationToken.None);
+
+        Assert.Equal(HttpVersion.Version20, version);
+    }
+
     [Fact]
     public async Task SendAsync_OrdinaryFailure_DoesNotThrow_AndLeavesTheDeviceTokenUntouched()
     {

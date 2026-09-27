@@ -153,10 +153,16 @@ public sealed class ApnsService : IApnsService
             ? ProductionHost
             : SandboxHost;
 
+        // Set here rather than on the client: HttpClient.DefaultRequestVersion only seeds the
+        // requests it builds itself, so a message constructed here keeps HttpRequestMessage's
+        // own 1.1 default. APNs answers HTTP/1.1 by closing the connection, which surfaces as
+        // "The response ended prematurely" rather than as anything naming the version.
         using var request = new HttpRequestMessage(
             HttpMethod.Post,
             $"{host}/3/device/{deviceToken.Token}")
         {
+            Version = HttpVersion.Version20,
+            VersionPolicy = HttpVersionPolicy.RequestVersionExact,
             Content = new StringContent(payload, Encoding.UTF8, "application/json")
         };
 

@@ -104,7 +104,8 @@ public static class DependencyInjection
         // network round trip against the same daily quota the lookups themselves spend.
         services.AddSingleton<MapsTokenProvider>();
 
-        // APNs refuses HTTP/1.1 and HttpClient downgrades silently unless told not to. No
+        // APNs refuses HTTP/1.1. These defaults only cover the requests HttpClient builds
+        // itself, so ApnsService.PostAsync sets the version on its own message too. No
         // BaseAddress: the host belongs to the device token, not to the client.
         services.AddHttpClient<IApnsService, ApnsService>(client =>
         {
