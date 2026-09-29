@@ -91,6 +91,13 @@ public sealed class ReactPostService : IReactPostService
             _redisService.RemoveAsync(
                 CacheKey.Post(postId),
                 cancellationToken),
+            // The related feed hides posts this account has reacted to. Deleting the key
+            // rather than editing a list keeps the set raceless under concurrent reactions and
+            // lets it rebuild from the reactions themselves. Dropped on unreact too, so the
+            // set never claims a reaction that is no longer there.
+            _redisService.RemoveAsync(
+                CacheKey.ReactedPosts(accountId),
+                cancellationToken),
             ListCache.InvalidateAsync(
                 _redisService,
                 $"{CollectionName.Post}:reaction",
@@ -154,6 +161,13 @@ public sealed class ReactPostService : IReactPostService
         await Task.WhenAll(
             _redisService.RemoveAsync(
                 CacheKey.Post(postId),
+                cancellationToken),
+            // The related feed hides posts this account has reacted to. Deleting the key
+            // rather than editing a list keeps the set raceless under concurrent reactions and
+            // lets it rebuild from the reactions themselves. Dropped on unreact too, so the
+            // set never claims a reaction that is no longer there.
+            _redisService.RemoveAsync(
+                CacheKey.ReactedPosts(accountId),
                 cancellationToken),
             ListCache.InvalidateAsync(
                 _redisService,
