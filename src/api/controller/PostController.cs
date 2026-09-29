@@ -23,11 +23,7 @@ public sealed class PostController : ControllerBase
     [EnableRateLimiting(RateLimiterPolicy.Upload)]
     [HttpPost]
     public async Task<ActionResult<PostDto>> CreatePost(
-        [FromForm] string? placeId,
-        [FromForm] string? shopName,
-        [FromForm] string? shopAddress,
-        [FromForm] double? latitude,
-        [FromForm] double? longitude,
+        [FromForm] string placeId,
         [FromForm] string? caption,
         [FromForm] int rate,
         [FromForm] List<IFormFile>? images,
@@ -41,7 +37,7 @@ public sealed class PostController : ControllerBase
         if(imageResult.IsFailed)
             return Result.Fail(imageResult.Errors).ToActionResult();
 
-        var result = await _sender.Send(new CreatePostCommand(placeId, shopName, shopAddress, latitude, longitude, caption, rateResult.Value!, imageResult.Value), cancellationToken);
+        var result = await _sender.Send(new CreatePostCommand(placeId, caption, rateResult.Value!, imageResult.Value), cancellationToken);
         return result.ToActionResult();
     }
 

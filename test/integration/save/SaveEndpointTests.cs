@@ -60,7 +60,7 @@ public class SaveEndpointTests
         using var scope = _fixture.Services.CreateScope();
         var dbContext = scope.ServiceProvider.GetRequiredService<IMongoDbContext>();
 
-        Shop shop = Shop.Create($"Shop {Guid.NewGuid():N}", "1 Test Street").Value!;
+        Shop shop = Shop.Create($"Shop {Guid.NewGuid():N}", "1 Test Street", 0, 0, $"place-{Guid.NewGuid():N}").Value!;
         await dbContext.GetCollection<Shop>(CollectionName.Shop).InsertOneAsync(shop);
 
         return shop;

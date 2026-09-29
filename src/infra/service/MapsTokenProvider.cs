@@ -42,10 +42,11 @@ public sealed class MapsTokenProvider
     private bool IsConfigured => _keyId is not null && _teamId is not null && _privateKey is not null;
 
     // Configuration is read eagerly but not demanded, the one deliberate difference from
-    // ApnsTokenProvider. Place verification is a tier rather than the whole feature: a
-    // deployment without a Maps key still serves every unverified path, and throwing here
-    // would take the entire API down over a capability that degrades cleanly. The startup
-    // warning is what keeps "unconfigured" from being mistaken for "Apple rejected it".
+    // ApnsTokenProvider. Post creation is not the whole API: a deployment without a Maps key
+    // still serves every read, every other mutation and every post about a shop the catalogue
+    // already holds — only a post about a new shop fails — and throwing here would take all
+    // of that down with it. The startup warning is what keeps "unconfigured" from being
+    // mistaken for "Apple rejected it".
     public MapsTokenProvider(
         IHttpClientFactory httpClientFactory,
         IConfiguration configuration,

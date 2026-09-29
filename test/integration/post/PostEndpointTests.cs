@@ -73,7 +73,7 @@ public class PostEndpointTests
         using var scope = _fixture.Services.CreateScope();
         var dbContext = scope.ServiceProvider.GetRequiredService<IMongoDbContext>();
 
-        Shop shop = Shop.Create($"Shop {Guid.NewGuid():N}", "1 Test Street").Value!;
+        Shop shop = Shop.Create($"Shop {Guid.NewGuid():N}", "1 Test Street", 0, 0, $"place-{Guid.NewGuid():N}").Value!;
         await dbContext.GetCollection<Shop>(CollectionName.Shop).InsertOneAsync(shop);
 
         return shop;
@@ -408,7 +408,7 @@ public class PostEndpointTests
         TestIdentity.Current = otherAuthor.Id;
         var mediator = scope.ServiceProvider.GetRequiredService<MediatR.IMediator>();
         var created = await mediator.Send(new CreatePostCommand(
-            null, shop.Name, shop.Address, null, null, "new post", Amount.Create(4).Value!, null));
+            shop.PlaceId, "new post", Amount.Create(4).Value!, null));
         Assert.True(created.IsSuccess);
 
         var second = await SendAsync(client, HttpMethod.Get, $"api/v1/Post/shop/{shop.Id}");

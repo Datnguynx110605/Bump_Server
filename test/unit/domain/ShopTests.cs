@@ -5,7 +5,7 @@ public class ShopTests
     [Fact]
     public void Create_EmptyName_IsRejected()
     {
-        DomainResult<Shop> result = Shop.Create(string.Empty, "123 Main St");
+        DomainResult<Shop> result = Shop.Create(string.Empty, "123 Main St", 0, 0, "place-1");
 
         Assert.False(result.IsSuccess);
         Assert.Equal("Shop name is required", result.Error);
@@ -14,28 +14,19 @@ public class ShopTests
     [Fact]
     public void Create_EmptyAddress_IsRejected()
     {
-        DomainResult<Shop> result = Shop.Create("Shop", string.Empty);
+        DomainResult<Shop> result = Shop.Create("Shop", string.Empty, 0, 0, "place-1");
 
         Assert.False(result.IsSuccess);
         Assert.Equal("Shop address is required", result.Error);
     }
 
     [Fact]
-    public void Create_LatitudeWithoutLongitude_IsRejected()
+    public void Create_EmptyPlaceId_IsRejected()
     {
-        DomainResult<Shop> result = Shop.Create("Shop", "Address", latitude: 10);
+        DomainResult<Shop> result = Shop.Create("Shop", "Address", 0, 0, string.Empty);
 
         Assert.False(result.IsSuccess);
-        Assert.Equal("Latitude and longitude must be provided together", result.Error);
-    }
-
-    [Fact]
-    public void Create_LongitudeWithoutLatitude_IsRejected()
-    {
-        DomainResult<Shop> result = Shop.Create("Shop", "Address", longitude: 10);
-
-        Assert.False(result.IsSuccess);
-        Assert.Equal("Latitude and longitude must be provided together", result.Error);
+        Assert.Equal("PlaceId is required", result.Error);
     }
 
     [Theory]
@@ -43,7 +34,7 @@ public class ShopTests
     [InlineData(90.1)]
     public void Create_LatitudeOutOfRange_IsRejected(double latitude)
     {
-        DomainResult<Shop> result = Shop.Create("Shop", "Address", latitude, 0);
+        DomainResult<Shop> result = Shop.Create("Shop", "Address", latitude, 0, "place-1");
 
         Assert.False(result.IsSuccess);
         Assert.Equal("Latitude must be between -90 and 90", result.Error);
@@ -54,7 +45,7 @@ public class ShopTests
     [InlineData(90)]
     public void Create_LatitudeAtBoundary_IsAccepted(double latitude)
     {
-        DomainResult<Shop> result = Shop.Create("Shop", "Address", latitude, 0);
+        DomainResult<Shop> result = Shop.Create("Shop", "Address", latitude, 0, "place-1");
 
         Assert.True(result.IsSuccess);
     }
@@ -64,7 +55,7 @@ public class ShopTests
     [InlineData(180.1)]
     public void Create_LongitudeOutOfRange_IsRejected(double longitude)
     {
-        DomainResult<Shop> result = Shop.Create("Shop", "Address", 0, longitude);
+        DomainResult<Shop> result = Shop.Create("Shop", "Address", 0, longitude, "place-1");
 
         Assert.False(result.IsSuccess);
         Assert.Equal("Longitude must be between -180 and 180", result.Error);
@@ -75,33 +66,24 @@ public class ShopTests
     [InlineData(180)]
     public void Create_LongitudeAtBoundary_IsAccepted(double longitude)
     {
-        DomainResult<Shop> result = Shop.Create("Shop", "Address", 0, longitude);
+        DomainResult<Shop> result = Shop.Create("Shop", "Address", 0, longitude, "place-1");
 
         Assert.True(result.IsSuccess);
     }
 
     [Fact]
-    public void Create_WithCoordinates_StoresLocationAsLongitudeThenLatitude()
+    public void Create_StoresLocationAsLongitudeThenLatitude()
     {
-        DomainResult<Shop> result = Shop.Create("Shop", "Address", latitude: 21.0, longitude: 105.8);
+        DomainResult<Shop> result = Shop.Create("Shop", "Address", 21.0, 105.8, "place-1");
 
         Assert.True(result.IsSuccess);
         Assert.Equal(new[] { 105.8, 21.0 }, result.Value!.Location);
     }
 
     [Fact]
-    public void Create_WithoutCoordinates_LocationIsNull()
-    {
-        DomainResult<Shop> result = Shop.Create("Shop", "Address");
-
-        Assert.True(result.IsSuccess);
-        Assert.Null(result.Value!.Location);
-    }
-
-    [Fact]
     public void Create_NormalizesNameAndAddress()
     {
-        DomainResult<Shop> result = Shop.Create("Phở Hà Nội", "Đà Nẵng");
+        DomainResult<Shop> result = Shop.Create("Phở Hà Nội", "Đà Nẵng", 0, 0, "place-1");
 
         Assert.True(result.IsSuccess);
         Assert.Equal("pho ha noi", result.Value!.NameNormalized);
@@ -109,42 +91,9 @@ public class ShopTests
     }
 
     [Fact]
-    public void AdoptPlace_EmptyPlaceId_IsRejected()
-    {
-        Shop shop = Shop.Create("Shop", "Address").Value!;
-
-        DomainResult result = shop.AdoptPlace(string.Empty);
-
-        Assert.False(result.IsSuccess);
-        Assert.Equal("PlaceId is required", result.Error);
-    }
-
-    [Fact]
-    public void AdoptPlace_AlreadyLinked_IsRejected()
-    {
-        Shop shop = Shop.Create("Shop", "Address", placeId: "place-1").Value!;
-
-        DomainResult result = shop.AdoptPlace("place-2");
-
-        Assert.False(result.IsSuccess);
-        Assert.Equal("Shop is already linked to a place", result.Error);
-    }
-
-    [Fact]
-    public void AdoptPlace_EmptySlot_Succeeds()
-    {
-        Shop shop = Shop.Create("Shop", "Address").Value!;
-
-        DomainResult result = shop.AdoptPlace("place-1");
-
-        Assert.True(result.IsSuccess);
-        Assert.Equal("place-1", shop.PlaceId);
-    }
-
-    [Fact]
     public void ChangeRate_SetsRate()
     {
-        Shop shop = Shop.Create("Shop", "Address").Value!;
+        Shop shop = Shop.Create("Shop", "Address", 0, 0, "place-1").Value!;
         Amount newRate = Amount.Create(4).Value!;
 
         DomainResult result = shop.ChangeRate(newRate);
@@ -156,7 +105,7 @@ public class ShopTests
     [Fact]
     public void DeleteShop_MarksDeleted()
     {
-        Shop shop = Shop.Create("Shop", "Address").Value!;
+        Shop shop = Shop.Create("Shop", "Address", 0, 0, "place-1").Value!;
 
         DomainResult result = shop.DeleteShop();
 

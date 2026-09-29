@@ -37,17 +37,19 @@ public class IndexConfigurationTests
         Assert.True(index.Contains("partialFilterExpression"));
     }
 
+    // Asserted absent, not merely unlisted. Apple can answer with two distinct places that
+    // format to the same name and address — two kiosks in one mall, two units at one street
+    // number — and a unique index over that text would reject the second of them as a
+    // duplicate, turning a valid shop into a 409.
     [Fact]
-    public async Task Shop_HasAPartialUniqueIndexOnNameAndAddress()
+    public async Task Shop_HasNoUniqueIndexOverNameOrAddress()
     {
         var indexes = await ShopIndexesAsync();
 
-        var index = indexes.SingleOrDefault(i =>
-            i["key"].AsBsonDocument.Names.SequenceEqual(new[] { "Name", "Address" }));
-
-        Assert.NotNull(index);
-        Assert.True(index!["unique"].AsBoolean);
-        Assert.True(index.Contains("partialFilterExpression"));
+        Assert.DoesNotContain(indexes, i =>
+            i.GetValue("unique", false).ToBoolean()
+            && i["key"].AsBsonDocument.Names.Any(name =>
+                name is "Name" or "Address" or "NameNormalized" or "AddressNormalized"));
     }
 
     [Fact]

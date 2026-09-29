@@ -39,8 +39,7 @@ public sealed record CacheKey
     public static string Shop(Guid shopId)
     {
         // v2: the cached shop gained PlaceId. A v1 entry deserializes without it and would
-        // read as unverified for the seven days its TTL has left, hiding the navigation
-        // the identifier is there to provide.
+        // leave the client with no navigation target for the seven days its TTL has left.
         return $"shop:v2:id:{shopId}";
     }
 

@@ -44,9 +44,9 @@ internal sealed class DeleteShopHandler
 
         // Refused rather than cascaded. A shop delete used to flip one flag and stop, which
         // left every post still pointing at it: GET /post/shop/{id} kept serving them, saved
-        // shops kept referencing it, and because the unique index on (Name, Address) is
-        // scoped to live rows, the same shop could immediately be created again — leaving the
-        // old posts attached to a row nothing can reach.
+        // shops kept referencing it, and because the unique index on PlaceId is scoped to
+        // live rows, the same shop could immediately be created again — leaving the old
+        // posts attached to a row nothing can reach.
         //
         // Refusing instead of cascading because the posts are other people's content and an
         // administrator deleting a duplicate shop entry is not asking to destroy the reviews

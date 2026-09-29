@@ -65,12 +65,18 @@ public class ShopEndpointTests
         using var scope = _fixture.Services.CreateScope();
         var dbContext = scope.ServiceProvider.GetRequiredService<IMongoDbContext>();
 
+        // An unspecified coordinate gets its own random origin rather than (0, 0). Every shop
+        // now carries a Location and so sits in the 2dsphere index, and a pile of shops heaped
+        // on one point is exactly what the random origins below exist to keep the proximity
+        // tests away from — including shops whose Rate a post pushes past the floor.
+        var (defaultLatitude, defaultLongitude) = RandomOrigin();
+
         Shop shop = Shop.Create(
             name ?? $"Shop {Guid.NewGuid():N}",
             address ?? "1 Test Street",
-            latitude,
-            longitude,
-            placeId).Value!;
+            latitude ?? defaultLatitude,
+            longitude ?? defaultLongitude,
+            placeId ?? $"place-{Guid.NewGuid():N}").Value!;
 
         if(rate != 0)
             shop.ChangeRate(Amount.Create(rate).Value!);
@@ -172,17 +178,16 @@ public class ShopEndpointTests
     // afterwards" is against the index itself. Both directions are asserted so the test
     // actually discriminates the claim rather than merely showing an insert succeeds.
     [Fact]
-    public async Task DeleteShop_ThenSameNameAndAddress_NoLongerCollidesOnTheUniqueIndex()
+    public async Task DeleteShop_ThenSamePlaceId_NoLongerCollidesOnTheUniqueIndex()
     {
-        string name = $"Cafe {Guid.NewGuid():N}";
-        string address = "42 Shared Street";
-        Shop original = await SeedShopAsync(name, address);
+        string placeId = $"place-{Guid.NewGuid():N}";
+        Shop original = await SeedShopAsync(placeId: placeId);
 
         using var scope = _fixture.Services.CreateScope();
         var dbContext = scope.ServiceProvider.GetRequiredService<IMongoDbContext>();
         var shopCollection = dbContext.GetCollection<Shop>(CollectionName.Shop);
 
-        Shop collidingWhileLive = Shop.Create(name, address).Value!;
+        Shop collidingWhileLive = Shop.Create("Cafe", "42 Shared Street", 0, 0, placeId).Value!;
         var thrown = await Assert.ThrowsAsync<MongoWriteException>(
             () => shopCollection.InsertOneAsync(collidingWhileLive));
         Assert.Equal(ServerErrorCategory.DuplicateKey, thrown.WriteError.Category);
@@ -192,7 +197,7 @@ public class ShopEndpointTests
         var response = await SendAsync(client, HttpMethod.Delete, $"api/v1/Shop/{original.Id}");
         await AssertStatusAsync(response, HttpStatusCode.NoContent);
 
-        Shop collidingAfterDelete = Shop.Create(name, address).Value!;
+        Shop collidingAfterDelete = Shop.Create("Cafe", "42 Shared Street", 0, 0, placeId).Value!;
         await shopCollection.InsertOneAsync(collidingAfterDelete);
 
         Shop? stored = await FindShopAsync(collidingAfterDelete.Id);
@@ -431,21 +436,6 @@ public class ShopEndpointTests
     }
 
     [Fact]
-    public async Task GetBestShopAround_UnverifiedShop_NoPlaceId_IsAbsent()
-    {
-        var (latitude, longitude) = RandomOrigin();
-        Account viewer = await SeedAccountAsync();
-        await SeedShopAsync(latitude: latitude, longitude: longitude, placeId: null, rate: 5);
-        using var client = AuthenticatedClientFor(viewer);
-
-        var response = await SendAsync(client, HttpMethod.Get, AroundUrl(latitude, longitude));
-        await AssertStatusAsync(response, HttpStatusCode.OK);
-
-        var page = await response.Content.ReadFromJsonAsync<JsonElement>();
-        Assert.Empty(page.GetProperty("items").EnumerateArray());
-    }
-
-    [Fact]
     public async Task GetBestShopAround_RateBelowFour_IsAbsent()
     {
         var (latitude, longitude) = RandomOrigin();
@@ -458,26 +448,6 @@ public class ShopEndpointTests
 
         var page = await response.Content.ReadFromJsonAsync<JsonElement>();
         Assert.Empty(page.GetProperty("items").EnumerateArray());
-    }
-
-    [Fact]
-    public async Task GetBestShopAround_NoLocation_IsAbsent()
-    {
-        var (latitude, longitude) = RandomOrigin();
-        Account viewer = await SeedAccountAsync();
-        // A positive control at the same origin: without it, an empty result here would be
-        // indistinguishable from "nothing was within 5 km of this random point" rather than
-        // proof that the 2dsphere index actually skips a null Location.
-        Shop located = await SeedShopAsync(latitude: latitude, longitude: longitude, placeId: $"place-{Guid.NewGuid():N}", rate: 5);
-        await SeedShopAsync(placeId: $"place-{Guid.NewGuid():N}", rate: 5);
-        using var client = AuthenticatedClientFor(viewer);
-
-        var response = await SendAsync(client, HttpMethod.Get, AroundUrl(latitude, longitude));
-        await AssertStatusAsync(response, HttpStatusCode.OK);
-
-        var page = await response.Content.ReadFromJsonAsync<JsonElement>();
-        var ids = page.GetProperty("items").EnumerateArray().Select(x => x.GetProperty("id").GetGuid()).ToList();
-        Assert.Equal([located.Id], ids);
     }
 
     [Fact]

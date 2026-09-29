@@ -12,13 +12,13 @@ namespace integration;
 public class CreatePostHandlerTests
 {
     private readonly IntegrationTestFixture _fixture;
+    private int _placeCalls;
 
     public CreatePostHandlerTests(IntegrationTestFixture fixture)
     {
         _fixture = fixture;
 
-        // Default: nothing configured needs to reach Apple, so a test that never touches
-        // placeId never has to think about the stub.
+        // Default: an unscripted test reaching Apple is a bug in the test, not a silent pass.
         _fixture.HttpHandler.Respond = _ => new HttpResponseMessage(HttpStatusCode.NotImplemented);
     }
 
@@ -32,28 +32,24 @@ public class CreatePostHandlerTests
     }
 
     private static CreatePostCommand Command(
-        string? placeId = null,
-        string? shopName = "Cafe " + nameof(CreatePostHandlerTests),
-        string? shopAddress = "1 Test Street",
-        double? latitude = null,
-        double? longitude = null,
-        List<(Stream stream, string fileName)>? images = null)
-    {
-        return new CreatePostCommand(
-            placeId,
-            placeId is null ? shopName : null,
-            placeId is null ? shopAddress : null,
-            latitude,
-            longitude,
-            caption: null,
-            rate: Amount.Create(3).Value!,
-            images);
-    }
+        string placeId,
+        List<(Stream stream, string fileName)>? images = null) =>
+        new(placeId, caption: null, rate: Amount.Create(3).Value!, images);
 
     private static (Stream stream, string fileName) FakeImage(string name = "a.png") =>
         (new MemoryStream(Encoding.UTF8.GetBytes("not a real image, R2 does not care")), name);
 
-    private void RespondToMaps(string placeId, string name, string address, double latitude, double longitude)
+    private sealed record PlaceStub(
+        string PlaceId,
+        string Name,
+        string Address,
+        double Latitude = 21.03,
+        double Longitude = 105.85);
+
+    // Answers the place lookup for each identifier given and counts how often it was asked.
+    // The token exchange is deliberately not counted: MapsTokenProvider caches its token
+    // process-wide, so whether a given test triggers one depends on what ran before it.
+    private void RespondToMaps(params PlaceStub[] places)
     {
         _fixture.HttpHandler.Respond = request =>
         {
@@ -62,15 +58,18 @@ public class CreatePostHandlerTests
             if(path.StartsWith("/v1/token"))
                 return JsonResponse(HttpStatusCode.OK, """{"accessToken":"test-token","expiresInSeconds":1800}""");
 
-            if(path.StartsWith($"/v1/place/{placeId}"))
-                return JsonResponse(HttpStatusCode.OK, JsonSerializer.Serialize(new
-                {
-                    name,
-                    coordinate = new { latitude, longitude },
-                    formattedAddressLines = new[] { address }
-                }));
+            PlaceStub? stub = places.FirstOrDefault(p => path.StartsWith($"/v1/place/{p.PlaceId}"));
+            if(stub is null)
+                return new HttpResponseMessage(HttpStatusCode.NotFound);
 
-            return new HttpResponseMessage(HttpStatusCode.NotFound);
+            Interlocked.Increment(ref _placeCalls);
+
+            return JsonResponse(HttpStatusCode.OK, JsonSerializer.Serialize(new
+            {
+                name = stub.Name,
+                coordinate = new { latitude = stub.Latitude, longitude = stub.Longitude },
+                formattedAddressLines = new[] { stub.Address }
+            }));
         };
     }
 
@@ -104,6 +103,16 @@ public class CreatePostHandlerTests
         return response.S3Objects?.Count ?? 0;
     }
 
+    private async Task<Shop?> FindShopAsync(Guid shopId)
+    {
+        using var scope = _fixture.Services.CreateScope();
+        var dbContext = scope.ServiceProvider.GetRequiredService<IMongoDbContext>();
+
+        return await dbContext.GetCollection<Shop>(CollectionName.Shop)
+            .Find(x => x.Id == shopId)
+            .FirstOrDefaultAsync();
+    }
+
     [Fact]
     public async Task PlaceCouldNotBeVerified_ReturnsBadRequest_BeforeAnyUpload()
     {
@@ -119,137 +128,89 @@ public class CreatePostHandlerTests
         Assert.Equal(before, await CountBucketObjectsAsync());
     }
 
+    // The request carries nothing about the shop but the identifier, so every stored field
+    // here came back from Apple. A client can claim any name it likes; it cannot invent an
+    // identifier Apple will return a place for.
     [Fact]
-    public async Task VerifiedPlace_OverridesClientSuppliedShopFields()
+    public async Task VerifiedPlace_IsStoredExactlyAsAppleAnsweredIt()
     {
         string placeId = $"place-{Guid.NewGuid():N}";
-        RespondToMaps(placeId, "Verified Cafe", "42 Real Address", 21.03, 105.85);
+        RespondToMaps(new PlaceStub(placeId, "Verified Cafe", "42 Real Address", 21.03, 105.85));
 
-        var command = new CreatePostCommand(
-            placeId,
-            shopName: "Client Made This Up",
-            shopAddress: "Nowhere",
-            latitude: 0,
-            longitude: 0,
-            caption: null,
-            rate: Amount.Create(4).Value!,
-            images: null);
-
-        var result = await SendAsync(command, Guid.NewGuid());
+        var result = await SendAsync(Command(placeId), Guid.NewGuid());
 
         Assert.True(result.IsSuccess);
 
-        using var scope = _fixture.Services.CreateScope();
-        var dbContext = scope.ServiceProvider.GetRequiredService<IMongoDbContext>();
-        var shop = await dbContext.GetCollection<Shop>(CollectionName.Shop)
-            .Find(x => x.Id == result.Value.ShopId)
-            .FirstOrDefaultAsync();
+        Shop? shop = await FindShopAsync(result.Value.ShopId);
 
         Assert.NotNull(shop);
         Assert.Equal("Verified Cafe", shop!.Name);
         Assert.Equal("42 Real Address", shop.Address);
         Assert.Equal(placeId, shop.PlaceId);
+        // Stored longitude-first, the order the 2dsphere index expects.
         Assert.Equal(new[] { 105.85, 21.03 }, shop.Location);
     }
 
+    // The whole point of looking the shop up before resolving it. The identifier a request
+    // carries is the one echoed back in the answer, never read out of Apple's body, so the
+    // lookup never needed the resolve — and a second review of a shop somebody has already
+    // posted about costs no round trip to Apple at all.
     [Fact]
-    public async Task ExistingShopMatchedByPlaceId_WinsOverOneMatchedByNameAddress()
+    public async Task RepeatPostAboutAKnownShop_MakesNoSecondPlaceCall()
     {
         string placeId = $"place-{Guid.NewGuid():N}";
-        string sharedName = $"Shared Name {Guid.NewGuid():N}";
-        string sharedAddress = "Shared Address";
+        RespondToMaps(new PlaceStub(placeId, $"Repeat Shop {Guid.NewGuid():N}", "1 Test Street"));
 
-        using(var scope = _fixture.Services.CreateScope())
-        {
-            var dbContext = scope.ServiceProvider.GetRequiredService<IMongoDbContext>();
-            var shopCollection = dbContext.GetCollection<Shop>(CollectionName.Shop);
-
-            // The row a nameAddressFilter match would find — same name/address the place
-            // resolves to, but no PlaceId of its own.
-            Shop nameMatch = Shop.Create(sharedName, sharedAddress).Value!;
-            await shopCollection.InsertOneAsync(nameMatch);
-
-            // The row that already carries the identifier, under different text entirely.
-            Shop placeMatch = Shop.Create("Different Name", "Different Address", placeId: placeId).Value!;
-            await shopCollection.InsertOneAsync(placeMatch);
-
-            RespondToMaps(placeId, sharedName, sharedAddress, 1, 2);
-
-            var result = await SendAsync(
-                new CreatePostCommand(placeId, null, null, null, null, null, Amount.Create(3).Value!, null),
-                Guid.NewGuid());
-
-            Assert.True(result.IsSuccess);
-            Assert.Equal(placeMatch.Id, result.Value.ShopId);
-        }
-    }
-
-    [Fact]
-    public async Task UnverifiedShop_SecondPostWithSameNameAddress_ReusesTheFirstShop()
-    {
-        string name = $"Reused Shop {Guid.NewGuid():N}";
-        string address = "Same Address Both Times";
-        Guid accountId = Guid.NewGuid();
-
-        var first = await SendAsync(Command(shopName: name, shopAddress: address), accountId);
-        var second = await SendAsync(Command(shopName: name, shopAddress: address), accountId);
+        var first = await SendAsync(Command(placeId), Guid.NewGuid());
+        var second = await SendAsync(Command(placeId), Guid.NewGuid());
 
         Assert.True(first.IsSuccess);
         Assert.True(second.IsSuccess);
         Assert.Equal(first.Value.ShopId, second.Value.ShopId);
+        Assert.Equal(1, _placeCalls);
     }
 
+    // Two kiosks in one mall, two units at one street number: Apple formats them identically
+    // and issues each its own identifier. There is deliberately no unique index on the name
+    // and address any more, because one would reject the second of these as a duplicate.
     [Fact]
-    public async Task VerifiedPlace_AdoptsAnUnverifiedShopMatchedByNameAndAddress()
+    public async Task TwoPlacesSharingANameAndAddress_CreateTwoShops()
     {
-        string placeId = $"place-{Guid.NewGuid():N}";
-        string name = $"Adoptable Shop {Guid.NewGuid():N}";
-        string address = "123 Adopt Street";
+        string suffix = Guid.NewGuid().ToString("N");
+        string firstPlaceId = $"place-a-{suffix}";
+        string secondPlaceId = $"place-b-{suffix}";
+        string name = $"Twin Kiosk {suffix}";
+        string address = $"1 Mall Road {suffix}";
 
-        using var scope = _fixture.Services.CreateScope();
-        var dbContext = scope.ServiceProvider.GetRequiredService<IMongoDbContext>();
-        var shopCollection = dbContext.GetCollection<Shop>(CollectionName.Shop);
-        var redisService = scope.ServiceProvider.GetRequiredService<IRedisService>();
+        RespondToMaps(
+            new PlaceStub(firstPlaceId, name, address),
+            new PlaceStub(secondPlaceId, name, address));
 
-        Shop unverified = Shop.Create(name, address).Value!;
-        await shopCollection.InsertOneAsync(unverified);
+        var first = await SendAsync(Command(firstPlaceId), Guid.NewGuid());
+        var second = await SendAsync(Command(secondPlaceId), Guid.NewGuid());
 
-        RespondToMaps(placeId, name, address, 10, 20);
-
-        var result = await SendAsync(
-            new CreatePostCommand(placeId, null, null, null, null, null, Amount.Create(3).Value!, null),
-            Guid.NewGuid());
-
-        Assert.True(result.IsSuccess);
-        Assert.Equal(unverified.Id, result.Value.ShopId);
-
-        Shop? updated = await shopCollection.Find(x => x.Id == unverified.Id).FirstOrDefaultAsync();
-        Assert.Equal(placeId, updated!.PlaceId);
-
-        // AdoptPlaceAsync removes the cached summary rather than leaving it to expire —
-        // otherwise it would read as unverified for up to a week.
-        ShopSummaryDto? cached = await redisService.GetAsync<ShopSummaryDto>(
-            CacheKey.Shop(unverified.Id),
-            CancellationToken.None);
-        Assert.Null(cached);
+        Assert.True(first.IsSuccess);
+        Assert.True(second.IsSuccess);
+        Assert.NotEqual(first.Value.ShopId, second.Value.ShopId);
     }
 
-    // No available lever forces the two inserts to actually collide — the handler's
-    // re-read filters mirror the partial indexes exactly, so there is no daylight to widen
-    // deliberately. If Mongo happens to serialize the two writes this run, both branches
-    // still pass (one insert, one no-op find), just without exercising the recovery path;
-    // the mutation check in test-strategy.md §9 step 3 is what actually proves this test
-    // depends on the index, not this assertion alone.
+    // No available lever forces the two inserts to actually collide — the handler's re-read
+    // filter mirrors the partial index exactly, so there is no daylight to widen deliberately.
+    // If Mongo happens to serialize the two writes this run, both branches still pass (one
+    // insert, one no-op find), just without exercising the recovery path; the mutation check
+    // in test-strategy.md §9 step 3 is what actually proves this test depends on the index,
+    // not this assertion alone.
     [Fact]
     public async Task ConcurrentInserts_SameNewShop_RecoverFromTheDuplicateKeyRace()
     {
-        string name = $"Race Shop {Guid.NewGuid():N}";
-        string address = "Race Address";
+        string placeId = $"place-{Guid.NewGuid():N}";
         Guid accountId = Guid.NewGuid();
 
+        RespondToMaps(new PlaceStub(placeId, $"Race Shop {Guid.NewGuid():N}", "Race Address"));
+
         var results = await Task.WhenAll(
-            SendAsync(Command(shopName: name, shopAddress: address), accountId),
-            SendAsync(Command(shopName: name, shopAddress: address), accountId));
+            SendAsync(Command(placeId), accountId),
+            SendAsync(Command(placeId), accountId));
 
         Assert.All(results, r => Assert.True(r.IsSuccess));
         Assert.Equal(results[0].Value.ShopId, results[1].Value.ShopId);
@@ -257,37 +218,25 @@ public class CreatePostHandlerTests
         using var scope = _fixture.Services.CreateScope();
         var dbContext = scope.ServiceProvider.GetRequiredService<IMongoDbContext>();
         long shopCount = await dbContext.GetCollection<Shop>(CollectionName.Shop)
-            .CountDocumentsAsync(x => x.Name == name && x.Address == address);
+            .CountDocumentsAsync(x => x.PlaceId == placeId);
 
         Assert.Equal(1, shopCount);
     }
 
+    // Apple is an external boundary, which is why Shop.Create still range-checks a coordinate
+    // no client can supply any more. A place that resolves but answers nonsense is the one way
+    // left to fail between the upload and the post insert, and the uploads must not survive it.
     [Fact]
     public async Task ShopCreationFailure_AfterUpload_DiscardsTheUploadedImages()
     {
+        string placeId = $"place-{Guid.NewGuid():N}";
+        RespondToMaps(new PlaceStub(placeId, "Impossible Cafe", "1 Test Street", Latitude: 999));
+
         int before = await CountBucketObjectsAsync();
 
-        using var scope = _fixture.Services.CreateScope();
-        var handler = ActivatorUtilities.CreateInstance<CreatePostHandler>(scope.ServiceProvider);
-
-        TestIdentity.Current = Guid.NewGuid();
-
-        // CreatePostValidator mirrors Shop.Create's own guards, so a command this invalid
-        // never reaches the handler through the normal IMediator.Send pipeline — the
-        // validator rejects it first, before any image is uploaded. Reaching the handler's
-        // own post-upload cleanup path (the thing this test exists to pin) means calling
-        // it directly, bypassing the validator on purpose.
-        var command = new CreatePostCommand(
-            placeId: null,
-            shopName: string.Empty,
-            shopAddress: "irrelevant",
-            latitude: null,
-            longitude: null,
-            caption: null,
-            rate: Amount.Create(3).Value!,
-            images: [FakeImage()]);
-
-        var result = await handler.Handle(command, CancellationToken.None);
+        var result = await SendAsync(
+            Command(placeId, images: [FakeImage()]),
+            Guid.NewGuid());
 
         Assert.True(result.IsFailed);
         Assert.Equal(before, await CountBucketObjectsAsync());
@@ -297,7 +246,9 @@ public class CreatePostHandlerTests
     public async Task SuccessfulCreate_CachesThePostAndBumpsListVersions()
     {
         Guid accountId = Guid.NewGuid();
-        string name = $"Cache Shop {Guid.NewGuid():N}";
+        string placeId = $"place-{Guid.NewGuid():N}";
+
+        RespondToMaps(new PlaceStub(placeId, $"Cache Shop {Guid.NewGuid():N}", "1 Test Street"));
 
         using var scope = _fixture.Services.CreateScope();
         var redisService = scope.ServiceProvider.GetRequiredService<IRedisService>();
@@ -306,7 +257,7 @@ public class CreatePostHandlerTests
             CacheKey.ListVersion(CollectionName.Post, null),
             CancellationToken.None);
 
-        var result = await SendAsync(Command(shopName: name), accountId);
+        var result = await SendAsync(Command(placeId), accountId);
 
         Assert.True(result.IsSuccess);
 

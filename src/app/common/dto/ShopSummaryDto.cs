@@ -7,4 +7,4 @@ public sealed record ShopSummaryDto(
     string Name,
     string Address,
     Amount Rate,
-    string? PlaceId);
+    string PlaceId);

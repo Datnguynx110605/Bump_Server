@@ -174,25 +174,20 @@ public static class IndexConfiguration
         return database.GetCollection<Shop>(CollectionName.Shop).Indexes.CreateManyAsync(
             new[]
             {
-                new CreateIndexModel<Shop>(
-                    keys.Ascending(x => x.Name).Ascending(x => x.Address),
-                    new CreateIndexOptions<Shop>
-                    {
-                        Unique = true,
-                        PartialFilterExpression = Builders<Shop>.Filter.Eq(x => x.IsDeleted, false)
-                    }),
-                // One row per real place. Partial on the field existing as well as on
-                // IsDeleted: a shop somebody typed in by hand carries no PlaceId and is
-                // serialized without the field, so unverified shops stay out of this index
-                // altogether rather than colliding with one another on a missing value.
+                // One row per real place, and the only uniqueness a shop has. There is
+                // deliberately no unique index on the name and address: the provider can
+                // answer with two distinct places formatting to the same name and address —
+                // two kiosks in one mall, two units at one street number — and rejecting the
+                // second of those as a duplicate would turn a valid shop into a 409.
+                // CreatePostHandler's shop lookup filters on this same field, which is what
+                // lets its duplicate-key recovery re-read and find the row the index just
+                // rejected it for.
                 new CreateIndexModel<Shop>(
                     keys.Ascending(x => x.PlaceId),
                     new CreateIndexOptions<Shop>
                     {
                         Unique = true,
-                        PartialFilterExpression = Builders<Shop>.Filter.And(
-                            Builders<Shop>.Filter.Exists(x => x.PlaceId, true),
-                            Builders<Shop>.Filter.Eq(x => x.IsDeleted, false))
+                        PartialFilterExpression = Builders<Shop>.Filter.Eq(x => x.IsDeleted, false)
                     }),
                 // Backs the retention sweep in SoftDeletePurgeHost. Partial so it only
                 // carries soft-deleted rows instead of the whole collection.
@@ -226,9 +221,8 @@ public static class IndexConfiguration
                     keys.Ascending(x => x.IsDeleted)
                         .Descending(x => x.CreatedAt)
                         .Descending(x => x.Id)),
-                // Backs the $nearSphere lookup in GetBestShopAroundHandler. A 2dsphere
-                // index is sparse over its geo field, so shops with no Location are
-                // absent from it and never surface in a proximity search.
+                // Backs the $nearSphere lookup in GetBestShopAroundHandler. Every shop
+                // carries a coordinate, so this one covers the whole collection.
                 new CreateIndexModel<Shop>(keys.Geo2DSphere(x => x.Location))
             },
             cancellationToken);
