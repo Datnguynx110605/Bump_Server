@@ -68,6 +68,29 @@ public sealed record CacheKey
         return "trusted:v1:top";
     }
 
+    // The shops within 10km of a ~1.1km cell, each with its distance. This is the one feed
+    // input that carries no per-viewer signal at all — every viewer standing in the same cell
+    // resolves the same list — so it is cached per cell rather than per account, and the
+    // nearby tier's page key is the cell too. Ten minutes because shops are created rarely
+    // and never move; the cost of staleness is a shop missing from one neighbourhood's feed
+    // for a few minutes after its first review.
+    public static TimeSpan DefaultNearbyShopsTTL = TimeSpan.FromMinutes(10);
+    public static string NearbyShops(long cellLat, long cellLng)
+    {
+        return $"nearby-shops:v1:cell:{cellLat}:{cellLng}";
+    }
+
+    // The posts this viewer has already reacted to, which the feed excludes — reacting is the
+    // clearest signal there is that a post has been seen and dealt with. Like the blocked set
+    // this is deleted outright by ReactPostService on every react and unreact rather than left
+    // to expire, so it is never stale, only cold; the day-long TTL is a backstop against a key
+    // nobody revisits, not the invalidation mechanism.
+    public static TimeSpan DefaultReactedPostsTTL = TimeSpan.FromDays(1);
+    public static string ReactedPosts(Guid accountId)
+    {
+        return $"reacted-posts:v1:account:{accountId}";
+    }
+
     // The union of Blocks and BlockedBy for one viewer, resolved on every filtered read.
     // Held for a day rather than minutes because BlockService deletes the key outright on
     // every block and unblock, so it is never stale, only cold.
