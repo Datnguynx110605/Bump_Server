@@ -408,10 +408,14 @@ graph TB
 **Every backing service is external to this repository** in production; each arrives as a connection
 string or API key in a service variable, and no manifest or IaC provisions them. The one exception is
 local development: the root `docker-compose.yml` runs Mongo, Redis, RabbitMQ and a MinIO standing in
-for R2 (`quay.io/minio/minio` — Docker Hub's `minio/minio` requires auth under MinIO's current
-licensing), so `dotnet run` and the test suites under `/test` have somewhere to point without a
-Railway environment. Resend, APNs and Apple Maps have no local emulator and are stubbed in tests
-instead of run in a container. See [`developer-guide.md`](./developer-guide.md#local-development) for
+for R2, so `dotnet run` and the test suites under `/test` have somewhere to point without a
+Railway environment. That MinIO is `cgr.dev/chainguard/minio` — both of MinIO's own registries now
+answer `401` to an anonymous pull under its current licensing, and Chainguard's rebuild is a drop-in
+that still ships `mc`, so one image serves as the server, the `mc ready local` healthcheck and the
+`minio-init` bucket creation alike. `IntegrationTestFixture` pins the same image for the
+Testcontainers MinIO the integration suite starts. It publishes only a rolling `latest`, which is
+the one thing to know about it. Resend, APNs and Apple Maps have no local emulator and are stubbed
+in tests instead of run in a container. See [`developer-guide.md`](./developer-guide.md#local-development) for
 how to bring the stack up.
 
 **The API container is stateless.** ASP.NET Data Protection keys — which protect the registration

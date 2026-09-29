@@ -35,8 +35,14 @@ public sealed class IntegrationTestFixture : WebApplicationFactory<Program>, IAs
         .WithImage("rabbitmq:3-management-alpine")
         .Build();
 
+    // Neither of MinIO's own registries serves this anonymously any more — Docker Hub's
+    // minio/minio and quay.io/minio/minio both answer 401 since the 2025 licensing change.
+    // Chainguard's rebuild is a drop-in: same /usr/bin/minio entrypoint, so MinioBuilder's
+    // `server /data` command, MINIO_ROOT_USER/PASSWORD and the /minio/health/ready wait all
+    // work unchanged. It publishes only a rolling `latest` to the free tier, which is the one
+    // thing to know about it — the image can move under a green suite.
     private readonly MinioContainer _minio = new MinioBuilder()
-        .WithImage("quay.io/minio/minio:latest")
+        .WithImage("cgr.dev/chainguard/minio:latest")
         .WithUsername(MinioAccessKey)
         .WithPassword(MinioSecretKey)
         .Build();

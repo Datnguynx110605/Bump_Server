@@ -40,8 +40,11 @@ services:
       retries: 10
 
   minio:
-    # Docker Hub's minio/minio requires auth as of MinIO's 2025 licensing change; quay.io stays open.
-    image: quay.io/minio/minio:latest
+    # Both of MinIO's own registries now answer 401 anonymously — Docker Hub's minio/minio and
+    # quay.io/minio/minio alike, since the 2025 licensing change. Chainguard's rebuild is a
+    # drop-in: same /usr/bin/minio entrypoint, and it still ships mc, which is what the
+    # healthcheck and minio-init below both need. It publishes only a rolling `latest`.
+    image: cgr.dev/chainguard/minio:latest
     command: server /data --console-address ":9001"
     environment:
       MINIO_ROOT_USER: bump-dev
@@ -60,7 +63,9 @@ services:
   # Creates the R2-equivalent bucket once minio is up, then exits. `docker compose up` leaves it
   # "exited (0)"; that is success, not a crash.
   minio-init:
-    image: quay.io/minio/mc:latest
+    # The same image as the server, because quay.io/minio/mc is behind the same 401 and this
+    # one carries mc already. Its entrypoint is the minio binary, so it is overridden below.
+    image: cgr.dev/chainguard/minio:latest
     depends_on:
       minio:
         condition: service_healthy
