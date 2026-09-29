@@ -156,7 +156,7 @@ every `Create` factory and every state transition.
 | `BaseEntity` | `Update`/`Delete` refuse on a deleted entity; `Recover` refuses on a live one; `Delete` sets `DeletedAt`, `Recover` clears it and sets `RecoveredAt` |
 | `Account` | password not exactly 60 chars rejected (`PasswordHashLength`); bio over 2000 rejected; `ChangeEmail`/`ChangeName` refuse an identical value; `PromoteToAdmin` refuses an existing admin |
 | `Post` | empty `accountId` or `shopId` rejected; `CaptionNormalized` derived on create and on `ChangeCaption`; null caption leaves it null |
-| `Shop` | half-supplied lat/long pair rejected; latitude and longitude range bounds; `Location` stored as `[longitude, latitude]` — the reversed order is the single most breakable invariant in the entity; `AdoptPlace` refuses an empty id and refuses to overwrite an existing one |
+| `Shop` | empty name, address or `placeId` rejected; latitude and longitude range bounds, kept because the provider is an external boundary even though no client can send a coordinate; `Location` stored as `[longitude, latitude]` — the reversed order is the single most breakable invariant in the entity |
 | `TextNormalizer` | `đ`/`Đ` → `d`/`D`; Vietnamese diacritics folded; result lowercased; empty input returns empty |
 | `DomainResult` | `Failure` carries the message; `Success<T>` carries the value; `Failure<T>` leaves `Value` default |
 
@@ -198,16 +198,27 @@ What a handler test asserts, in order of importance:
 Three handlers deserve named, non-obvious cases:
 
 - **`CreatePostHandler`** — the widest handler in the codebase. Cases: place resolution failing returns
-  400 *before* any upload; a verified place overrides client-supplied name/address/coordinates
-  entirely; an existing shop matched by `PlaceId` wins over one matched by name+address; a shop matched
-  by name+address with no `PlaceId` is adopted; a concurrent insert that trips the partial unique index
-  is recovered by re-reading rather than surfacing a 500; and every failure path between the upload and
-  the post insert removes the R2 objects (assert against MinIO, not against a mock).
+  400 *before* any upload; a resolved place is stored exactly as Apple answered it, since the request
+  carries no shop text to override; a concurrent insert that trips the partial unique index on
+  `PlaceId` is recovered by re-reading rather than surfacing a 500; and every failure path between the
+  upload and the post insert removes the R2 objects (assert against MinIO, not against a mock). The
+  one such path left is a place that resolves to a coordinate `Shop.Create` refuses — Apple is an
+  external boundary, which is why that range check survives the client losing the ability to send one.
+
+  Two cases carry the shape of the design rather than a rule:
+  - **a repeat post about a known shop makes no second place call** — counted on the scripted handler.
+    The lookup running before the resolve is the whole optimization, and a counter is the only thing
+    that can see it.
+  - **two Apple places sharing a name and address create two shops** — the reason there is no unique
+    index over that text. Two kiosks in one mall are two places, and rejecting the second as a
+    duplicate would turn a valid shop into a 409.
 - **`GetRelatedPostHandler`** — the affinity aggregation, its 1-hour cache, the trusted-account
   fallback tier and the 300-id cap.
 - **`GetBestShopAroundHandler`** — `$nearSphere` against the 2dsphere index, which requires
-  `IndexInitializer` to have run and requires `Location` to be `[longitude, latitude]`. A shop with a
-  null `Location` must not appear rather than appearing at (0, 0).
+  `IndexInitializer` to have run and requires `Location` to be `[longitude, latitude]`. There is no
+  `PlaceId` filter to test any more, and no coordinate-less shop to exclude: every shop is a place
+  Apple resolved and carries Apple's own coordinate. What remains is the radius, the rate floor and
+  the longitude-first storage order.
 
 Read-side handlers share one parameterized shape: seed N+1 rows, request a page of N, assert
 `HasMore` is true and the cursor is non-null, follow the cursor, assert the second page and that the
@@ -232,7 +243,7 @@ undeserializable-body claim in §3.5.
 | `BCryptService` | none (unit) | hash length is 60 — the number `Account.Create` hard-codes as `PasswordHashLength`; verify succeeds for the right password and fails for the wrong one |
 | `EmailService`, `ApplePlaceService`, `ApnsService` | scripted `HttpMessageHandler` | a success response parses into the expected result. Corrected against the actual code, not all three degrade the same way: `EmailService` throws `InvalidOperationException` on any non-success status by design, which is its documented failure mode, not a bug to guard against; `ApplePlaceService` returns `null` on a network failure, an unknown place id, and a non-success status, but a malformed 200 body throws `JsonException` uncaught — nothing between `ReadAsStringAsync` and the `Deserialize` call catches it; `ApnsService` swallows an ordinary failure status and a malformed *reason* body (logs a warning, retires a dead token, retries once on `ExpiredProviderToken`), but a network failure propagates out of `SendAsync` uncaught — `ApnsTokenProvider`'s own comment says that is swallowed by `NotificationService`, one layer up, not here |
 | `BsonConfiguration` / `BackingFieldBsonSerializer` | Mongo container | an `Account` with populated `_avatars`, `_followers`, `_blocks` and `_blockedBy` round-trips through insert and read with the private backing fields intact, and `Email`/`Name`/`Amount` deserialize through their private constructors |
-| `IndexConfiguration` / `IndexInitializer` | Mongo container | after the initializer runs, the expected indexes exist; specifically the two partial unique indexes on `Shop` (`PlaceId`, and `Name`+`Address`) that `CreatePostHandler`'s race recovery depends on, and the 2dsphere index on `Location` |
+| `IndexConfiguration` / `IndexInitializer` | Mongo container | after the initializer runs, the expected indexes exist; specifically the partial unique index on `Shop.PlaceId` that `CreatePostHandler`'s race recovery depends on, and the 2dsphere index on `Location`. The **absence** of any unique index over the name or address is asserted too — it is a deliberate choice, not an omission, and nothing else would catch its return |
 | health checks | all three containers | healthy when up. The unhealthy case is left alone: stopping a shared container to test it would break every other test in the assembly |
 
 ### 3.5 `infra` — queue workers and the queue contract
@@ -330,12 +341,11 @@ Applied to each of the 83 endpoints, taking the categories that apply to its sig
 | body absent / empty / malformed | the 16 body endpoints | no body, `{}`, `{` | **no body (no Content-Type header at all) → 415**, not 400 — ASP.NET Core can't pick a formatter without one. `{}` and `{` (a real `application/json` body, just empty or truncated) are 400, layer 1, as originally stated. All three confirmed against `POST /Account` |
 | body field missing where non-nullable | `LoginRequest` without `Password` | | 400, layer 1 |
 | body field empty string | `""` | | per validator — pinned per endpoint, since `NotEmpty` is not applied uniformly |
-| length boundary, both sides | bio 2000 / 2001, caption 2000 / 2001, `placeId` 200 / 201, `shopName` 200 / 201 | | at the limit 200/204, over it 400 |
+| length boundary, both sides | bio 2000 / 2001, caption 2000 / 2001, `placeId` 200 / 201 | | at the limit 200/204, over it 400 |
 | value object rejected at the controller | `rate=-1`, a malformed email on login | | 400, layer 2, handler never invoked |
-| conditionally required field | `CreatePost`: `placeId` absent → `shopName` and `shopAddress` required; `placeId` present → both ignored | | both directions tested — the `When` block in `CreatePostValidator` is a real branch |
-| paired fields | `latitude` without `longitude` | | 400 *"Latitude and longitude must be provided together"* |
-| **two or more fields wrong at once** | `CreatePost` with neither `shopName` nor `shopAddress` | | 400 **`ValidationProblemDetails`** — the response *shape* changes, and this is only observable here |
-| wrong content type | JSON posted to the `[FromForm]` endpoints | | **415 only when the action takes an `IFormFile` directly** (`ChangeAvatar`) — confirmed empirically. `CreatePost` binds every `[FromForm]` parameter as an individually-optional scalar, so a JSON body just leaves them all at their defaults (`shopName`/`shopAddress` null, `rate` 0) and the request fails at validation instead, as 400 `ValidationProblemDetails`, never 415. Check which shape an endpoint has before assuming 415 |
+| required form field, absent vs empty | `CreatePost`: `placeId` missing entirely, then present but `""` | | **both are layer 1**, verified against the running endpoint rather than assumed. Nothing suppresses ASP.NET's implicit `Required` inference for a non-nullable `[FromForm] string`, and `Required` rejects an empty string as well as a missing field, so `CreatePostValidator`'s own `NotEmpty` on `placeId` never fires through this endpoint — the response carries ASP.NET's message, not the validator's. The rule is still live for a `CreatePostCommand` sent straight through `IMediator`, which has no model binder in front of it |
+| **two or more fields wrong at once** | `CreatePost` with a 2001-character caption and `rate=0` | | 400 **`ValidationProblemDetails`** — the response *shape* changes, and this is only observable here. Both failures must be layer-3 ones: a model-binding error short-circuits before MediatR runs the validator, so pairing one with a validator rule would only ever surface the first |
+| wrong content type | JSON posted to the `[FromForm]` endpoints | | **415 only when the action takes an `IFormFile` directly** (`ChangeAvatar`) — confirmed empirically. `CreatePost` binds only `[FromForm]` scalars, so a JSON body binds nothing and fails on the required `placeId` instead, as 400, never 415. Check which shape an endpoint has before assuming 415 |
 | upload cases | empty file, > 5 MB, an 11th file, disallowed extension, HTML renamed `.jpg` | | 400, layer 2 |
 | unauthenticated / wrong role / over limit | all | | 401 / 403 / 429 |
 
@@ -585,7 +595,7 @@ valid, invalid, missing, malformed, boundary, auth tier and rate limit — witho
 
 | # | Endpoint | Auth | Limit | Tiers | Pinned behaviour |
 |---|---|---|---|---|---|
-| 24 | `POST /Post` | user | upload | U H E | the six `CreatePostHandler` cases in §3.3 |
+| 24 | `POST /Post` | user | upload | U H E | the `CreatePostHandler` cases in §3.3; `placeId` missing is a layer-1 model-binding 400, empty is a layer-3 validator 400 |
 | 25 | `PUT /Post/{id}/caption` | user | — | U H E | not the author → **404, never 403** (`ChangeCaptionHandler` looks up the post scoped to the caller's id, so a mismatched author looks identical to a missing post); `CaptionNormalized` re-derived |
 | 26 | `PUT /Post/{id}/rate` | user | — | U H E | `Amount` bounds rejected at the controller; `RecalculateShopRate` published |
 | 27 | `DELETE /Post/{id}` | user | — | H W E | soft delete; cascade worker removes comments and images |
@@ -611,8 +621,8 @@ valid, invalid, missing, malformed, boundary, auth tier and rate limit — witho
 
 | # | Endpoint | Auth | Limit | Tiers | Pinned behaviour |
 |---|---|---|---|---|---|
-| 39 | `DELETE /Shop/{id}` | admin | — | H E | soft delete; excluded from the partial unique indexes afterwards |
-| 40 | `GET /Shop/{id}` | user | — | H E | `shop:v2:` cache key carries `PlaceId` |
+| 39 | `DELETE /Shop/{id}` | admin | — | H E | soft delete; excluded from the partial unique index on `PlaceId` afterwards, so the same place can be created again |
+| 40 | `GET /Shop/{id}` | user | — | H E | `shop:v2:` cache key carries `PlaceId`, the client's navigation target |
 | 41 | `GET /Shop` | user | — | H E | — |
 | 42 | `GET /Shop/search` | user | search | H E | normalized keyword |
 | 43 | `GET /Shop/by-name` | user | search | H E | **exact match, not normalized** (`GetShopByNameHandler` filters on `x.Name`, not `x.NameNormalized` — corrected from an earlier, unread-handler guess; same class of gap as Account row 15/16: a diacritic or differently-cased name will not match) |
@@ -982,8 +992,8 @@ Not the whole matrix at once. The order that gets the most signal per unit of wo
    container fixture. Verify: `dotnet test` runs and reports zero tests.
 2. **All of `domain`** (§3.1) — no containers, no fixtures, and it locks down every invariant the rest
    of the system trusts. Verify: green; branch coverage on the `domain` assembly reports 100%, which
-   is the §7.1 floor going live; and mutating `Shop.Create`'s lat/long pair check turns it red.
-3. **One integration test of `CreatePostHandler`'s shop-adoption and duplicate-key race** (§3.3) — the
+   is the §7.1 floor going live; and mutating `Shop.Create`'s latitude range check turns it red.
+3. **One integration test of `CreatePostHandler`'s shop lookup and duplicate-key race** (§3.3) — the
    single most valuable integration test in the plan, because it exercises place resolution, the R2
    cleanup path, the partial unique index and cache invalidation in one flow. Verify: green against
    real containers, and red when `IndexInitializer` is removed from the host.

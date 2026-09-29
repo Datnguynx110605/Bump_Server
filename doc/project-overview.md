@@ -20,24 +20,30 @@ panel (`Bump_Admin`) are separate repositories that consume this API.
 ([src/app/feature/post/command/Create/CreatePostHandler.cs](../src/app/feature/post/command/Create/CreatePostHandler.cs))
 resolves one while creating a post, so the shop catalogue is a side effect of posting.
 
-**A shop comes in two tiers, and `Shop.PlaceId` is the whole difference.** A post carrying a
-`placeId` has that identifier resolved against the Apple Maps Server API *before anything is
-uploaded*, and the shop is created from the name, address and coordinate Apple answered — the
-request's own shop text is not read at all on that path. A client can claim any name it likes; it
-cannot invent an identifier Apple will return a place for. A post without a `placeId` still creates
-the shop the client typed, unverified, which is what keeps a street cart Apple has never heard of
-postable.
+**Every shop is an Apple Maps place, and `Shop.PlaceId` is its whole identity.** A post carries a
+`placeId` and nothing else about the shop. `CreatePostHandler` looks for a shop already holding that
+identifier and, only when there is none, resolves it against the Apple Maps Server API *before
+anything is uploaded*; the shop is then created from the name, address and coordinate Apple answered.
+Nothing about a shop is ever accepted from the request: a client can claim any name it likes, but it
+cannot invent an identifier Apple will return a place for. A place Apple does not recognize cannot be
+posted about at all — a shop Apple has no record of is the price of every shop in the catalogue being
+a real, navigable place.
 
-An existing shop is matched by `PlaceId` first and by exact `Name` + `Address` second. The second
-arm stamps the identifier onto a shop created before verification existed, so the catalogue upgrades
-itself as people post rather than needing a migration.
+The lookup comes before the resolution because the identifier in the answer is the request's own,
+echoed back rather than read out of Apple's body. So a second review of a shop somebody has already
+posted about — the dominant request once the catalogue has filled — costs no call to Apple at all.
 
-`Shop.Location` holds an optional `[longitude, latitude]` pair, indexed with 2dsphere and read by
-`GetBestShopAround`, which serves **verified shops only** — it is the one surface that exists to be
-navigated to. Reusing an existing shop never overwrites its coordinate, so on the unverified tier the
-first poster to name a (name, address) pair still fixes that shop's coordinate permanently; on the
-verified tier the coordinate is Apple's and the question does not arise. A shop's `Rate` is the
-rounded average of its posts' rates, recalculated asynchronously by `ShopRateService`.
+`PlaceId` is also the only uniqueness a shop has. There is deliberately no unique index on the name
+and address: Apple can answer with two distinct places that format identically — two kiosks in one
+mall, two units at one street number — and a unique index over that text would reject the second of
+them as a duplicate.
+
+`Shop.Location` holds a `[longitude, latitude]` pair, indexed with 2dsphere and read by
+`GetBestShopAround`. It is Apple's own coordinate for the place, never the request's: a
+client-supplied pair is indistinguishable from the position of the person writing the review, and a
+shop typed up at home would be pinned at the reviewer's house. Reusing an existing shop never
+overwrites it. A shop's `Rate` is the rounded average of its posts' rates, recalculated
+asynchronously by `ShopRateService`.
 
 ## Surface area
 

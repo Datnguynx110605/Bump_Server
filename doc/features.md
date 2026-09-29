@@ -589,24 +589,21 @@ The returned token is the credential for #1, #6, #10 and #11.
 
 ```mermaid
 flowchart TD
-    A["Client<br/>POST /api/v1/Post (multipart)<br/>placeId, shopName, shopAddress,<br/>latitude, longitude, caption, rate, images"] --> B["PostController.CreatePost<br/>Amount.Create(rate) ≥ 0"]
+    A["Client<br/>POST /api/v1/Post (multipart)<br/>placeId, caption, rate, images"] --> B["PostController.CreatePost<br/>placeId bound non-nullable<br/>Amount.Create(rate) ≥ 0"]
     B -->|invalid| B1["400"]
     B --> C["ImageUpload.ToStreams<br/>≤10 files · ≤5 MB · allowlist + magic bytes<br/>opens the streams only on success"]
     C -->|fail| C1["400"]
-    C --> D["MediatR → CreatePostValidator<br/>rate 1–5 · caption ≤2000 · placeId ≤200<br/>name+address required only without a placeId<br/>lat/lng both-or-neither, in range"] -->|invalid| D1["400"]
+    C --> D["MediatR → CreatePostValidator<br/>placeId required ≤200 · rate 1–5 · caption ≤2000"] -->|invalid| D1["400"]
     D --> E["CreatePostHandler → identity"] -->|null| E1["401"]
-    E --> P{"placeId present?"}
-    P -->|yes| P1["ApplePlaceService.ResolveAsync<br/>GET /v1/place/id"]
+    E --> G{"Mongo find Shop by PlaceId, !IsDeleted<br/>project Id"}
+    G -->|found| F["R2 PutObject per image — all in parallel"]
+    G -->|none| P1["ApplePlaceService.ResolveAsync<br/>GET /v1/place/id"]
     P1 -->|null| P2["400 'Shop could not be verified'"]
-    P1 --> Q["name, address, lat, lng := Apple's<br/>request text ignored"]
-    P -->|no| Q2["name, address, lat, lng := the request's"]
-    Q --> F["R2 PutObject per image — all in parallel"]
-    Q2 --> F
-    F --> G{"Mongo find Shop by PlaceId,<br/>then by Name + Address, !IsDeleted<br/>project Id, PlaceId"}
-    G -->|"found, no PlaceId, place resolved"| G2["AdoptPlace → $set PlaceId, UpdatedAt<br/>drop shop cache"] --> H
-    G -->|found| H["shopId = existing.Id"]
-    G -->|none| I["Shop.Create(name, address, lat, lng, placeId)<br/>→ insertOne · Redis SET shop 7d<br/>bump shop:all"] --> H
-    I -->|"DuplicateKey"| I2["re-read the shop the winner inserted"] --> H
+    P1 --> F
+    F --> G2{"shop already found?"}
+    G2 -->|yes| H["shopId = existing.Id"]
+    G2 -->|no| I["Shop.Create(Apple's name, address, lat, lng, placeId)<br/>→ insertOne · Redis SET shop 7d<br/>bump shop:all"] --> H
+    I -->|"DuplicateKey"| I2["re-read by PlaceId — the row the winner inserted"] --> H
     I -->|"other MongoWriteException"| X["R2 DeleteObject per image · rethrow"]
     H --> J["Post.Create — CaptionNormalized computed"]
     J --> K["Mongo insertOne(post)"]
@@ -625,8 +622,10 @@ SDK and a delete on an aborted request would refuse to run.
 
 Cleanup is best-effort in one direction only: a delete that itself throws replaces the
 `MongoWriteException` the caller was about to receive, and abandons any images after it in the loop.
-The `Result.Fail` paths above — `Shop.Create` and `Post.Create` rejecting their input — orphan
-whatever was already uploaded.
+Every `Result.Fail` path between the uploads and the post insert — `Shop.Create` or `Post.Create`
+rejecting their input, and a duplicate key whose row the re-read cannot find — discards the uploads
+first, because nothing references them yet and the retention sweep is Mongo-only and never looks at
+the bucket.
 
 The uploads run concurrently rather than one after another. Ten files at a couple of hundred
 milliseconds each is seconds of wall clock inside a request the latency budget gives 500 ms;
@@ -634,44 +633,46 @@ milliseconds each is seconds of wall clock inside a request the latency budget g
 images array renders in.
 
 **A shop-creation race no longer fails the post.** Two people reviewing the same new shop at the
-same moment both miss the read and both insert, and the partial unique index on `(Name, Address)`
+same moment both miss the read and both insert, and the partial unique index on `PlaceId`
 lets exactly one through. The loser used to discard its uploads and rethrow, so it received a 500
 and lost a post that should simply have joined the shop the winner had just created; it now re-reads
 and attaches to that row. `CreateAccountHandler` already translated the identical collision, so this
 brings the two into line.
 
-**A shop comes in two tiers.** With a `placeId`, the identifier is resolved against the Apple Maps
-Server API and the shop is created from the name, address and coordinate Apple answered; the
-request's own `shopName`, `shopAddress`, `latitude` and `longitude` are not read at all. That is the
-guarantee — a client can claim any name, but cannot invent an identifier Apple will return a place
-for. Without a `placeId` the shop is whatever the client typed and is created unverified, which
-keeps a street cart Apple has never heard of postable. `CreatePostValidator` requires the name and
-address only on that second path.
+**The request says nothing about the shop but its identifier.** `CreatePostCommand` carries a
+`placeId`, a caption, a rate and images — no name, no address, no coordinate. The shop is whatever
+Apple answers for that identifier. That is the guarantee: a client can claim any name, but cannot
+invent an identifier Apple will return a place for, and a coordinate it supplied could as easily be
+the position of the person writing the review as of the shop being reviewed. A place Apple does not
+recognize cannot be posted about at all.
 
-**Resolution happens before the uploads.** Everything past the R2 block has to clean up after the
-objects on its way out, and a rejected place is much the cheapest failure to answer while there is
+**The shop lookup runs before the resolution, and usually replaces it.** `PlaceResult.PlaceId` is the
+request's own identifier echoed back rather than a field read out of Apple's body, so the lookup never
+needed the resolve: a post about a shop somebody has already reviewed — the dominant request once the
+catalogue has filled — finds the row on `PlaceId` and makes no call to Apple at all. The resolve fires
+only on the branch that inserts a shop, which puts the daily quota ceiling at new shops rather than
+posts.
+
+**Resolution still happens before the uploads.** Everything past the R2 block has to clean up after
+the objects on its way out, and a rejected place is much the cheapest failure to answer while there is
 still nothing to discard. A place that will not resolve — unknown to Apple, an Apple error, or no
 Maps key configured — is `400 Shop could not be verified`.
 
-An existing shop is looked up **by `PlaceId` first, then by exact `Name` + `Address`**, as two
-queries rather than one `$or` because the order is load-bearing: a row already carrying the
-identifier has to win. The text arm is what adopts a shop created before verification existed —
-`Shop.AdoptPlace` stamps the identifier on it and the cached summary is dropped — so the catalogue
-upgrades itself as people post, with no migration. Adoption only ever fills an empty slot, and a
-duplicate-key collision there (Apple renamed the place and a second row grew under the new name)
-skips the stamp rather than failing a valid post, leaving two rows for an administrator to merge.
+The lookup is a single query on `PlaceId` filtered to live rows, projected down to `Id`: nothing else
+about an existing row is read, because reusing a shop never rewrites what the provider wrote the first
+time. The duplicate-key recovery re-reads through that same filter, which is what lets it find the row
+the unique index just rejected it for.
 
-Matching on the text arm uses the raw name and address, not the normalized fields, so "Cafe X" and
-"cafe x" create two shops.
+**There is deliberately no unique index on the name and address.** Apple can answer with two distinct
+places that format to the same name and address — two kiosks in one mall, two units at one street
+number — and a unique index over that text would reject the second of them as `409`. `PlaceId` is the
+only uniqueness a shop has, so exactly one write can collide and the recovery has exactly one row to
+re-read.
 
-The coordinate reaches `Shop` only on the branch that inserts one: a post naming an existing shop
-reuses the row and never overwrites `Location`, so on the unverified tier the first poster to name a
-(name, address) pair fixes that shop's coordinate permanently. On the verified tier the coordinate is
-Apple's. Both values must arrive together and within range or `CreatePostValidator` rejects the
-request — checked there as well as in `Shop.Create` because the handler uploads every image to R2
-before it reaches the entity, and a failure at the entity would orphan the uploaded objects. A post
-created without a coordinate is not an error; the shop is simply absent from the 2dsphere index and
-never appears in #78.
+`Shop.Create` still range-checks the coordinate although no client can supply one: Apple is an
+external boundary, and a coordinate Mongo cannot index is a 500 at insert time rather than a message
+anybody can act on. It is the one place resolution can still fail after the uploads have run, which
+is why that path discards them on the way out.
 
 ### 25. Change caption — `PUT /Post/{postId}/caption`
 
@@ -990,7 +991,7 @@ flowchart TD
 ```
 **Refused while the shop still has live posts.** A delete that only flipped the flag left every post
 pointing at it — `GET /Post/shop/{id}` kept serving them, saved shops kept referencing it, and
-because the unique index on `(Name, Address)` is scoped to live rows the same shop could immediately
+because the unique index on `PlaceId` is scoped to live rows the same shop could immediately
 be created again, stranding the old posts on a row nothing can reach.
 
 Refusing rather than cascading, because the posts are other people's reviews and an administrator
@@ -1062,7 +1063,7 @@ flowchart TD
     A["Client<br/>GET /api/v1/Shop/around?latitude=&longitude="] --> B["ShopController.GetBestShopAround"]
     B --> C["MediatR → GetBestShopAroundValidator<br/>lat ±90 · lng ±180"] -->|invalid| C1["400"]
     C --> D["GetBestShopAroundHandler"]
-    D --> E["filter: !IsDeleted AND PlaceId exists AND<br/>Rate.Value ≥ 4 AND<br/>Location $nearSphere origin, $maxDistance 5000 m"]
+    D --> E["filter: !IsDeleted AND<br/>Rate.Value ≥ 4 AND<br/>Location $nearSphere origin, $maxDistance 5000 m"]
     E --> F["Mongo find · limit 50 · Summary<br/>2dsphere index · nearest first"]
     F --> G["OrderByDescending(Rate).Take(10) in memory"]
     G --> H["200 CursorPageResult of ShopSummaryDto<br/>NextCursor null"]
@@ -1079,14 +1080,15 @@ it, so the rate ordering happens in memory over the 50 nearest candidates that a
 trades relevance for reach.
 
 The answer is a fixed top ten with `NextCursor: null`, matching the `CursorPageResult` shape every
-other list endpoint returns so the client decodes it the same way. Shops with no `Location` are
-absent from the 2dsphere index and can never appear here.
+other list endpoint returns so the client decodes it the same way. Every shop carries a `Location`,
+so the 2dsphere index covers the whole collection.
 
-**Verified shops only.** This is the one surface that exists to be navigated to, so a shop nobody
-confirmed against Apple Maps is precisely the one that must not appear on it — an unverified pin is
-how somebody ends up at the wrong shop, or at a shop that was never there. Keyword, name and address
-search (#42–#44) are deliberately left open to both tiers: a shop somebody typed in is still theirs
-to find by name.
+**No `PlaceId` filter any more, because there is nothing left to filter out.** This used to require
+`PlaceId` to exist, keeping hand-typed shops off the map; the pin it was really guarding against was a
+coordinate the client had supplied, which could as easily have been the reviewer's home as the shop.
+Every shop is now a place Apple resolved and every coordinate is Apple's own, so a shop carrying a
+coordinate it should not have is impossible to create rather than filtered out at read time.
+`ShopSummaryDto` still carries `PlaceId` — it is the navigation target the client opens.
 
 ---
 

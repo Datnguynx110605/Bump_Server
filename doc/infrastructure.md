@@ -48,7 +48,7 @@ sink itself is configured in `Program.cs` (see *Logging and monitoring*).
 
 | Variable | Effect when set | Effect when unset |
 |---|---|---|
-| `Maps__TeamId` | `MapsTokenProvider` — the Maps auth JWT's `iss` claim | Place verification is unavailable: a post carrying a `placeId` is answered `400`, every unverified path still works |
+| `Maps__TeamId` | `MapsTokenProvider` — the Maps auth JWT's `iss` claim | Place resolution is unavailable, so **no post about a shop the catalogue does not already hold can be created** — the identifier cannot be resolved and the post is answered `400`. A post about a shop already in the catalogue is unaffected: it is found on `PlaceId` and makes no Maps call. Every other path still works |
 | `Maps__KeyId` | `MapsTokenProvider` — the Maps auth JWT's `kid` header | Same |
 | `Maps__PrivateKey` | `MapsTokenProvider` — base64 of the whole Maps `.p8` file, same single-line convention as `Apns__PrivateKey` | Same |
 | `Admin__Email` + `Admin__Password` | `AdminSeeder` creates the account, or promotes an existing one to `Role.Admin` | Seeding is skipped and logged at `Information` |
@@ -68,11 +68,11 @@ Two groups are exceptions:
   minted already expired, and the only symptom is that nothing authenticates.
 - The four `Apns__*` keys are read eagerly in `AddInfra`, because a push failure is swallowed by
   design and a misconfigured key would otherwise be indistinguishable from a working one.
-- The three `Maps__*` keys are read eagerly too, but **warn instead of throwing**. Place
-  verification is a tier rather than the whole feature: a deployment without a Maps key still serves
-  every unverified path, and refusing to boot would take the API down over a capability that
-  degrades cleanly. The startup warning is what keeps "unconfigured" from being mistaken for "Apple
-  rejected it".
+- The three `Maps__*` keys are read eagerly too, but **warn instead of throwing**. The whole API is
+  not post creation: a deployment without a Maps key still serves every read, every other mutation,
+  and posts about shops the catalogue already holds. Only a post about a *new* shop fails, and
+  refusing to boot would take everything else down with it. The startup warning is what keeps
+  "unconfigured" from being mistaken for "Apple rejected it".
 
 **Values must be supplied unquoted.** The local `.env` wraps values in double quotes as a file
 convention. Whatever supplies them as container environment variables must not: a literal `"10"`
@@ -117,7 +117,7 @@ and created by `IndexInitializer`, a `BackgroundService` so builds never block s
 | `account` | Unique `Email` partial on `IsDeleted: false`; `(Name, IsDeleted, CreatedAt desc, Id desc)`; `(IsDeleted, CreatedAt desc, Id desc)`; multikey `Followers.AccountId`, `Followings.AccountId`, `Blocks.AccountId`, `SavePosts.PostId`, `SaveShops.ShopId`; `DeletedAt` partial on `IsDeleted: true` |
 | `post` | By `AccountId`, `ShopId`, `IsDeleted`, `CaptionNormalized`; multikey `Reactions.AccountId` backing both `ReactionMembership` and the affinity ranking in `GetRelatedPost`; `DeletedAt` partial on `IsDeleted: true` |
 | `comment` | `(PostId, IsDeleted, CreatedAt desc, Id desc)`; `(AccountId, IsDeleted, CreatedAt desc, Id desc)`; `(IsDeleted, CreatedAt desc, Id desc)` backing the unfiltered administrator listing; multikey `Reactions.AccountId`; `DeletedAt` partial on `IsDeleted: true` |
-| `shop` | Unique `(Name, Address)` partial on `IsDeleted: false`; by `Name`, `Address`, `NameNormalized`, `AddressNormalized`, `IsDeleted`; **2dsphere on `Location`** backing `GetBestShopAround`; `DeletedAt` partial on `IsDeleted: true` |
+| `shop` | Unique `PlaceId` partial on `IsDeleted: false`, the field `CreatePostHandler`'s lookup and its duplicate-key recovery both filter on — and the **only** unique index on the collection; by `Name`, `Address`, `NameNormalized`, `AddressNormalized`, `IsDeleted`; **2dsphere on `Location`** backing `GetBestShopAround`; `DeletedAt` partial on `IsDeleted: true` |
 | `report` | By `IsDeleted`, `PostId`, `CommentId`, `AccountId`, `ReporterId` |
 | `notification` | `(ToAccountId, IsDeleted, CreatedAt desc, Id desc)`, backing both the recipient's listing and the per-account delete in `AccountService`; `ActorAccountId`, backing the actor-avatar refresh in `ProfileService` |
 | `refreshtoken` | Unique `Token`; **TTL on `ExpiryDate` with `ExpireAfter = TimeSpan.Zero`**; by `IsDeleted`; `IsRevoked` partial on `IsRevoked: true` |
@@ -126,10 +126,16 @@ and created by `IndexInitializer`, a `BackgroundService` so builds never block s
 The four `DeletedAt` indexes and the `IsRevoked` index exist only to back the retention sweep; their
 partial filters keep them holding soft-deleted rows rather than whole collections.
 
-A 2dsphere index is sparse over its geo field, and `BsonConfiguration` sets `IgnoreIfNull` on
-`Shop.Location`, so a shop posted without a place pick omits the field entirely rather than writing
-`null`. Both together are what let `GetBestShopAround` skip coordinate-less shops instead of failing
-to extract a geo key from them.
+There is deliberately **no** unique index over the shop's name or address. Apple can answer with two
+distinct places that format to the same name and address — two kiosks in one mall, two units at one
+street number — and a unique index over that text would reject the second of them as a duplicate.
+
+`Shop.PlaceId` and `Shop.Location` are both non-nullable and `BsonConfiguration` no longer sets
+`IgnoreIfNull` on either, because neither can be absent: every shop is an Apple place and carries the
+coordinate Apple answered. This assumes the collection holds no rows predating that rule. A document
+missing `PlaceId` would collide with every other such document on the unique index and the index
+build would fail inside `IndexInitializer` — a `BackgroundService`, so the failure is logged rather
+than surfaced at startup.
 
 `NormalizedFieldBackfillInitializer` is a second `BackgroundService` that fills `Shop.NameNormalized`
 / `AddressNormalized` and `Post.CaptionNormalized` for documents missing them, scanning with a cursor
@@ -317,7 +323,9 @@ of 25,000 calls per day per team**; a `429` means it is exhausted.
 `formattedAddressLines` and coordinate, truncating name and address to the 200 characters the rest of
 the system expects. A `404` is an ordinary outcome — an identifier Apple has never issued, or a
 retired place — and is not logged; every other status is. Resolution failure returns `null`, which
-`CreatePostHandler` answers as `400 Shop could not be verified`.
+`CreatePostHandler` answers as `400 Shop could not be verified`. It is the only Maps call the server
+makes, and `CreatePostHandler` reaches it only when no shop already holds the identifier, so the quota
+is spent per new shop rather than per post.
 
 ### Health checks
 
