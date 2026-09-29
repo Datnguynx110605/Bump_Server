@@ -122,10 +122,21 @@ public sealed class PostController : ControllerBase
     [HttpGet("related")]
     public async Task<ActionResult<CursorPageResult<PostFeedItemDto>>> GetRelatedPost(
         [FromQuery] string? cursor,
+        [FromQuery] FeedMode? mode,
+        [FromQuery] double? latitude,
+        [FromQuery] double? longitude,
         [FromQuery] int pageSize = 20,
         CancellationToken cancellationToken = default)
     {
-        var result = await _sender.Send(new GetRelatedPostQuery(new CursorPageRequest(cursor, pageSize)), cancellationToken);
+        // Derived from the cursor rather than defaulted to Refresh. A client that sends a
+        // cursor and forgets the parameter would otherwise restart the Phase A walk and be
+        // handed content it already holds.
+        var resolved = mode ?? (cursor is null ? FeedMode.Refresh : FeedMode.More);
+
+        var result = await _sender.Send(
+            new GetRelatedPostQuery(resolved, latitude, longitude, new CursorPageRequest(cursor, pageSize)),
+            cancellationToken);
+
         return result.ToActionResult();
     }
 
