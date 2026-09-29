@@ -26,7 +26,7 @@ store, a cache, and a message broker.
 | Social graph: follow, block, save | Payments, ordering, or any commercial transaction |
 | Engagement: reactions, comment threads, shop rating aggregation | Recommendation model training — ranking inputs are computed from first-party engagement data only |
 | Notification delivery: in-app real time and mobile push | Analytics warehousing and BI reporting |
-| Discovery: keyword search, geospatial "shops near me", affinity-ranked feed | Multi-tenant or multi-region deployment |
+| Discovery: keyword search, geospatial "shops near me", a locality-weighted blended feed | Multi-tenant or multi-region deployment |
 
 A defining domain constraint: **shop records are a by-product of authoring, not a managed catalogue.**
 A shop is created implicitly on first review and identified by the exact name-and-address pair, and
@@ -275,10 +275,18 @@ Two rules govern correct use of this mechanism:
    know which viewers have blocked whom, so a counter keyed by viewer would be one that no write could
    ever reach.
 
-Two feeds opt out of invalidation entirely and rely on their short TTL: **keyword search results** and
-the **affinity-ranked related feed**. In both cases no write path can determine which readers or which
+Two feeds opt out of invalidation and rely on their short TTL: **keyword search results** and the
+**related feed's blended tiers**. In both cases no write path can determine which readers or which
 queries a new item belongs to, so a correct invalidation would require fanning out to every follower
 or every past search — precisely the unbounded work this strategy exists to avoid.
+
+The related feed adds a third case that is not a trade-off but a deliberate omission. Its Phase A
+walk — the band newer than the viewer's last session — is bounded by that viewer's own high-water
+mark, so its page key would be shared with nobody. Caching it would write one key per request that
+is read exactly once and then dead, so **Phase A is not cached at all**; only its Phase B walk, whose
+filter carries no per-viewer bound, uses the list cache. Its global-recent backstop is the exception
+to the exception: it reuses `GetAllPost`'s own filter and unsignatured key, so it shares that
+endpoint's pages *and* its invalidation, which makes it the freshest thing in the feed.
 
 ### 3.4 Concurrency control without transactions
 
@@ -523,8 +531,9 @@ or individually expensive:
 | Report | 10 / minute | Cheap to file, and a live report suppresses the target's trust eligibility |
 
 The search budget covers every read of that cost shape, not only the endpoints named "search":
-proximity, exact-name and exact-address lookups and the affinity-ranked feed carry it too, since
-routing them to the global budget was a tenfold wider door to the same query.
+proximity, exact-name and exact-address lookups and the related feed carry it too, since routing them
+to the global budget was a tenfold wider door to the same query. The related feed earns that budget
+twice over: one request fans out to as many as five indexed walks plus a geospatial lookup.
 
 **One class of limit cannot live at the edge.** Every policy above partitions by authenticated
 principal or by client address, while one-time passcodes are keyed by email address — so no edge

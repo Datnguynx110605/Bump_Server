@@ -518,10 +518,22 @@ sequenceDiagram
   are per-viewer. This is a deliberate floor under feed latency
   ([`system-design.md`](./system-design.md#63-per-viewer-enrichment-is-not-cacheable)).
 
-**Two endpoints deviate.** `GetRelatedPost` resolves its source accounts first — followed ids plus a
-reaction-affinity ranking cached under `affinity:v1:account:{id}` for an hour — then runs this flow
-unchanged. `GetBestShopAround` skips the paginator entirely and issues a `$nearSphere` query against
-the 2dsphere index, because its answer depends on a location that only arrives with the request.
+**Two endpoints deviate, one of them completely.** `GetBestShopAround` skips the paginator and
+issues a `$nearSphere` query against the 2dsphere index, because its answer depends on a location
+that only arrives with the request.
+
+`GetRelatedPost` no longer runs this flow at all. It walks **five tiers in parallel**, each with its
+own keyset position and its own phase recorded in the cursor, and merges them into one page by
+weighted quota. Phase A — the band newer than the viewer's last session — calls `CursorPaginator`
+directly and is deliberately **uncached**, because its lower bound is that viewer's own high-water
+mark and the page key would be shared with nobody; Phase B uses `CachedCursorPaginator` unchanged.
+
+Three consequences for anyone reading that handler expecting the shape above. `HasMore` is not one
+paginator's answer but "every tier terminal **and** the backstop exhausted". `NextCursor` is always
+populated, because it carries the viewer's whole feed position rather than one stream's offset, so
+a null cursor is not the end-of-feed signal there. And a page can come back empty mid-stream when
+filtering consumes everything fetched, which the single-stream endpoints never do. See
+[`features.md` §77](./features.md).
 
 ### 5.2 Asynchronous fan-out write
 

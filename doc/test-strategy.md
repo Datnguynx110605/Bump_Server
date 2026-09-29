@@ -212,8 +212,15 @@ Three handlers deserve named, non-obvious cases:
   - **two Apple places sharing a name and address create two shops** — the reason there is no unique
     index over that text. Two kiosks in one mall are two places, and rejecting the second as a
     duplicate would turn a valid shop into a 409.
-- **`GetRelatedPostHandler`** — the affinity aggregation, its 1-hour cache, the trusted-account
-  fallback tier and the 300-id cap.
+- **`GetRelatedPostHandler`** — the phase state machine before anything else: that a multi-page
+  Phase A keeps walking on `mode=more` rather than jumping to Phase B and orphaning everything below
+  its first page; that a completed first session goes terminal instead of replaying its corpus from
+  the top; and that a tier short because blocked or reacted rows ate its slack **stays** in Phase A.
+  Page content cannot prove the second of those — a replay walks from the newest too, so its first
+  page is indistinguishable from a correct one — so those tests decode the returned cursor and
+  assert on `Exhausted`, `Phase` and `Floor` instead. Also the cell-scoped nearby reset and that it
+  touches no other tier, the pinned origin on `more`, the reacted exclusion and its invalidation,
+  and the `PinMaxAge` bound on the pin.
 - **`GetBestShopAroundHandler`** — `$nearSphere` against the 2dsphere index, which requires
   `IndexInitializer` to have run and requires `Location` to be `[longitude, latitude]`. There is no
   `PlaceId` filter to test any more, and no coordinate-less shop to exclude: every shop is a place
@@ -223,6 +230,11 @@ Three handlers deserve named, non-obvious cases:
 Read-side handlers share one parameterized shape: seed N+1 rows, request a page of N, assert
 `HasMore` is true and the cursor is non-null, follow the cursor, assert the second page and that the
 two pages do not overlap. Filtered reads add a blocked-account case (§3.6).
+
+`GetRelatedPost` is the one endpoint that shape does not fit. Its cursor is non-null on every page
+including the last, its pages may legitimately come back empty mid-stream, and its assertions are
+scoped to the test's own seeded ids because the fixture database is assembly-scoped and the global
+recent backstop walks every post in it.
 
 ### 3.4 `infra` — adapters, integration tests
 
@@ -604,7 +616,7 @@ valid, invalid, missing, malformed, boundary, auth tier and rate limit — witho
 | 30 | `GET /Post/account/{id}` | user | — | H E | blocked author → 404/empty |
 | 31 | `GET /Post/shop/{id}` | user | — | H E | cursor pagination |
 | 32 | `GET /Post/search` | user | search | H E | normalized keyword; blocked authors filtered, page still full |
-| 77 | `GET /Post/related` | user | search | H E | affinity tier, trusted fallback tier, 1-hour cache, 300-id cap |
+| 77 | `GET /Post/related` | user | search | H E | five blended tiers; per-tier Phase A/B walk and sticky terminal state; cell-scoped nearby reset; origin pinned on `refresh`, ignored on `more`; reacted exclusion; `HasMore` false only once every tier and the backstop are exhausted |
 
 ### Comment
 

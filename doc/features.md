@@ -813,35 +813,183 @@ No write path bumps a `keyword:*` version, so these pages refresh only on the 2-
 
 ```mermaid
 flowchart TD
-    A["Client<br/>GET /api/v1/Post/related"] --> B["PostController.GetRelatedPost"]
-    B --> C["MediatR → GetRelatedPostHandler → identity"] -->|null| C1["401"]
-    C --> D["Mongo find Account<br/>project Followings.AccountId<br/>read as raw BsonDocument"]
-    C --> E{"Redis GET affinity:v1:account:{me}"}
-    E -->|hit| G
-    E -->|miss| F["Mongo aggregate on post<br/>$match Reactions.AccountId = me<br/>$sortByCount AccountId · $limit 20<br/>Redis SET affinity 1h"] --> G
-    D --> G["union · drop self · cap 300"]
-    G --> H["filter: AccountId $in ids AND !IsDeleted<br/>sig = related:{me}"]
-    H --> I["CachedCursorPaginator · Summary"]
-    I --> J["PostFeedEnricher · +2 Mongo reads"] --> K["200 page of PostFeedItemDto"]
+    A["Client<br/>GET /api/v1/Post/related<br/>?cursor&mode&latitude&longitude"] --> B["PostController.GetRelatedPost<br/>mode omitted → derived from cursor"]
+    B --> C["GetRelatedPostHandler → identity"] -->|null| C1["401"]
+    C --> D["FeedCursor.Decode<br/>unparseable → fresh Refresh"]
+    D --> E{"mode"}
+    E -->|Refresh| F["pin current lat/lng<br/>reset nearby if its cell changed<br/>every tier → Phase A"]
+    E -->|More| G["use pinned origin<br/>ignore sent coordinates"]
+    F --> H
+    G --> H["hop 1 ∥ blocked · reacted · following · affinity · trusted · nearby shops"]
+    H --> I["FeedTierMix.Allocate<br/>row chosen by which tiers returned sources"]
+    I --> J["hop 2 ∥ each tier in ITS OWN recorded phase<br/>fetch min(pageSize×2, 50)"]
+    J --> K["drop blocked ∪ reacted → dedupe → contiguous prefix per tier"]
+    K -->|short| J
+    K --> L{"page empty<br/>or blend terminal?"}
+    L -->|yes| M["global recent backstop<br/>signature null — shares GetAllPost"]
+    L -->|no| N
+    M --> N["FeedScorer.Rank — reorders only what was consumed"]
+    N --> O["prepend own newest post<br/>Refresh only, younger than PinMaxAge"]
+    O --> P["PostFeedEnricher · +2 Mongo reads"] --> Q["200 page of PostFeedItemDto"]
 ```
-Two sources, precomputed to different degrees. Followed accounts are embedded on the account
-document, so they cost one projected read and stay exact. That read returns a raw `BsonDocument`
-rather than a projected `Account`: deserializing a `Following` from a subdocument holding only
-`AccountId` throws `No matching creator found for class domain.Following`, because the entity has no
-creator satisfiable without `Name` and `Avatar`. Requesting the whole `Followings` array would
-deserialize, at the cost of dragging every followed account's name and avatar across the wire to read
-one field from each. Reaction affinity is the expensive half —
-`$sortByCount` groups every post the account has ever reacted to — so it is resolved once an hour and
-cached as a list of account ids under `affinity:v1:account:{id}`.
 
-What is cached is the ranking, never the feed: the posts themselves are read live through an indexed
-`$in`, so a followed account's new post appears within the 2-minute list TTL rather than waiting on
-the hourly refresh. The `$in` is capped at 300 ids because MongoDB scans the `AccountId` index once
-per value and merge-sorts the results.
+A blend, not a cascade. Four weighted tiers are walked in parallel and merged into one page; a
+fifth, global recent, is held back as a backstop so a brand-new account is never handed nothing.
 
-Nothing bumps the `related:{me}` version counter — no write path knows which readers a post is
-related to — so unlike the shared feeds these pages retire on the 2-minute TTL alone. That is the
-deliberate trade against fanning an invalidation out to every follower on each new post.
+| tier | source | post filter | list signature | shared with |
+|---|---|---|---|---|
+| nearby | `nearby-shops:v1:cell:{lat}:{lng}` → `$nearSphere` 10 km, cap 250 | `ShopId $in` | `nearby:{cellLat}:{cellLng}` | every viewer in that cell |
+| following | `Followings.AccountId`, one projected read, cap 300 | `AccountId $in` | `following:{me}` | — |
+| affinity | `affinity:v1:account:{me}`, hourly `$sortByCount` | `AccountId $in` | `affinity:{me}` | — |
+| trusted | `trusted:v1:top`, hourly | `AccountId $in` | `trusted:global` | every viewer |
+| global recent | — | `IsDeleted: false` | `null` | `GetAllPost`, **and bumped on write** |
+
+Declaration order is also the cross-tier dedupe priority. Affinity is its own tier rather than
+being unioned into the following `$in`: concatenating the two and capping the result at 300 put
+following first, so any viewer with three hundred or more followings had their affinity ranking
+computed, cached, and then truncated away entirely.
+
+**The mix row is chosen by which tiers returned source ids**, never by which request parameters
+were set — a viewer who follows two hundred accounts that have never posted has no following
+source and falls to the next row on its own.
+
+| available | following | nearby | affinity | trusted |
+|---|---|---|---|---|
+| location + following | 20 | 50 | 15 | 15 |
+| following, no location | 20 | — | 50 | 30 |
+| location, no following | — | 55 | 30 | 15 |
+| neither | — | — | 50 | 50 |
+| anything else | renormalised over the tiers that have sources | | | |
+
+Quotas are allocated by largest remainder rather than by truncating each share, which at a page
+size of 3 across four tiers would return two items and look like four short tiers.
+
+#### Two phases, and why a null mark is not enough
+
+Every tier keeps its own keyset walk, and each walk runs in one of two phases **recorded in the
+cursor and decided by the server, never by the request**:
+
+- **Phase A** walks the band newer than the previous session: `Above(Floor) AND Below(APos)`.
+- **Phase B** walks below everything ever served: `Below(BPos)`.
+
+The served set per tier is at most two intervals — `[BPos, Floor]` from past sessions and
+`[APos, Top]` from the current Phase A walk — and Phase A closes the gap between them.
+
+`Below(null)` omits its clause, which means *start from the newest*, not *the bottom was
+reached*. A null `BPos` therefore cannot distinguish "not started" from "exhausted", so each
+tier carries a sticky `Exhausted` flag as well. It is set when a Phase A walk **with no lower
+bound** finishes — that walk ran to the bottom of the tier — or when a Phase B walk finishes. An
+exhausted tier never enters Phase B again; a Refresh puts it back into Phase A bounded by the
+previous `Top`, and when that completes it is terminal once more.
+
+**The only condition for leaving Phase A is the paginator reporting no more rows.** A tier that
+comes back short because blocked or reacted rows consumed its slack stays in Phase A and fetches
+again, bounded by `MaxRefetchRounds`. Leaving on shortness would orphan the unwalked gap
+`(Floor, APos)` permanently.
+
+That has a subtlety worth stating, because it is the bug this design is most likely to
+reintroduce: a tier fetches its whole over-fetch budget to serve a quota a fraction of that
+size, so the paginator's answer is about what it *fetched*. Taking it at face value retires a
+tier whose buffer still holds rows the page never used. **Unconsumed rows are themselves proof
+there is more below the mark**, and are counted as such.
+
+`Floor` is never set to the new `Top` — Phase A would have nothing between them to walk and
+every new post would be skipped. On Refresh it is left alone mid-Phase-A, where advancing it
+would orphan the gap, and assigned `Top_old` outright in Phase B or when terminal.
+
+#### Nearby marks are scoped to their cell
+
+The nearby tier's marks are time positions over **one specific shop set** — the shops around the
+pinned cell — and mean nothing against a different one. Carried across a move they would have
+the server assume the client already holds `[BPos, Floor]` for the *new* area, and every
+new-area post inside that range would be skipped in silence. So the cursor stores the cell those
+marks were built against, separately from the pinned coordinate because the pin can be cleared
+while the marks persist, and **only the nearby tier is reset** when it changes.
+
+One comparison covers all three cases: the cell changed, nearby became available, or nearby
+became unavailable and the pin was cleared. The reset re-serves nearby posts the client may
+still hold, which it dedupes on append — the alternative is losing the new neighbourhood's back
+catalogue outright.
+
+A cell is the coordinate rounded to 0.01°, about 1.1 km, carried as scaled integers so it never
+has to be formatted as a decimal. **Cache sharing is a property of that grid, not of
+proximity**: two viewers two hundred metres apart can straddle a boundary and share nothing,
+while two 1.5 km apart can share a cell if both sit inside it. The shop lookup runs from the
+cell's centre rather than the caller's position, which costs up to ~800 m of precision at a
+corner and is what makes the entry shareable at all.
+
+#### Origin
+
+- **Refresh** uses the client's current coordinates and re-pins them. A cursor saved yesterday
+  must not make today's Refresh search a stale origin.
+- **Refresh without coordinates** clears the pin and resets nearby's marks. The tier is
+  unavailable for that session, which is mix row 2 or 4 — exactly what a viewer who denies
+  location permission gets.
+- **More** uses the pinned origin and **ignores** any coordinates sent, so a viewer walking down
+  the street mid-scroll does not have the nearby walk change corpus underneath its own marks.
+
+#### Exclusion and ranking
+
+Blocked accounts are dropped from the `$in` for following and affinity, whose signatures are
+already per-viewer; nearby, trusted and global post-filter instead, which is what keeps their
+shared page keys shared. Reacted posts are post-filtered from **every** tier — following and
+affinity exclude blocked *authors* up front, which says nothing about which of their posts the
+viewer has already answered.
+
+Both are affordable because each tier over-fetches twice its quota, so exclusion happens after
+the read rather than as a `$nin` that would fragment the cache. The same slack refills any tier
+that comes back short.
+
+`FeedScorer` then reorders the assembled page — never the corpus — by rate, engagement (log
+scale, comments weighted double), recency (12-hour half-life), proximity for nearby rows, and a
+small tier boost. Every input is already on the DTO or in the cached shop list, so ranking costs
+no reads. **It runs after allocation and before the pin**, so it reorders what was consumed and
+cannot disturb a cursor. The pin sits above it: the viewer's own newest post, prepended on
+Refresh while it is younger than `PinMaxAge` (6 hours), exempt from the reacted filter because
+reacting to your own post must not hide it from its own pin.
+
+#### Caching
+
+**Phase A bypasses the list cache entirely.** Its lower bound is this viewer's own high-water
+mark, so the page key would be shared with nobody and every write would leave one more key that
+is read once and then dead. Phase A calls `CursorPaginator` directly; Phase B uses
+`CachedCursorPaginator` unchanged. The shared `nearby:{cell}` and `trusted:global` keys
+therefore pay off on Phase B and the fall-through path, not on app open.
+
+#### Client contract
+
+This endpoint **breaks the previous contract** and is shipped unversioned, because the iOS
+client is deployed but has no users. Three things a client must know:
+
+- **`HasMore` is the end-of-feed signal, not a null cursor.** Unlike every other list endpoint,
+  `NextCursor` is always populated — it is the viewer's whole feed position, and dropping it at
+  the end of the stream would restart the feed from the top on the next app open. `HasMore` is
+  false only once every tier is terminal **and** the backstop is exhausted.
+- **`Items: [] + HasMore: true` means fetch again**, not caught up. This breaks the invariant
+  the cursor paginators otherwise hold, that a normal feed never yields an empty page
+  mid-stream: a page can come back empty when filtering consumes everything fetched.
+- **The cursor and the client's cached items are one unit.** The server assumes the client still
+  holds everything between `BPos`/`Floor` and `Top`. A client that clears its item cache must
+  discard the cursor too, and must dedupe by post id when appending pages — a Refresh
+  mid-Phase-A and a nearby cell reset both re-serve deliberately.
+
+A v1 cursor degrades to a fresh Refresh rather than erroring, and `mode` is derived from the
+cursor when omitted (`more` with one, `refresh` without), so a client that forgets it never
+restarts a walk over content it already holds.
+
+#### Accepted limits
+
+- **Duplicates across pages are possible.** Server-side dedupe is within-page only. Once the
+  blend terminates, global recent walks the whole collection newest-first and legitimately
+  re-serves posts a tier has already shown, so the tail of an exhausted feed repeats recent
+  content.
+- **"Skips nothing" holds per source set at walk time.** Following, affinity and trusted all
+  change membership. Older posts from a newly added source that fall inside an already-walked
+  range surface only when Phase B reaches them, and not at all if they sit below `BPos`.
+- **Un-reacting brings a post back.** The reacted set is rebuilt from the reactions themselves
+  rather than accumulated, so removing a reaction removes it from the set on the next read.
+- **Reinstall, cache clear and a second device all restart the feed from newest**, which is the
+  cost of holding feed position in the cursor rather than server-side.
 
 ---
 
